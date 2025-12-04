@@ -1,0 +1,100 @@
+{
+  "asr_engine": "funasr",
+  "whisper": {
+    "model": "large-v3-turbo",
+    "device": "cuda",
+    "language": "zh",
+    "compute_type": "float16"
+  },
+  "funasr": {
+    "model": "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    "device": "cuda",
+    "enable_vad": false,
+    "enable_punc": false
+  },
+  "enable_initial_prompt": true,
+  "prompt_words": [
+    "Claude",
+    "Claude Code",
+    "Codex",
+    "Gemini",
+    "ultrathink",
+    "agent",
+    "github",
+    "danbooru",
+    "Z-image",
+    "三方会谈",
+    "第一性原理",
+    "迭代",
+    "模糊匹配",
+    "拼音",
+    "琶音",
+    "音阶",
+    "kk",
+    "好的",
+    "可以",
+    "在吗"
+  ],
+  "replacements": {
+    "克劳德": "Claude",
+    "克劳德代码": "Claude Code",
+    "克劳德科德": "Claude Code",
+    "cloud code": "Claude Code",
+    "Cloud Code": "Claude Code",
+    "the clock code": "Claude Code",
+    "clock code": "Claude Code",
+    "the cloud code": "Claude Code",
+    "cloud": "Claude",
+    "Cloud": "Claude",
+    "科德克斯": "Codex",
+    "杰米尼": "Gemini",
+    "吉米尼": "Gemini",
+    "奥特拉兴克": "ultrathink",
+    "阿尔特拉辛克": "ultrathink",
+    "奥特拉think": "ultrathink",
+    "aging": "agent",
+    "aching": "agent",
+    "GitHub": "github",
+    "GITHUB": "github",
+    "Git Hub": "github",
+    "三方会谈": "三方会谈",
+    "三方会议": "三方会谈",
+    "第一性原理": "第一性原理",
+    "第1性原理": "第一性原理",
+    "丹伯如": "danbooru",
+    "丹波鲁": "danbooru",
+    "但波如": "danbooru",
+    "Zimage": "Z-image",
+    "Z image": "Z-image",
+    "之image": "Z-image",
+    "scale": "skill",
+    "到用": "调用",
+    "标减": "标点"
+  },
+  "domain_context": "AI工具、编程、图像生成、多AI协作",
+  "polish_mode": "quality",
+  "polish": {
+    "enabled": true,
+    "api_url": "https://openrouter.ai/api",
+    "api_key": "YOUR_OPENROUTER_API_KEY_HERE",
+    "model": "deepseek/deepseek-chat-v3.1:free",
+    "timeout": 10,
+    "prompt_template": "你是语音转文字润色助手。请直接输出润色后的文本。\n\n【任务目标】\n1. 智能结构化：根据语义逻辑自动分段。若识别到并列、递进或对比关系，请自动调整为清晰的段落或编号列表。\n2. 基础修正：修正同音错字，补充正确标点，在中英文/数字之间添加空格。\n3. 自然流畅：删除无意义的口语填充词（如\"那个\"、\"就是说\"），但保留语气词（吗、呢、吧）。\n\n【禁止】\n- 不翻译语言（英文保持英文）\n- 不添加 Markdown 符号\n- 不过度改写原意\n\n原文：{text}"
+  },
+  "local_polish": {
+    "enabled": false,
+    "model_path": "G:\\VCP\\voicetype\\models\\qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "n_gpu_layers": -1,
+    "n_ctx": 512
+  },
+  "general": {
+    "hotkey": "`",
+    "audio_device": "Microsoft 声音映射器 - Input",
+    "auto_startup": false,
+    "minimize_to_tray": false
+  },
+  "vad": {
+    "threshold": 0.2,
+    "min_silence_ms": 1200
+  }
+}
