@@ -6,9 +6,9 @@
 import sys
 import ctypes
 import math
-from PySide6.QtCore import Qt, Signal, QPoint, QTimer, Slot
+from PySide6.QtCore import Qt, Signal, QPoint, QPointF, QTimer, Slot
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient, QPointF
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient
 
 from .popup_menu import PopupMenu
 
