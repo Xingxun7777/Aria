@@ -226,9 +226,9 @@ class FloatingBall(QWidget):
 
         # Glass-morphism ball body
         if self._is_locked:
-            # Locked: more transparent, subtle
-            base_alpha = 140
-            highlight_alpha = 30
+            # Locked: very transparent, nearly invisible
+            base_alpha = 50
+            highlight_alpha = 10
         elif self._state == self.STATE_TRANSCRIBING:
             base_alpha = 200
             highlight_alpha = 50
@@ -266,7 +266,7 @@ class FloatingBall(QWidget):
             painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._is_locked:
             # Very subtle border when locked (more transparent)
-            painter.setPen(QPen(QColor(255, 255, 255, 25), 1))
+            painter.setPen(QPen(QColor(255, 255, 255, 10), 1))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
         else:
