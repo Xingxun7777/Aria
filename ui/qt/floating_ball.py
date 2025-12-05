@@ -1,6 +1,6 @@
 # floating_ball.py
 # Floating ball widget - main UI for VoiceType
-# Left-click: show details, Middle-click: toggle ASR, Right-click: lock + transparency
+# Left-click: toggle ASR, Middle-click: lock position, Right-click: show popup menu
 
 import sys
 import ctypes
@@ -23,17 +23,17 @@ class FloatingBall(QWidget):
     - Speaking: Rainbow border flows faster
 
     Interactions:
-    - Left-click: Show details panel
-    - Middle-click: Toggle ASR recording
-    - Right-click: Lock position + enable click-through transparency
+    - Left-click: Toggle ASR recording on/off
+    - Middle-click: Lock position + enable transparency
+    - Right-click: Show popup menu (single) / Open settings (double)
     - Drag: Move position (when unlocked)
     """
 
     # Signals
-    toggleRequested = Signal()      # Middle-click: toggle ASR
-    detailsRequested = Signal()     # Double-click: show settings
-    menuRequested = Signal()        # Left-click: show popup menu
-    lockToggled = Signal(bool)      # Right-click: lock state changed
+    toggleRequested = Signal()      # Left-click: toggle ASR
+    detailsRequested = Signal()     # Right double-click: show settings
+    menuRequested = Signal()        # Right-click: show popup menu
+    lockToggled = Signal(bool)      # Middle-click: lock state changed
     enableToggled = Signal(bool)    # From popup menu: enable/disable
     modeChanged = Signal(str)       # From popup menu: polish mode changed
 
@@ -93,25 +93,36 @@ class FloatingBall(QWidget):
         self._shrink_fallback_timer.setSingleShot(True)
         self._shrink_fallback_timer.timeout.connect(self._force_shrink)
 
-        # Debug log file for tracking state changes
+        # Debug log file for tracking state changes (controlled by config)
         self._debug_log_path = None
+        self._debug_logging_enabled = False
         try:
+            import json
             from pathlib import Path
-            log_dir = Path(__file__).parent.parent.parent / "DebugLog"
-            log_dir.mkdir(exist_ok=True)
-            self._debug_log_path = log_dir / "floating_ball_debug.log"
-            # Clear old log
-            with open(self._debug_log_path, 'w', encoding='utf-8') as f:
-                f.write(f"=== FloatingBall Debug Log ===\n")
+            config_path = Path(__file__).parent.parent.parent / "config" / "hotwords.json"
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    self._debug_logging_enabled = config.get("general", {}).get("debug_logging", False)
+
+            if self._debug_logging_enabled:
+                log_dir = Path(__file__).parent.parent.parent / "DebugLog"
+                log_dir.mkdir(exist_ok=True)
+                self._debug_log_path = log_dir / "floating_ball_debug.log"
+                # Clear old log
+                with open(self._debug_log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"=== FloatingBall Debug Log ===\n")
         except Exception as e:
-            print(f"[FloatingBall] Failed to create debug log: {e}")
+            print(f"[FloatingBall] Failed to init debug log: {e}")
 
         # Start animation timer immediately (needed for smooth transitions)
         self._pulse_timer.start(50)
         self._log(f"Initialized with scale={self._window_scale}, target={self._window_scale_target}")
 
     def _log(self, msg: str):
-        """Write to debug log file."""
+        """Write to debug log file (only if debug_logging enabled in config)."""
+        if not self._debug_logging_enabled:
+            return
         import datetime
         timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] {msg}"
@@ -436,12 +447,17 @@ class FloatingBall(QWidget):
             # Gentle rotation when waiting (~45 deg/sec at 30fps = 1.5 deg/frame)
             self._rainbow_angle = (self._rainbow_angle + 1.5) % 360.0
 
+        # Track if any animation is active
+        animations_active = False
+
         # Smooth icon scale animation
         if self._icon_scale != self._icon_scale_target:
             diff = self._icon_scale_target - self._icon_scale
             self._icon_scale += diff * 0.1  # Smooth easing
             if abs(diff) < 0.01:
                 self._icon_scale = self._icon_scale_target
+            else:
+                animations_active = True
 
         # Smooth window scale animation (silky smooth)
         if self._window_scale != self._window_scale_target:
@@ -449,6 +465,8 @@ class FloatingBall(QWidget):
             self._window_scale += diff * 0.12  # Gentle easing for smooth feel
             if abs(diff) < 0.005:
                 self._window_scale = self._window_scale_target
+            else:
+                animations_active = True
             # Debug: log when scale is changing significantly
             if abs(diff) > 0.05:
                 print(f"[FloatingBall] Animating scale: {self._window_scale:.2f} -> {self._window_scale_target:.2f}")
@@ -457,9 +475,32 @@ class FloatingBall(QWidget):
         if self._audio_level > self._audio_level_smooth:
             # Gentle attack - not too fast
             self._audio_level_smooth += (self._audio_level - self._audio_level_smooth) * 0.15
+            animations_active = True
         else:
             # Very smooth decay for natural fade out
             self._audio_level_smooth += (self._audio_level - self._audio_level_smooth) * 0.06
+            if self._audio_level_smooth > 0.01:
+                animations_active = True
+
+        # Adaptive frame rate: slow down when truly idle to save CPU
+        is_truly_idle = (self._state == self.STATE_IDLE and
+                         not animations_active and
+                         not self._is_speaking and
+                         not self._is_processing)
+
+        current_interval = self._pulse_timer.interval()
+        if is_truly_idle:
+            # Idle: 5 FPS (200ms) - minimal CPU usage
+            if current_interval < 200:
+                self._pulse_timer.setInterval(200)
+        elif self._is_speaking:
+            # Speaking: 30 FPS (33ms) - smooth animation
+            if current_interval != 33:
+                self._pulse_timer.setInterval(33)
+        else:
+            # Recording/Transcribing: 20 FPS (50ms)
+            if current_interval != 50:
+                self._pulse_timer.setInterval(50)
 
         self.update()
 
@@ -485,24 +526,26 @@ class FloatingBall(QWidget):
                 # Check if it was a click (not a drag)
                 moved = (event.globalPosition().toPoint() - self._click_pos).manhattanLength()
                 if moved < 10:  # Small movement = click
-                    current_time = time.time()
-                    time_since_last = current_time - self._last_click_time
-
-                    if time_since_last < self._double_click_interval:
-                        # Double-click: open settings directly
-                        self._last_click_time = 0  # Reset to prevent triple-click
-                        self.detailsRequested.emit()
-                    else:
-                        # Single-click: show popup menu
-                        self._last_click_time = current_time
-                        self.show_popup_menu()
+                    # Left-click: Toggle ASR on/off
+                    self.toggleRequested.emit()
             self._drag_position = None
             self._click_pos = None
         elif event.button() == Qt.MiddleButton:
-            if not self._is_locked:
-                self.toggleRequested.emit()
-        elif event.button() == Qt.RightButton:
+            # Middle-click: Lock position
             self._toggle_lock()
+        elif event.button() == Qt.RightButton:
+            # Right-click: Show popup menu (single) / Open settings (double)
+            current_time = time.time()
+            time_since_last = current_time - self._last_click_time
+
+            if time_since_last < self._double_click_interval:
+                # Double-click: open settings directly
+                self._last_click_time = 0  # Reset to prevent triple-click
+                self.detailsRequested.emit()
+            else:
+                # Single-click: show popup menu
+                self._last_click_time = current_time
+                self.show_popup_menu()
         event.accept()
 
     def _toggle_lock(self):

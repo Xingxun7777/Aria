@@ -14,14 +14,48 @@ from ..logging import get_system_logger
 logger = get_system_logger()
 
 # Shared default prompt template - single source of truth
-# Optimized based on Codex+Gemini analysis for Chinese ASR correction
-# NOTE: Domain-specific terms are handled by hotword system (Layer 2), NOT here
-DEFAULT_POLISH_PROMPT = """你是语音转文字润色助手。任务：
+# Based on Codex + Gemini tri-party analysis
+# Key principle: Minimal Intervention Doctrine
+DEFAULT_POLISH_PROMPT = """你是语音转文字清理助手，严格遵循"最小修改"原则。
+
+【专业术语】{hotwords}
+
+【任务层级】按优先级执行：
+1. 热词纠正：识别术语的谐音/拼写变体（如 克劳德→Claude）
+2. 标点整理：疑问句加"？"，长句适当断句，句末加句号
+3. 分段排版：话题转换处用空行分段，提高可读性
+4. 口语清理：删除冗余词（嗯、呃、那个、就是说）和重复表达
+
+【严格禁止】
+✗ 改变核心意思
+✗ 删除语气词（呢/吧/哦/啊/吗）
+✗ 添加原文没有的内容
+✗ 使用 Markdown 格式
+
+【示例】
+输入：嗯帮我打开克劳德然后查一下吉他上有什么新项目就是看看有没有什么好的代码
+输出：帮我打开 Claude，然后查一下 GitHub 上有什么新项目。
+
+看看有没有什么好的代码。
+
+输入：那个就是说你研究一下这个问题呃然后给我一个方案吧
+输出：你研究一下这个问题，然后给我一个方案吧。
+
+输入：用琶音模式生成一段旋律吧
+输出：用琶音模式生成一段旋律吧。
+
+原文：{text}
+
+清理后："""
+
+# Simple prompt without hotwords (fallback)
+SIMPLE_POLISH_PROMPT = """你是语音转文字润色助手。任务：
 
 1. 【修正谐音】修正中文同音字错误
 2. 【禁止翻译】英文保持英文，中文保持中文
 3. 【标点格式】添加合适标点，整理格式使语句通顺
 4. 【保留语气】保留呢、吗、吧等语气词，不要改变句子的疑问/陈述性质
+5. 【禁止格式】禁止添加任何Markdown格式（*、**、#等），只输出纯文本
 
 原文：{text}
 
@@ -36,10 +70,18 @@ class PolishConfig:
     api_key: str = ""
     model: str = "google/gemini-2.5-flash-lite-preview-09-2025"
     timeout: float = 10.0
-    
-    # Prompt template - {text} will be replaced with ASR output
+
+    # Prompt template - supports {text}, {domain_context}, {hotwords}
     # Uses the shared DEFAULT_POLISH_PROMPT constant
     prompt_template: str = DEFAULT_POLISH_PROMPT
+
+    # Domain context and hotwords for intelligent correction
+    domain_context: str = ""
+    hotwords: list = None  # List of hotword strings
+
+    def __post_init__(self):
+        if self.hotwords is None:
+            self.hotwords = []
 
 
 class AIPolisher:
@@ -59,27 +101,61 @@ class AIPolisher:
             self._client = httpx.Client(timeout=self.config.timeout)
         return self._client
     
+    def _build_prompt(self, text: str) -> str:
+        """Build the full prompt with hotwords and domain context."""
+        template = self.config.prompt_template
+
+        # Format hotwords as comma-separated list
+        hotwords_str = ""
+        if self.config.hotwords:
+            max_hotwords = 30
+            if len(self.config.hotwords) > max_hotwords:
+                logger.warning(
+                    f"Hotwords exceed limit: {len(self.config.hotwords)} > {max_hotwords}. "
+                    f"Only first {max_hotwords} will be used in AI prompt."
+                )
+            hotwords_str = ", ".join(self.config.hotwords[:max_hotwords])
+
+        # Build prompt with available placeholders
+        if "{hotwords}" in template:
+            # New simplified template
+            return template.format(
+                text=text,
+                hotwords=hotwords_str or "无特定术语"
+            )
+        elif "{domain_context}" in template:
+            # Legacy template with domain_context
+            domain_context = self.config.domain_context or "通用语音输入"
+            return template.format(
+                text=text,
+                domain_context=domain_context,
+                hotwords=hotwords_str or "无特定术语"
+            )
+        else:
+            # Simple template with only {text}
+            return template.format(text=text)
+
     def polish(self, text: str) -> str:
         """
         Polish the transcribed text using LLM.
-        
+
         Args:
             text: Raw ASR output
-            
+
         Returns:
             Polished text, or original text if polish fails
         """
         if not self.config.enabled:
             return text
-        
+
         if not text or len(text.strip()) < 2:
             return text
-        
+
         try:
             client = self._get_client()
-            
-            # Build request
-            prompt = self.config.prompt_template.format(text=text)
+
+            # Build request with hotwords context
+            prompt = self._build_prompt(text)
             
             headers = {
                 "Content-Type": "application/json",
@@ -165,8 +241,8 @@ class AIPolisher:
         try:
             client = self._get_client()
 
-            # Build request
-            prompt = self.config.prompt_template.format(text=text)
+            # Build request with hotwords context
+            prompt = self._build_prompt(text)
             debug_info["full_prompt"] = prompt
 
             headers = {

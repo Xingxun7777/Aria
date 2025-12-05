@@ -286,6 +286,29 @@ class VoiceTypeApp:
                 self.asr_engine = FunASREngine(asr_config)
                 self.asr_engine.load()
             print(f"FunASR ready!")
+        elif engine_type == "fireredasr":
+            # FireRedASR (SOTA Chinese/English)
+            self._asr_engine_type = "fireredasr"
+            firered_cfg = asr_cfg.get("fireredasr", {})
+            model_type = firered_cfg.get("model_type", "aed")
+            # Check for pre-loaded engine
+            import voicetype
+            preloaded = getattr(voicetype, '_preloaded_asr_engine', None)
+            if preloaded is not None and preloaded.name.startswith("FireRedASR"):
+                print("Using pre-loaded FireRedASR engine")
+                self.asr_engine = preloaded
+            else:
+                print("Loading FireRedASR model (this may take a few seconds)...")
+                from .core.asr.fireredasr_engine import FireRedASREngine, FireRedASRConfig
+                asr_config = FireRedASRConfig(
+                    model_type=model_type,
+                    model_path=firered_cfg.get("model_path", r"G:\AIBOX\FireRedASR\pretrained_models\FireRedASR-AED-L"),
+                    use_gpu=firered_cfg.get("use_gpu", True),
+                    beam_size=firered_cfg.get("beam_size", 2)
+                )
+                self.asr_engine = FireRedASREngine(asr_config)
+                self.asr_engine.load()
+            print(f"FireRedASR ready! ({model_type.upper()})")
         else:
             # Whisper (default)
             print("Loading Whisper model (this may take a few seconds)...")
@@ -309,6 +332,9 @@ class VoiceTypeApp:
             # FunASR: use native hotword support
             self.asr_engine.set_hotwords(self.hotword_manager.config.prompt_words)
             print(f"[HOTWORD] FunASR hotwords: {len(self.hotword_manager.config.prompt_words)} words")
+        elif engine_type == "fireredasr":
+            # FireRedASR: NO native hotword support, rely on Layer 2/3 post-processing
+            print(f"[HOTWORD] FireRedASR: Using post-processing only (no native hotword support)")
         else:
             # Whisper: use initial_prompt
             initial_prompt = self.hotword_manager.build_initial_prompt()

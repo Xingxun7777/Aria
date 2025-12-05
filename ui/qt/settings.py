@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QInputDialog, QMessageBox, QKeySequenceEdit, QSlider,
     QGroupBox, QAbstractItemView
 )
-from PySide6.QtCore import Qt, Signal, QThread, QObject
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
 from PySide6.QtGui import QKeySequence
 from . import styles
 
@@ -386,9 +386,9 @@ class SettingsWindow(QMainWindow):
         layout.addSpacing(20)
 
         btn_layout = QHBoxLayout()
-        btn_test = QPushButton("测试连接")
-        btn_test.clicked.connect(self._test_api_connection)
-        btn_layout.addWidget(btn_test)
+        self._api_test_button = QPushButton("测试连接")
+        self._api_test_button.clicked.connect(self._test_api_connection)
+        btn_layout.addWidget(self._api_test_button)
 
         btn_save = QPushButton("保存 API 设置")
         btn_save.setObjectName("primaryBtn")
@@ -402,6 +402,10 @@ class SettingsWindow(QMainWindow):
 
     def _test_api_connection(self):
         """Test API connection with a simple request (non-blocking)."""
+        # Prevent concurrent tests
+        if hasattr(self, '_api_thread') and self._api_thread is not None and self._api_thread.isRunning():
+            return
+
         api_url = self.api_url.text().strip()
         api_key = self.api_key.text().strip()
         model = self.model.text().strip()
@@ -411,10 +415,9 @@ class SettingsWindow(QMainWindow):
             return
 
         # Disable button during test
-        sender = self.sender()
-        if sender:
-            sender.setEnabled(False)
-            sender.setText("测试中...")
+        if hasattr(self, '_api_test_button'):
+            self._api_test_button.setEnabled(False)
+            self._api_test_button.setText("测试中...")
 
         # Create worker and thread
         self._api_thread = QThread()
@@ -433,12 +436,10 @@ class SettingsWindow(QMainWindow):
 
     def _on_api_test_finished(self, success: bool, message: str, status_code: int):
         """Handle API test result."""
-        # Re-enable button
-        for btn in self.findChildren(QPushButton):
-            if btn.text() == "测试中...":
-                btn.setEnabled(True)
-                btn.setText("测试连接")
-                break
+        # Re-enable button using stored reference
+        if hasattr(self, '_api_test_button'):
+            self._api_test_button.setEnabled(True)
+            self._api_test_button.setText("测试连接")
 
         if success:
             QMessageBox.information(self, "成功", f"{message}\n\n状态码: {status_code}")
@@ -707,7 +708,14 @@ class SettingsWindow(QMainWindow):
                     self, "设置已保存",
                     "设置已保存。\n\n⚠️ Whisper/VAD 设置更改需要重启应用才能生效。"
                 )
-            # Silent save otherwise - no annoying sound
+            else:
+                # Visual feedback: temporarily change button text to confirm save
+                sender = self.sender()
+                if sender and hasattr(sender, 'setText'):
+                    original_text = sender.text()
+                    sender.setText("已保存 ✓")
+                    # Restore original text after 1.5 seconds
+                    QTimer.singleShot(1500, lambda: sender.setText(original_text))
 
             self.settingsSaved.emit(self.config)
         except Exception as e:

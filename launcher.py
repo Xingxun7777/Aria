@@ -122,6 +122,27 @@ try:
             voicetype._preloaded_asr_engine = _preloaded_asr
             log("FunASR pre-loaded successfully")
             print("FunASR model pre-loaded!")
+        elif asr_engine == "fireredasr":
+            log("Pre-loading FireRedASR (before Qt imports)...")
+            print("Pre-loading FireRedASR model (before Qt)...")
+            # Add FireRedASR repo to path
+            fireredasr_path = r"G:\AIBOX\FireRedASR"
+            if os.path.exists(fireredasr_path) and fireredasr_path not in sys.path:
+                sys.path.insert(0, fireredasr_path)
+            from voicetype.core.asr.fireredasr_engine import FireRedASREngine, FireRedASRConfig
+            firered_cfg = config.get("fireredasr", {})
+            pre_config = FireRedASRConfig(
+                model_type=firered_cfg.get("model_type", "aed"),
+                model_path=firered_cfg.get("model_path", r"G:\AIBOX\FireRedASR\pretrained_models\FireRedASR-AED-L"),
+                use_gpu=firered_cfg.get("use_gpu", True),
+                beam_size=firered_cfg.get("beam_size", 2)
+            )
+            _preloaded_asr = FireRedASREngine(pre_config)
+            _preloaded_asr.load()
+            import voicetype
+            voicetype._preloaded_asr_engine = _preloaded_asr
+            log("FireRedASR pre-loaded successfully")
+            print("FireRedASR model pre-loaded!")
     except Exception as e:
         log(f"FunASR pre-load failed: {e}, will fallback in app")
 

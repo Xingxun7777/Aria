@@ -24,9 +24,12 @@ class HotWordConfig:
 
     # Loaded from config file
     enable_initial_prompt: bool = True
-    prompt_words: List[str] = field(default_factory=list)
-    replacements: Dict[str, str] = field(default_factory=dict)
+    hotwords: List[str] = field(default_factory=list)  # Primary: target words user wants
+    replacements: Dict[str, str] = field(default_factory=dict)  # Optional: explicit corrections
     domain_context: str = ""
+
+    # Internal: merged list for ASR/AI (auto-generated)
+    prompt_words: List[str] = field(default_factory=list)
 
     # Layer 3: Polish mode and configs
     polish_mode: str = "fast"  # "fast" = local Qwen, "quality" = Gemini API
@@ -44,9 +47,18 @@ class HotWordConfig:
                 data = json.load(f)
 
             self.enable_initial_prompt = data.get("enable_initial_prompt", True)
-            self.prompt_words = data.get("prompt_words", [])
-            self.replacements = data.get("replacements", {})
             self.domain_context = data.get("domain_context", "")
+
+            # Primary source: simple hotwords array (user only fills target words)
+            self.hotwords = data.get("hotwords", [])
+
+            # Optional: explicit replacements for edge cases (backward compatible)
+            self.replacements = data.get("replacements", {})
+
+            # Build prompt_words: merge hotwords + replacements values + legacy prompt_words
+            legacy_prompt_words = data.get("prompt_words", [])
+            replacement_values = list(set(self.replacements.values()))
+            self.prompt_words = list(set(self.hotwords + replacement_values + legacy_prompt_words))
 
             # Load polish mode
             self.polish_mode = data.get("polish_mode", "fast")
@@ -82,7 +94,7 @@ class HotWordConfig:
                     n_ctx=local_polish_data.get("n_ctx", 512)
                 )
 
-            logger.info(f"Loaded {len(self.prompt_words)} prompt words, {len(self.replacements)} replacements, initial_prompt={self.enable_initial_prompt}, polish_mode={self.polish_mode}")
+            logger.info(f"Loaded {len(self.hotwords)} hotwords, {len(self.replacements)} replacements, polish_mode={self.polish_mode}")
 
         except FileNotFoundError:
             logger.warning(f"HotWord config not found: {path}")
@@ -97,10 +109,11 @@ class HotWordConfig:
 
         data = {
             "enable_initial_prompt": self.enable_initial_prompt,
-            "prompt_words": self.prompt_words,
-            "replacements": self.replacements,
+            "hotwords": self.hotwords,  # Primary: user-defined target words
+            "replacements": self.replacements,  # Optional: explicit corrections
             "domain_context": self.domain_context,
             "polish_mode": self.polish_mode,
+            # Note: prompt_words is auto-generated from hotwords, not saved
         }
 
         # Save quality mode (API) polish config if present
@@ -206,6 +219,10 @@ class HotWordManager:
         """Get AI polisher instance for quality mode (lazy init)."""
         if self.config.polish_config and self.config.polish_config.enabled:
             if self._polisher is None:
+                # Inject hotwords and domain_context into polish config
+                # Use hotwords (primary) merged with prompt_words (includes legacy)
+                self.config.polish_config.hotwords = self.config.prompt_words
+                self.config.polish_config.domain_context = self.config.domain_context
                 self._polisher = AIPolisher(self.config.polish_config)
             return self._polisher
         return None
