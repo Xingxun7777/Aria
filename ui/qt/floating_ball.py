@@ -1,14 +1,14 @@
 # floating_ball.py
 # Floating ball widget - main UI for VoiceType
-# Left-click: toggle ASR, Middle-click: lock position, Right-click: show popup menu
+# Left-click: toggle ASR, Right-click: show popup menu (settings, lock, mode)
+# Middle-click: lock position (legacy shortcut)
 
 import sys
 import ctypes
 import math
-import time
-from PySide6.QtCore import Qt, Signal, QPoint, QTimer, Slot, QSize, QPointF
-from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication, QGraphicsDropShadowEffect
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient, QCursor
+from PySide6.QtCore import Qt, Signal, QPoint, QTimer, Slot, QPointF
+from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient
 
 from .popup_menu import PopupMenu
 
@@ -24,14 +24,14 @@ class FloatingBall(QWidget):
 
     Interactions:
     - Left-click: Toggle ASR recording on/off
-    - Middle-click: Lock position + enable transparency
-    - Right-click: Show popup menu (single) / Open settings (double)
+    - Right-click: Show popup menu (enable toggle, polish mode, settings, lock)
+    - Middle-click: Lock position (legacy shortcut)
     - Drag: Move position (when unlocked)
     """
 
     # Signals
     toggleRequested = Signal()      # Left-click: toggle ASR
-    detailsRequested = Signal()     # Right double-click: show settings
+    detailsRequested = Signal()     # From popup menu: open settings
     menuRequested = Signal()        # Right-click: show popup menu
     lockToggled = Signal(bool)      # Middle-click: lock state changed
     enableToggled = Signal(bool)    # From popup menu: enable/disable
@@ -49,16 +49,11 @@ class FloatingBall(QWidget):
         self.ball_size = size
         self._state = self.STATE_IDLE
         self._is_locked = False
-        self._is_transparent = False
         self._drag_position = None
         self._click_pos = None  # For click vs drag detection
         self._asr_enabled = False
         self._is_speaking = False  # True when voice activity detected
         self._is_processing = False  # True when waiting for ASR/polish to complete
-
-        # Double-click detection
-        self._last_click_time = 0
-        self._double_click_interval = 0.3  # 300ms for double-click
 
         # Popup menu
         self._popup_menu = None
@@ -152,10 +147,7 @@ class FloatingBall(QWidget):
         self._move_to_default_position()
 
     def _init_ui(self):
-        """Initialize the ball appearance."""
-        # Note: QGraphicsDropShadowEffect causes caching issues with dynamic repaints
-        # The ball doesn't update visually when state changes because the effect caches the pixmap
-        # Disabled for now to ensure state changes are visible
+        """Initialize the ball appearance (custom painting in paintEvent)."""
         pass
 
     def _init_popup_menu(self):
@@ -164,6 +156,7 @@ class FloatingBall(QWidget):
         self._popup_menu.enableToggled.connect(self._on_menu_enable_toggled)
         self._popup_menu.modeChanged.connect(self._on_menu_mode_changed)
         self._popup_menu.settingsRequested.connect(self._on_menu_settings)
+        self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
 
     def _on_menu_enable_toggled(self, enabled):
         """Handle enable toggle from popup menu."""
@@ -177,9 +170,31 @@ class FloatingBall(QWidget):
         """Handle settings request from popup menu."""
         self.detailsRequested.emit()
 
+    def _on_menu_lock_toggled(self, locked):
+        """Handle lock toggle from popup menu."""
+        self._is_locked = locked
+
+        # Update visual state
+        if locked:
+            self._window_scale_target = self._SCALE_IDLE
+            self._icon_scale_target = 0.0
+        else:
+            # Restore based on current state
+            if self._state == self.STATE_RECORDING or self._state == self.STATE_TRANSCRIBING or self._is_processing:
+                self._window_scale_target = self._SCALE_ACTIVE
+                self._icon_scale_target = 1.0
+            else:
+                self._window_scale_target = self._SCALE_IDLE
+                self._icon_scale_target = 0.0
+
+        self.lockToggled.emit(locked)
+        self.update()
+
     def show_popup_menu(self):
         """Show the popup menu at the ball's position."""
         if self._popup_menu:
+            # Sync current state before showing
+            self._popup_menu.setLocked(self._is_locked)
             # Position above the ball
             ball_center = self.mapToGlobal(self.rect().center())
             self._popup_menu.showAt(ball_center)
@@ -534,28 +549,13 @@ class FloatingBall(QWidget):
             # Middle-click: Lock position
             self._toggle_lock()
         elif event.button() == Qt.RightButton:
-            # Right-click: Show popup menu (single) / Open settings (double)
-            current_time = time.time()
-            time_since_last = current_time - self._last_click_time
-
-            if time_since_last < self._double_click_interval:
-                # Double-click: open settings directly
-                self._last_click_time = 0  # Reset to prevent triple-click
-                self.detailsRequested.emit()
-            else:
-                # Single-click: show popup menu
-                self._last_click_time = current_time
-                self.show_popup_menu()
+            # Right-click: Show popup menu immediately (no delay)
+            self.show_popup_menu()
         event.accept()
 
     def _toggle_lock(self):
-        """Toggle lock state and visual transparency (no click-through)."""
+        """Toggle lock state (visual dimming, ignores drag/left/middle clicks)."""
         self._is_locked = not self._is_locked
-        self._is_transparent = self._is_locked
-
-        # Note: We do NOT enable WS_EX_TRANSPARENT anymore
-        # This allows right-click to still work for unlocking
-        # The ball just becomes visually dimmed and ignores drag/left/middle clicks
 
         # When locked, shrink to idle size; when unlocked, restore based on state
         if self._is_locked:
@@ -590,7 +590,7 @@ class FloatingBall(QWidget):
             user32 = ctypes.windll.user32
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
 
-            if self._is_transparent:
+            if self._is_locked:
                 # Enable click-through
                 new_style = style | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
             else:
@@ -743,7 +743,6 @@ class FloatingBall(QWidget):
         """Unlock the ball (called externally to restore interactivity)."""
         if self._is_locked:
             self._is_locked = False
-            self._is_transparent = False
             self._update_click_through()
             self.lockToggled.emit(False)
             self.update()

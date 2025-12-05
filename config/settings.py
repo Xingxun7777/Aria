@@ -6,6 +6,7 @@ Handles loading, saving, and accessing configuration settings.
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
@@ -84,7 +85,7 @@ class Settings:
     first_run: bool = True
 
     def save(self, path: Optional[Path] = None) -> None:
-        """Save settings to JSON file."""
+        """Save settings to JSON file using atomic write."""
         path = path or CONFIG_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -99,8 +100,22 @@ class Settings:
             'ui': asdict(self.ui),
         }
 
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # Atomic write: write to temp file, then rename
+        fd, tmp_path = tempfile.mkstemp(
+            suffix='.tmp',
+            prefix='config_',
+            dir=path.parent
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            # Atomic replace (works on Windows and Unix)
+            os.replace(tmp_path, path)
+        except Exception:
+            # Clean up temp file on failure
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> 'Settings':

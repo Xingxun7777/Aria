@@ -119,12 +119,14 @@ class PopupMenu(QWidget):
     enableToggled = Signal(bool)
     modeChanged = Signal(str)  # "quality" or "fast"
     settingsRequested = Signal()
+    lockToggled = Signal(bool)  # Lock position toggle
     closed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._enabled = True
         self._current_mode = "fast"  # Default matches config
+        self._is_locked = False
 
         self._init_window()
         self._init_ui()
@@ -241,6 +243,30 @@ class PopupMenu(QWidget):
         self.settings_btn.clicked.connect(self._on_settings_clicked)
         container_layout.addWidget(self.settings_btn)
 
+        # --- Separator ---
+        separator3 = QFrame()
+        separator3.setFixedHeight(1)
+        separator3.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        container_layout.addWidget(separator3)
+
+        # --- Lock Position Row ---
+        lock_row = QHBoxLayout()
+        lock_label = QLabel("🔒 锁定位置")
+        lock_label.setStyleSheet("""
+            QLabel {
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 13px;
+            }
+        """)
+        self.lock_toggle = ToggleSwitch()
+        self.lock_toggle.setChecked(False)
+        self.lock_toggle.toggled.connect(self._on_lock_toggled)
+
+        lock_row.addWidget(lock_label)
+        lock_row.addStretch()
+        lock_row.addWidget(self.lock_toggle)
+        container_layout.addLayout(lock_row)
+
         layout.addWidget(self.container)
 
     def _apply_shadow(self):
@@ -268,6 +294,11 @@ class PopupMenu(QWidget):
         self.close()
         self.settingsRequested.emit()
 
+    def _on_lock_toggled(self, locked):
+        """Handle lock toggle."""
+        self._is_locked = locked
+        self.lockToggled.emit(locked)
+
     def setEnabled(self, enabled):
         """Set the enable state."""
         self._enabled = enabled
@@ -280,6 +311,11 @@ class PopupMenu(QWidget):
             if btn.property("mode_id") == mode:
                 btn.setChecked(True)
                 break
+
+    def setLocked(self, locked):
+        """Set the lock state."""
+        self._is_locked = locked
+        self.lock_toggle.setChecked(locked)
 
     def showAt(self, global_pos: QPoint):
         """Show popup at specified position."""
