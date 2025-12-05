@@ -6,9 +6,9 @@
 import sys
 import ctypes
 import math
-from PySide6.QtCore import Qt, Signal, QPoint, QTimer, Slot, QPointF
+from PySide6.QtCore import Qt, Signal, QPoint, QTimer, Slot
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient
 
 from .popup_menu import PopupMenu
 
@@ -224,32 +224,41 @@ class FloatingBall(QWidget):
 
         radius = self.ball_size // 2
 
-        # Ball body is always dark gray (glass effect)
+        # Glass-morphism ball body
         if self._is_locked:
-            # Locked: lighter and more transparent
-            base_color = QColor(60, 60, 65, 100)  # Semi-transparent gray
-            glow_intensity = 40
+            # Locked: more transparent, subtle
+            base_alpha = 140
+            highlight_alpha = 30
         elif self._state == self.STATE_TRANSCRIBING:
-            base_color = QColor(50, 50, 60)  # Slightly blue tint
-            glow_intensity = 90
+            base_alpha = 200
+            highlight_alpha = 50
         else:
-            base_color = QColor(40, 40, 45)  # Dark glass
-            glow_intensity = 80
+            base_alpha = 180
+            highlight_alpha = 45
 
-        # Draw glow gradient for ball body
-        gradient = QRadialGradient(center, radius * 1.2)
-        gradient.setColorAt(0, base_color)
-        gradient.setColorAt(0.7, base_color)
-        gradient.setColorAt(1, QColor(0, 0, 0, 0))
+        # Main ball gradient (dark glass with soft edge)
+        gradient = QRadialGradient(center, radius)
+        gradient.setColorAt(0, QColor(45, 45, 50, base_alpha))
+        gradient.setColorAt(0.85, QColor(35, 35, 40, base_alpha))
+        gradient.setColorAt(1.0, QColor(30, 30, 35, int(base_alpha * 0.7)))
 
         # Draw ball body
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(gradient))
         painter.drawEllipse(center, radius, radius)
 
-        # Draw border - rainbow when recording, subtle white otherwise
+        # Inner highlight (top-left, simulating light source)
+        highlight_center = QPoint(center.x() - radius // 3, center.y() - radius // 3)
+        highlight = QRadialGradient(highlight_center, radius * 0.6)
+        highlight.setColorAt(0, QColor(255, 255, 255, highlight_alpha))
+        highlight.setColorAt(0.5, QColor(255, 255, 255, highlight_alpha // 3))
+        highlight.setColorAt(1, QColor(255, 255, 255, 0))
+        painter.setBrush(QBrush(highlight))
+        painter.drawEllipse(center, radius, radius)
+
+        # Draw border - pulsing cyan when recording, subtle white otherwise
         if self._state == self.STATE_RECORDING:
-            self._draw_rainbow_border(painter, center, radius)
+            self._draw_pulse_border(painter, center, radius)
         elif self._state == self.STATE_TRANSCRIBING:
             # Subtle blue border when transcribing
             painter.setPen(QPen(QColor(100, 150, 255, 120), 2))
@@ -269,59 +278,29 @@ class FloatingBall(QWidget):
         # Draw icon/indicator
         self._draw_indicator(painter, center, radius)
 
-    def _draw_rainbow_border(self, painter: QPainter, center: QPoint, radius: int):
-        """Draw rainbow border - 3-segment style, faster+brighter when speaking."""
+    def _draw_pulse_border(self, painter: QPainter, center: QPoint, radius: int):
+        """Draw single-color pulsing border - professional, minimal design."""
         import math
 
-        angle = self._rainbow_angle
-        gradient = QConicalGradient(QPointF(center), angle)
-
-        # Breathing effect for waiting state
+        # Smooth breathing effect
         breath = 0.5 + 0.5 * math.sin(self._pulse_phase * math.pi * 2)
 
-        # Segment parameters
-        seg_len = 0.22   # Rainbow segment length (~22% each)
-        gap_len = 0.111  # Gap length (~11% each), total = 3*(22+11) = 99%
-
-        # Rainbow colors - 2 colors per segment for smooth gradient
-        rainbow = [
-            (255, 120, 120),  # Soft red
-            (255, 200, 100),  # Orange-yellow
-            (180, 255, 150),  # Yellow-green
-            (100, 220, 200),  # Green-cyan
-            (120, 150, 255),  # Blue
-            (200, 130, 255),  # Purple-pink
-        ]
+        # Base color: Soft cyan/blue - professional and calming
+        base_color = (100, 180, 220)  # Soft cyan
 
         if self._is_speaking:
-            # Speaking: same 3-segment but more opaque and vivid
-            base_alpha = 220
-            border_width = 3.5
+            # Speaking: Brighter, more opaque
+            alpha = 200
+            border_width = 3.0
         else:
-            # Waiting/Recording: clearly visible rainbow to show active state
-            base_alpha = int(100 + 60 * breath)  # 100-160, clearly visible
+            # Waiting/Recording: Gentle pulse
+            alpha = int(80 + 80 * breath)  # 80-160
             border_width = 2.5
 
-        # Draw 3 segments with smooth gradient fade in/out
-        for seg in range(3):
-            seg_start = seg * (seg_len + gap_len)
-            c1 = rainbow[seg * 2]
-            c2 = rainbow[seg * 2 + 1]
+        # Simple solid color border with pulsing alpha
+        color = QColor(base_color[0], base_color[1], base_color[2], alpha)
 
-            # Smooth fade in (longer gradient)
-            gradient.setColorAt(seg_start, QColor(c1[0], c1[1], c1[2], 0))
-            gradient.setColorAt(seg_start + 0.04, QColor(c1[0], c1[1], c1[2], base_alpha // 2))
-            gradient.setColorAt(seg_start + 0.07, QColor(c1[0], c1[1], c1[2], base_alpha))
-
-            # Middle gradient between two colors
-            gradient.setColorAt(seg_start + seg_len * 0.5, QColor(c2[0], c2[1], c2[2], base_alpha))
-
-            # Smooth fade out (longer gradient)
-            gradient.setColorAt(seg_start + seg_len - 0.07, QColor(c2[0], c2[1], c2[2], base_alpha))
-            gradient.setColorAt(seg_start + seg_len - 0.04, QColor(c2[0], c2[1], c2[2], base_alpha // 2))
-            gradient.setColorAt(seg_start + seg_len, QColor(c2[0], c2[1], c2[2], 0))
-
-        pen = QPen(QBrush(gradient), border_width)
+        pen = QPen(color, border_width)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
