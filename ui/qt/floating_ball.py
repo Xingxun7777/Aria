@@ -8,7 +8,7 @@ import ctypes
 import math
 from PySide6.QtCore import Qt, Signal, QPoint, QTimer, Slot
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient, QPointF
 
 from .popup_menu import PopupMenu
 
@@ -258,7 +258,7 @@ class FloatingBall(QWidget):
 
         # Draw border - pulsing cyan when recording, subtle white otherwise
         if self._state == self.STATE_RECORDING:
-            self._draw_pulse_border(painter, center, radius)
+            self._draw_rainbow_border(painter, center, radius)
         elif self._state == self.STATE_TRANSCRIBING:
             # Subtle blue border when transcribing
             painter.setPen(QPen(QColor(100, 150, 255, 120), 2))
@@ -278,29 +278,59 @@ class FloatingBall(QWidget):
         # Draw icon/indicator
         self._draw_indicator(painter, center, radius)
 
-    def _draw_pulse_border(self, painter: QPainter, center: QPoint, radius: int):
-        """Draw single-color pulsing border - professional, minimal design."""
+    def _draw_rainbow_border(self, painter: QPainter, center: QPoint, radius: int):
+        """Draw rainbow border - 3-segment style, faster+brighter when speaking."""
         import math
 
-        # Smooth breathing effect
+        angle = self._rainbow_angle
+        gradient = QConicalGradient(QPointF(center), angle)
+
+        # Breathing effect for waiting state
         breath = 0.5 + 0.5 * math.sin(self._pulse_phase * math.pi * 2)
 
-        # Base color: Soft cyan/blue - professional and calming
-        base_color = (100, 180, 220)  # Soft cyan
+        # Segment parameters
+        seg_len = 0.22   # Rainbow segment length (~22% each)
+        gap_len = 0.111  # Gap length (~11% each), total = 3*(22+11) = 99%
+
+        # Rainbow colors - 2 colors per segment for smooth gradient
+        rainbow = [
+            (255, 120, 120),  # Soft red
+            (255, 200, 100),  # Orange-yellow
+            (180, 255, 150),  # Yellow-green
+            (100, 220, 200),  # Green-cyan
+            (120, 150, 255),  # Blue
+            (200, 130, 255),  # Purple-pink
+        ]
 
         if self._is_speaking:
-            # Speaking: Brighter, more opaque
-            alpha = 200
-            border_width = 3.0
+            # Speaking: same 3-segment but more opaque and vivid
+            base_alpha = 220
+            border_width = 3.5
         else:
-            # Waiting/Recording: Gentle pulse
-            alpha = int(80 + 80 * breath)  # 80-160
+            # Waiting/Recording: clearly visible rainbow to show active state
+            base_alpha = int(100 + 60 * breath)  # 100-160, clearly visible
             border_width = 2.5
 
-        # Simple solid color border with pulsing alpha
-        color = QColor(base_color[0], base_color[1], base_color[2], alpha)
+        # Draw 3 segments with smooth gradient fade in/out
+        for seg in range(3):
+            seg_start = seg * (seg_len + gap_len)
+            c1 = rainbow[seg * 2]
+            c2 = rainbow[seg * 2 + 1]
 
-        pen = QPen(color, border_width)
+            # Smooth fade in (longer gradient)
+            gradient.setColorAt(seg_start, QColor(c1[0], c1[1], c1[2], 0))
+            gradient.setColorAt(seg_start + 0.04, QColor(c1[0], c1[1], c1[2], base_alpha // 2))
+            gradient.setColorAt(seg_start + 0.07, QColor(c1[0], c1[1], c1[2], base_alpha))
+
+            # Middle gradient between two colors
+            gradient.setColorAt(seg_start + seg_len * 0.5, QColor(c2[0], c2[1], c2[2], base_alpha))
+
+            # Smooth fade out (longer gradient)
+            gradient.setColorAt(seg_start + seg_len - 0.07, QColor(c2[0], c2[1], c2[2], base_alpha))
+            gradient.setColorAt(seg_start + seg_len - 0.04, QColor(c2[0], c2[1], c2[2], base_alpha // 2))
+            gradient.setColorAt(seg_start + seg_len, QColor(c2[0], c2[1], c2[2], 0))
+
+        pen = QPen(QBrush(gradient), border_width)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
