@@ -8,6 +8,7 @@ import httpx
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any
+from urllib.parse import urlparse
 
 from ..logging import get_system_logger
 
@@ -82,6 +83,30 @@ class PolishConfig:
     def __post_init__(self):
         if self.hotwords is None:
             self.hotwords = []
+        # Validate api_url format
+        self._validate_api_url()
+
+    def _validate_api_url(self) -> bool:
+        """Validate api_url is a proper HTTP(S) URL."""
+        if not self.api_url:
+            return False
+        try:
+            parsed = urlparse(self.api_url)
+            if parsed.scheme not in ('http', 'https'):
+                from ..logging import get_system_logger
+                get_system_logger().warning(
+                    f"Invalid api_url scheme: {parsed.scheme!r}. Expected http or https."
+                )
+                return False
+            if not parsed.netloc:
+                from ..logging import get_system_logger
+                get_system_logger().warning(
+                    f"Invalid api_url: missing host in {self.api_url!r}"
+                )
+                return False
+            return True
+        except Exception:
+            return False
 
 
 class AIPolisher:

@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
+from urllib.parse import urlparse
 
 # Default paths
 APP_NAME = "VoiceType"
@@ -51,6 +52,26 @@ class LLMConfig:
     model: str = "qwen2.5:1.5b"
     base_url: str = "http://localhost:11434"
     timeout: int = 30
+
+    def __post_init__(self):
+        """Validate configuration values."""
+        self._validate_base_url()
+
+    def _validate_base_url(self) -> bool:
+        """Validate base_url is a proper HTTP(S) URL."""
+        if not self.base_url:
+            return False
+        try:
+            parsed = urlparse(self.base_url)
+            if parsed.scheme not in ('http', 'https'):
+                print(f"[WARN] LLMConfig: Invalid base_url scheme '{parsed.scheme}'. Expected http or https.")
+                return False
+            if not parsed.netloc:
+                print(f"[WARN] LLMConfig: Invalid base_url - missing host in '{self.base_url}'")
+                return False
+            return True
+        except Exception:
+            return False
 
 
 @dataclass
