@@ -17,37 +17,23 @@ logger = get_system_logger()
 # Shared default prompt template - single source of truth
 # Based on Codex + Gemini tri-party analysis
 # Key principle: Minimal Intervention Doctrine
-DEFAULT_POLISH_PROMPT = """你是语音转文字清理助手，严格遵循"最小修改"原则。
+DEFAULT_POLISH_PROMPT = """你是语音转文字助手，遵循"最小修改"原则。
 
+【使用场景】{domain_context}
 【专业术语】{hotwords}
 
-【任务层级】按优先级执行：
-1. 热词纠正：识别术语的谐音/拼写变体（如 克劳德→Claude）
-2. 标点整理：疑问句加"？"，长句适当断句，句末加句号
-3. 分段排版：话题转换处用空行分段，提高可读性
-4. 口语清理：删除冗余词（嗯、呃、那个、就是说）和重复表达
+【任务】
+1. 场景纠错：根据使用场景理解上下文，修正同音字错误
+   示例：医疗场景"心机"→"心肌"，编程场景"吉他"→"GitHub"
+2. 热词识别：纠正专业术语的谐音（如 克劳德→Claude）
+3. 标点分段：疑问句加"？"，长句断句，句末加句号，话题转换处空行分段
+4. 口语清理：删除冗余的口语词和重复表达
 
-【严格禁止】
-✗ 改变核心意思
-✗ 删除语气词（呢/吧/哦/啊/吗）
-✗ 添加原文没有的内容
-✗ 使用 Markdown 格式
-
-【示例】
-输入：嗯帮我打开克劳德然后查一下吉他上有什么新项目就是看看有没有什么好的代码
-输出：帮我打开 Claude，然后查一下 GitHub 上有什么新项目。
-
-看看有没有什么好的代码。
-
-输入：那个就是说你研究一下这个问题呃然后给我一个方案吧
-输出：你研究一下这个问题，然后给我一个方案吧。
-
-输入：用琶音模式生成一段旋律吧
-输出：用琶音模式生成一段旋律吧。
+【禁止】改变原意、添加内容、使用 Markdown
 
 原文：{text}
 
-清理后："""
+输出："""
 
 # Simple prompt without hotwords (fallback)
 SIMPLE_POLISH_PROMPT = """你是语音转文字润色助手。任务：
@@ -130,35 +116,22 @@ class AIPolisher:
         """Build the full prompt with hotwords and domain context."""
         template = self.config.prompt_template
 
-        # Format hotwords as comma-separated list
-        hotwords_str = ""
-        if self.config.hotwords:
-            max_hotwords = 30
-            if len(self.config.hotwords) > max_hotwords:
-                logger.warning(
-                    f"Hotwords exceed limit: {len(self.config.hotwords)} > {max_hotwords}. "
-                    f"Only first {max_hotwords} will be used in AI prompt."
-                )
-            hotwords_str = ", ".join(self.config.hotwords[:max_hotwords])
+        # Format hotwords (limit to 30 for prompt length)
+        hotwords_str = ", ".join(self.config.hotwords[:30]) if self.config.hotwords else "无"
 
-        # Build prompt with available placeholders
-        if "{hotwords}" in template:
-            # New simplified template
+        # Format domain context
+        domain_context = self.config.domain_context or "通用"
+
+        # Replace placeholders (format() ignores extra keys, but catch unknown placeholders)
+        try:
             return template.format(
                 text=text,
-                hotwords=hotwords_str or "无特定术语"
+                hotwords=hotwords_str,
+                domain_context=domain_context
             )
-        elif "{domain_context}" in template:
-            # Legacy template with domain_context
-            domain_context = self.config.domain_context or "通用语音输入"
-            return template.format(
-                text=text,
-                domain_context=domain_context,
-                hotwords=hotwords_str or "无特定术语"
-            )
-        else:
-            # Simple template with only {text}
-            return template.format(text=text)
+        except KeyError as e:
+            logger.warning(f"Template has unknown placeholder {e}, using simple format")
+            return f"润色以下文字：\n{text}"
 
     def polish(self, text: str) -> str:
         """
