@@ -56,18 +56,28 @@ def main():
     tray.setIcon(icon)
     tray_menu = QMenu()
 
-    action_unlock = QAction("Unlock Ball", None)
+    action_unlock = QAction("解锁悬浮球", None)
     action_unlock.triggered.connect(ball.unlock)
     tray_menu.addAction(action_unlock)
 
-    action_mute = QAction("Mute Sound", None)
+    action_mute = QAction("静音", None)
     action_mute.setCheckable(True)
     action_mute.setChecked(False)
     tray_menu.addAction(action_mute)
 
+    action_auto_send = QAction("自动发送", None)
+    action_auto_send.setCheckable(True)
+    action_auto_send.setChecked(False)
+    tray_menu.addAction(action_auto_send)
+
     tray_menu.addSeparator()
 
-    action_quit = QAction("Quit", None)
+    action_settings = QAction("高级设置", None)
+    tray_menu.addAction(action_settings)
+
+    tray_menu.addSeparator()
+
+    action_quit = QAction("退出", None)
     tray_menu.addAction(action_quit)
 
     tray.setContextMenu(tray_menu)
@@ -100,6 +110,7 @@ def main():
     bridge.insertComplete.connect(ball.on_insert_complete)
     bridge.voiceActivity.connect(ball.on_voice_activity)
     bridge.levelChanged.connect(ball.on_level_changed)  # Audio level for waveform
+    bridge.commandExecuted.connect(ball.on_command_executed)  # Voice command feedback
     bridge.error.connect(lambda msg: QMessageBox.warning(None, "VoiceType Error", msg))
 
     # Sound effects disabled - only hotkey press sounds in app.py
@@ -150,6 +161,13 @@ def main():
         get_sound_manager().enabled = not muted
     action_mute.triggered.connect(on_mute_toggled)
 
+    # Connect auto-send action to backend
+    def on_auto_send_toggled():
+        enabled = action_auto_send.isChecked()
+        if hasattr(backend, 'set_auto_send'):
+            backend.set_auto_send(enabled)
+    action_auto_send.triggered.connect(on_auto_send_toggled)
+
     # Settings window: show and bring to front
     def show_settings():
         settings.show()
@@ -157,6 +175,7 @@ def main():
         settings.activateWindow()
 
     ball.detailsRequested.connect(show_settings)
+    action_settings.triggered.connect(show_settings)  # Tray menu -> settings
 
     # Handle enable toggle from popup menu
     def on_enable_toggled(enabled):

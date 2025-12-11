@@ -88,6 +88,10 @@ class FloatingBall(QWidget):
         self._shrink_fallback_timer.setSingleShot(True)
         self._shrink_fallback_timer.timeout.connect(self._force_shrink)
 
+        # Command execution visual feedback
+        self._command_flash_active = False
+        self._command_flash_color = QColor(100, 180, 255, 200)  # Default: blue
+
         # Debug log file for tracking state changes (controlled by config)
         self._debug_log_path = None
         self._debug_logging_enabled = False
@@ -734,6 +738,30 @@ class FloatingBall(QWidget):
         self._window_scale_target = self._SCALE_IDLE
         self._log(f">>> SHRINK to {self._SCALE_IDLE}")
 
+        self.update()
+
+    @Slot(str, bool)
+    def on_command_executed(self, command_id: str, success: bool):
+        """Handle voice command execution - flash blue briefly."""
+        self._log(f"COMMAND_EXECUTED: {command_id}, success={success}")
+
+        # Brief visual feedback: flash command color
+        if success:
+            # Blue flash for success
+            self._command_flash_color = QColor(100, 180, 255, 200)
+        else:
+            # Red flash for failure
+            self._command_flash_color = QColor(255, 100, 100, 200)
+
+        self._command_flash_active = True
+        self.update()
+
+        # Clear flash after 300ms
+        QTimer.singleShot(300, self._clear_command_flash)
+
+    def _clear_command_flash(self):
+        """Clear command execution flash."""
+        self._command_flash_active = False
         self.update()
 
     def _force_shrink(self):

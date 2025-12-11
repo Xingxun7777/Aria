@@ -37,9 +37,53 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 
-# Virtual key codes
+# Virtual key codes - Basic
 VK_CONTROL = 0x11
 VK_V = 0x56
+
+# Virtual key codes - Extended for commands
+VK_CODES = {
+    'enter': 0x0D,
+    'return': 0x0D,
+    'backspace': 0x08,
+    'delete': 0x2E,
+    'tab': 0x09,
+    'escape': 0x1B,
+    'space': 0x20,
+    'up': 0x26,
+    'down': 0x28,
+    'left': 0x25,
+    'right': 0x27,
+    'home': 0x24,
+    'end': 0x23,
+    'pageup': 0x21,
+    'pagedown': 0x22,
+    # Letter keys (A-Z)
+    'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45,
+    'f': 0x46, 'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A,
+    'k': 0x4B, 'l': 0x4C, 'm': 0x4D, 'n': 0x4E, 'o': 0x4F,
+    'p': 0x50, 'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
+    'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58, 'y': 0x59,
+    'z': 0x5A,
+    # Number keys (0-9)
+    '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34,
+    '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
+    # Function keys
+    'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
+    'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
+    'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+}
+
+# Modifier key codes
+VK_MODIFIERS = {
+    'ctrl': 0x11,
+    'control': 0x11,
+    'shift': 0x10,
+    'alt': 0x12,
+    'win': 0x5B,
+    'lwin': 0x5B,
+    'rwin': 0x5C,
+}
 
 # ULONG_PTR is 8 bytes on 64-bit Windows, 4 bytes on 32-bit
 ULONG_PTR = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
@@ -260,6 +304,88 @@ class OutputInjector:
             logger.debug("Clipboard restored")
 
         logger.info("Text inserted successfully")
+        return True
+
+    def send_key(self, key: str, modifiers: list = None) -> bool:
+        """
+        Send a single keystroke with optional modifiers.
+
+        Args:
+            key: Key name (e.g., 'enter', 'backspace', 'a', 'z')
+            modifiers: List of modifier keys (e.g., ['ctrl'], ['ctrl', 'shift'])
+
+        Returns:
+            True if successful, False otherwise
+
+        Example:
+            send_key('enter')           # Press Enter
+            send_key('z', ['ctrl'])     # Press Ctrl+Z
+            send_key('v', ['ctrl'])     # Press Ctrl+V
+        """
+        modifiers = modifiers or []
+
+        # Validate key
+        key_lower = key.lower()
+        if key_lower not in VK_CODES:
+            logger.error(f"Unknown key: {key}")
+            return False
+
+        vk_key = VK_CODES[key_lower]
+
+        # Validate and collect modifiers
+        modifier_vks = []
+        for mod in modifiers:
+            mod_lower = mod.lower()
+            if mod_lower not in VK_MODIFIERS:
+                logger.error(f"Unknown modifier: {mod}")
+                return False
+            modifier_vks.append(VK_MODIFIERS[mod_lower])
+
+        # Calculate total inputs needed: (modifier_down + key_down + key_up + modifier_up)
+        num_modifiers = len(modifier_vks)
+        total_inputs = 2 + (num_modifiers * 2)  # key down/up + modifier down/up pairs
+
+        inputs = (INPUT * total_inputs)()
+
+        # Initialize all inputs
+        for i in range(total_inputs):
+            inputs[i].type = INPUT_KEYBOARD
+            inputs[i].union.ki.wScan = 0
+            inputs[i].union.ki.time = 0
+            inputs[i].union.ki.dwExtraInfo = 0
+
+        idx = 0
+
+        # Press modifiers down
+        for vk_mod in modifier_vks:
+            inputs[idx].union.ki.wVk = vk_mod
+            inputs[idx].union.ki.dwFlags = 0
+            idx += 1
+
+        # Press key down
+        inputs[idx].union.ki.wVk = vk_key
+        inputs[idx].union.ki.dwFlags = 0
+        idx += 1
+
+        # Release key up
+        inputs[idx].union.ki.wVk = vk_key
+        inputs[idx].union.ki.dwFlags = KEYEVENTF_KEYUP
+        idx += 1
+
+        # Release modifiers up (reverse order)
+        for vk_mod in reversed(modifier_vks):
+            inputs[idx].union.ki.wVk = vk_mod
+            inputs[idx].union.ki.dwFlags = KEYEVENTF_KEYUP
+            idx += 1
+
+        # Send all inputs
+        result = user32.SendInput(total_inputs, inputs, ctypes.sizeof(INPUT))
+        if result != total_inputs:
+            logger.warning(f"SendInput returned {result}/{total_inputs}, error={ctypes.get_last_error()}")
+            return False
+
+        mod_str = '+'.join(modifiers) + '+' if modifiers else ''
+        logger.info(f"Key sent: {mod_str}{key}")
         return True
 
 

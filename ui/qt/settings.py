@@ -3,6 +3,7 @@
 # Based on F3 spec section 4.5
 
 import json
+import re
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -122,7 +123,7 @@ class SettingsWindow(QMainWindow):
         # Sidebar
         self.sidebar = QListWidget()
         self.sidebar.setFixedWidth(200)
-        self.sidebar.addItems(["常规", "热词", "润色", "API", "高级"])
+        self.sidebar.addItems(["常规", "专业词汇", "润色", "API", "高级"])
         self.sidebar.currentRowChanged.connect(self.change_page)
 
         # Content area
@@ -191,92 +192,159 @@ class SettingsWindow(QMainWindow):
         return w
 
     # ==========================================================================
-    # Tab 2: Hotwords (P0 priority)
+    # Tab 2: Hotwords (Simplified UX - 三方会谈 redesign)
     # ==========================================================================
     def _create_hotwords_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(30, 30, 30, 30)
 
-        layout.addWidget(QLabel("<h2>热词管理</h2>"))
-
-        # Enable initial_prompt
-        self.chk_enable_prompt = QCheckBox("启用 initial_prompt 热词注入 (Layer 1)")
-        self.chk_enable_prompt.setChecked(True)
-        layout.addWidget(self.chk_enable_prompt)
+        # --- Header ---
+        layout.addWidget(QLabel("<h2>专业词汇</h2>"))
+        subtitle = QLabel("添加您常用的专业术语、品牌名、人名等，系统会自动识别并纠正谐音错误")
+        subtitle.setStyleSheet("color: #666; margin-bottom: 10px;")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
 
         layout.addSpacing(10)
 
-        # Domain context
-        form = QFormLayout()
+        # --- Usage context (optional) ---
+        context_layout = QHBoxLayout()
+        context_label = QLabel("使用场景:")
         self.domain_ctx = QLineEdit()
-        self.domain_ctx.setPlaceholderText("AI工具、编程、图像生成")
-        form.addRow("领域上下文:", self.domain_ctx)
-        layout.addLayout(form)
+        self.domain_ctx.setPlaceholderText("如：编程开发、医疗诊断、法律咨询...")
+        context_layout.addWidget(context_label)
+        context_layout.addWidget(self.domain_ctx, 1)
+        layout.addLayout(context_layout)
+
+        hint_label = QLabel("💡 描述您的使用领域，可提高整体识别准确率（可选）")
+        hint_label.setStyleSheet("color: #888; font-size: 11px; margin-left: 70px;")
+        layout.addWidget(hint_label)
 
         layout.addSpacing(20)
 
-        # ===== Prompt words list (P0) =====
-        layout.addWidget(QLabel("<b>提示词列表 (Layer 1 - initial_prompt):</b>"))
+        # --- Main: Vocabulary list ---
+        list_header = QLabel("<b>词汇列表</b>")
+        layout.addWidget(list_header)
 
-        prompt_words_layout = QHBoxLayout()
+        guide_label = QLabel("这些词会被优先识别，无需手动添加纠错规则")
+        guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
+        layout.addWidget(guide_label)
 
+        # List widget with multi-select
         self.prompt_words_list = QListWidget()
         self.prompt_words_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        prompt_words_layout.addWidget(self.prompt_words_list)
+        self.prompt_words_list.setMinimumHeight(150)
+        layout.addWidget(self.prompt_words_list)
 
-        # Buttons
-        btn_layout = QVBoxLayout()
-        btn_add_word = QPushButton("添加")
+        # Action buttons
+        btn_layout = QHBoxLayout()
+        btn_add_word = QPushButton("+ 添加")
         btn_add_word.clicked.connect(self._add_prompt_word)
         btn_layout.addWidget(btn_add_word)
 
-        btn_remove_word = QPushButton("删除")
+        btn_import = QPushButton("批量导入")
+        btn_import.clicked.connect(self._batch_import_words)
+        btn_layout.addWidget(btn_import)
+
+        btn_remove_word = QPushButton("删除选中")
         btn_remove_word.clicked.connect(self._remove_prompt_words)
         btn_layout.addWidget(btn_remove_word)
 
         btn_layout.addStretch()
-        prompt_words_layout.addLayout(btn_layout)
-
-        layout.addLayout(prompt_words_layout)
+        layout.addLayout(btn_layout)
 
         layout.addSpacing(20)
 
-        # ===== Replacements table (Layer 2) =====
-        layout.addWidget(QLabel("<b>替换规则 (Layer 2 - 正则替换):</b>"))
+        # --- Advanced options (collapsible) ---
+        self.advanced_group = QGroupBox("⚙️ 高级选项 - 手动纠错规则")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)  # Default collapsed
+        advanced_layout = QVBoxLayout()
 
+        adv_hint = QLabel("大部分谐音错误会被自动纠正。只有在遇到重复识别问题时才需要手动添加规则。")
+        adv_hint.setStyleSheet("color: #666; font-size: 11px;")
+        adv_hint.setWordWrap(True)
+        advanced_layout.addWidget(adv_hint)
+
+        advanced_layout.addSpacing(10)
+
+        # Replacements table
         self.replace_table = QTableWidget(0, 2)
-        self.replace_table.setHorizontalHeaderLabels(["错误识别", "正确文字"])
+        self.replace_table.setHorizontalHeaderLabels(["识别错误", "替换为"])
         self.replace_table.horizontalHeader().setStretchLastSection(True)
-        self.replace_table.setMinimumHeight(150)
-        layout.addWidget(self.replace_table)
+        self.replace_table.setMinimumHeight(120)
+        advanced_layout.addWidget(self.replace_table)
 
-        btn_layout2 = QHBoxLayout()
+        # Table buttons
+        tbl_btn_layout = QHBoxLayout()
         btn_add_rule = QPushButton("+ 添加规则")
         btn_add_rule.clicked.connect(self._add_replacement_row)
-        btn_layout2.addWidget(btn_add_rule)
+        tbl_btn_layout.addWidget(btn_add_rule)
 
         btn_remove_rule = QPushButton("- 删除选中")
         btn_remove_rule.clicked.connect(self._remove_replacement_row)
-        btn_layout2.addWidget(btn_remove_rule)
+        tbl_btn_layout.addWidget(btn_remove_rule)
 
-        btn_layout2.addStretch()
-        layout.addLayout(btn_layout2)
+        tbl_btn_layout.addStretch()
+        advanced_layout.addLayout(tbl_btn_layout)
+
+        self.advanced_group.setLayout(advanced_layout)
+        layout.addWidget(self.advanced_group)
 
         layout.addStretch()
 
-        # Save button
-        btn_save = QPushButton("保存热词设置")
+        # --- Save button ---
+        btn_save = QPushButton("保存设置")
         btn_save.setObjectName("primaryBtn")
         btn_save.clicked.connect(self.save_config)
         layout.addWidget(btn_save)
 
+        # Hidden: keep enable_initial_prompt always true (no UI control)
+        self._enable_initial_prompt = True
+
         return w
 
     def _add_prompt_word(self):
-        text, ok = QInputDialog.getText(self, "添加提示词", "输入新的提示词:")
+        text, ok = QInputDialog.getText(
+            self,
+            "添加专业词汇",
+            "输入词汇（支持中英文混合）:\n\n示例：Claude、GitHub、第一性原理"
+        )
         if ok and text.strip():
-            self.prompt_words_list.addItem(text.strip())
+            word = text.strip()
+            # Check duplicate
+            existing = [self.prompt_words_list.item(i).text()
+                       for i in range(self.prompt_words_list.count())]
+            if word in existing:
+                QMessageBox.warning(self, "重复", f"'{word}' 已在列表中")
+                return
+            self.prompt_words_list.addItem(word)
+
+    def _batch_import_words(self):
+        """Batch import words from text input."""
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "批量导入",
+            "每行一个词汇（或用逗号、顿号分隔）:\n\n示例:\nclaude\ngithub\n三方会谈"
+        )
+        if ok and text.strip():
+            # Support multiple separators
+            words = re.split(r'[,\n，、;；]', text)
+            existing = {self.prompt_words_list.item(i).text()
+                       for i in range(self.prompt_words_list.count())}
+            added = 0
+            for word in words:
+                word = word.strip()
+                if word and word not in existing:
+                    self.prompt_words_list.addItem(word)
+                    existing.add(word)
+                    added += 1
+
+            if added > 0:
+                QMessageBox.information(self, "导入完成", f"成功添加 {added} 个词汇")
+            else:
+                QMessageBox.information(self, "导入完成", "没有新词汇被添加（可能已存在）")
 
     def _remove_prompt_words(self):
         for item in self.prompt_words_list.selectedItems():
@@ -301,7 +369,7 @@ class SettingsWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(30, 30, 30, 30)
 
-        layout.addWidget(QLabel("<h2>润色设置 (Layer 3)</h2>"))
+        layout.addWidget(QLabel("<h2>智能润色</h2>"))
 
         # Mode selection
         mode_group = QButtonGroup(w)
@@ -551,12 +619,19 @@ class SettingsWindow(QMainWindow):
         self.chk_minimize.setChecked(general.get("minimize_to_tray", False))
 
         # === Hotwords tab ===
-        self.chk_enable_prompt.setChecked(self.config.get("enable_initial_prompt", True))
+        # Note: enable_initial_prompt is always true (no UI control)
+        self._enable_initial_prompt = self.config.get("enable_initial_prompt", True)
         self.domain_ctx.setText(self.config.get("domain_context", ""))
 
-        # Prompt words
+        # Expand advanced group if there are existing replacements
+        replacements = self.config.get("replacements", {})
+        if replacements:
+            self.advanced_group.setChecked(True)
+
+        # Prompt words (support both "hotwords" and legacy "prompt_words")
         self.prompt_words_list.clear()
-        for word in self.config.get("prompt_words", []):
+        words = self.config.get("hotwords", self.config.get("prompt_words", []))
+        for word in words:
             self.prompt_words_list.addItem(word)
 
         # Replacements
@@ -630,14 +705,16 @@ class SettingsWindow(QMainWindow):
         self.config["general"]["minimize_to_tray"] = self.chk_minimize.isChecked()
 
         # === Hotwords tab ===
-        self.config["enable_initial_prompt"] = self.chk_enable_prompt.isChecked()
+        # Note: enable_initial_prompt is always true (no UI control needed)
+        self.config["enable_initial_prompt"] = True
         self.config["domain_context"] = self.domain_ctx.text()
 
-        # Prompt words
-        prompt_words = []
+        # Hotwords (use "hotwords" key, remove legacy "prompt_words" if present)
+        hotwords = []
         for i in range(self.prompt_words_list.count()):
-            prompt_words.append(self.prompt_words_list.item(i).text())
-        self.config["prompt_words"] = prompt_words
+            hotwords.append(self.prompt_words_list.item(i).text())
+        self.config["hotwords"] = hotwords
+        self.config.pop("prompt_words", None)  # Remove legacy key
 
         # Replacements
         replacements = {}

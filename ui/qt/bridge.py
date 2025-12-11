@@ -31,6 +31,9 @@ class QtBridge(QObject):
     # Insert complete notification
     insertComplete = Signal()
 
+    # Command executed: (command_id, success)
+    commandExecuted = Signal(str, bool)
+
     def __init__(self):
         super().__init__()
 
@@ -84,6 +87,15 @@ class QtBridge(QObject):
             Q_ARG(bool, is_speaking)
         )
 
+    def emit_command(self, command_id: str, success: bool):
+        """Thread-safe command execution emission."""
+        QMetaObject.invokeMethod(
+            self, "_do_emit_command",
+            Qt.QueuedConnection,
+            Q_ARG(str, command_id),
+            Q_ARG(bool, success)
+        )
+
     # --- Internal slots (must be called on main thread) ---
 
     @Slot(str)
@@ -109,3 +121,7 @@ class QtBridge(QObject):
     @Slot(bool)
     def _do_emit_voice_activity(self, is_speaking: bool):
         self.voiceActivity.emit(is_speaking)
+
+    @Slot(str, bool)
+    def _do_emit_command(self, command_id: str, success: bool):
+        self.commandExecuted.emit(command_id, success)
