@@ -8,7 +8,14 @@ import ctypes
 import math
 from PySide6.QtCore import Qt, Signal, QPoint, QPointF, QTimer, Slot
 from PySide6.QtWidgets import QWidget, QApplication
-from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QRadialGradient, QConicalGradient
+from PySide6.QtGui import (
+    QPainter,
+    QColor,
+    QBrush,
+    QPen,
+    QRadialGradient,
+    QConicalGradient,
+)
 
 from .popup_menu import PopupMenu
 
@@ -30,18 +37,22 @@ class FloatingBall(QWidget):
     """
 
     # Signals
-    toggleRequested = Signal()      # Left-click: toggle ASR
-    detailsRequested = Signal()     # From popup menu: open settings
-    menuRequested = Signal()        # Right-click: show popup menu
-    lockToggled = Signal(bool)      # Middle-click: lock state changed
-    enableToggled = Signal(bool)    # From popup menu: enable/disable
-    modeChanged = Signal(str)       # From popup menu: polish mode changed
+    toggleRequested = Signal()  # Left-click: toggle ASR
+    detailsRequested = Signal()  # From popup menu: open settings
+    menuRequested = Signal()  # Right-click: show popup menu
+    lockToggled = Signal(bool)  # Middle-click: lock state changed
+    enableToggled = Signal(bool)  # From popup menu: enable/disable
+    modeChanged = Signal(str)  # From popup menu: polish mode changed
 
     # Ball states
     STATE_IDLE = "idle"
     STATE_RECORDING = "recording"
     STATE_TRANSCRIBING = "transcribing"
     STATE_LOCKED = "locked"
+    STATE_SELECTION_LISTENING = (
+        "selection_listening"  # Purple: waiting for voice command
+    )
+    STATE_SELECTION_PROCESSING = "selection_processing"  # Blue: processing with LLM
 
     def __init__(self, size: int = 48):
         super().__init__()
@@ -76,7 +87,7 @@ class FloatingBall(QWidget):
         # 0.85 makes the ball slightly smaller when idle but clearly visible
         self._window_scale = 1.0  # Start at full size for visibility on launch
         self._window_scale_target = 0.85  # Will shrink to idle after a moment
-        self._SCALE_IDLE = 0.85   # Constant for idle state (was 0.75, too small)
+        self._SCALE_IDLE = 0.85  # Constant for idle state (was 0.75, too small)
         self._SCALE_ACTIVE = 1.0  # Constant for active state
 
         # Audio level for waveform effect (0.0 - 1.0)
@@ -98,37 +109,45 @@ class FloatingBall(QWidget):
         try:
             import json
             from pathlib import Path
-            config_path = Path(__file__).parent.parent.parent / "config" / "hotwords.json"
+
+            config_path = (
+                Path(__file__).parent.parent.parent / "config" / "hotwords.json"
+            )
             if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-                    self._debug_logging_enabled = config.get("general", {}).get("debug_logging", False)
+                    self._debug_logging_enabled = config.get("general", {}).get(
+                        "debug_logging", False
+                    )
 
             if self._debug_logging_enabled:
                 log_dir = Path(__file__).parent.parent.parent / "DebugLog"
                 log_dir.mkdir(exist_ok=True)
                 self._debug_log_path = log_dir / "floating_ball_debug.log"
                 # Clear old log
-                with open(self._debug_log_path, 'w', encoding='utf-8') as f:
+                with open(self._debug_log_path, "w", encoding="utf-8") as f:
                     f.write(f"=== FloatingBall Debug Log ===\n")
         except Exception as e:
             print(f"[FloatingBall] Failed to init debug log: {e}")
 
         # Start animation timer immediately (needed for smooth transitions)
         self._pulse_timer.start(50)
-        self._log(f"Initialized with scale={self._window_scale}, target={self._window_scale_target}")
+        self._log(
+            f"Initialized with scale={self._window_scale}, target={self._window_scale_target}"
+        )
 
     def _log(self, msg: str):
         """Write to debug log file (only if debug_logging enabled in config)."""
         if not self._debug_logging_enabled:
             return
         import datetime
+
         timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] {msg}"
         print(f"[FloatingBall] {msg}")
         if self._debug_log_path:
             try:
-                with open(self._debug_log_path, 'a', encoding='utf-8') as f:
+                with open(self._debug_log_path, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
             except Exception:
                 pass
@@ -136,10 +155,10 @@ class FloatingBall(QWidget):
     def _init_window(self):
         """Setup window flags for floating behavior."""
         self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.Tool |
-            Qt.WindowStaysOnTopHint |
-            Qt.WindowDoesNotAcceptFocus
+            Qt.FramelessWindowHint
+            | Qt.Tool
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
@@ -184,7 +203,11 @@ class FloatingBall(QWidget):
             self._icon_scale_target = 0.0
         else:
             # Restore based on current state
-            if self._state == self.STATE_RECORDING or self._state == self.STATE_TRANSCRIBING or self._is_processing:
+            if (
+                self._state == self.STATE_RECORDING
+                or self._state == self.STATE_TRANSCRIBING
+                or self._is_processing
+            ):
                 self._window_scale_target = self._SCALE_ACTIVE
                 self._icon_scale_target = 1.0
             else:
@@ -263,6 +286,16 @@ class FloatingBall(QWidget):
         # Draw border - pulsing cyan when recording, subtle white otherwise
         if self._state == self.STATE_RECORDING:
             self._draw_rainbow_border(painter, center, radius)
+        elif self._state == self.STATE_SELECTION_LISTENING:
+            # Purple pulsing border for selection mode (listening for command)
+            self._draw_purple_border(painter, center, radius)
+        elif self._state == self.STATE_SELECTION_PROCESSING:
+            # Blue spinning border for selection processing
+            breath = 0.5 + 0.5 * math.sin(self._pulse_phase * math.pi * 2)
+            alpha = int(150 + 70 * breath)
+            painter.setPen(QPen(QColor(100, 120, 255, alpha), 2.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._state == self.STATE_TRANSCRIBING:
             # Subtle blue border when transcribing
             painter.setPen(QPen(QColor(100, 150, 255, 120), 2))
@@ -293,7 +326,7 @@ class FloatingBall(QWidget):
         breath = 0.5 + 0.5 * math.sin(self._pulse_phase * math.pi * 2)
 
         # Segment parameters
-        seg_len = 0.22   # Rainbow segment length (~22% each)
+        seg_len = 0.22  # Rainbow segment length (~22% each)
         gap_len = 0.111  # Gap length (~11% each), total = 3*(22+11) = 99%
 
         # Rainbow colors - 2 colors per segment for smooth gradient
@@ -323,16 +356,93 @@ class FloatingBall(QWidget):
 
             # Smooth fade in (longer gradient)
             gradient.setColorAt(seg_start, QColor(c1[0], c1[1], c1[2], 0))
-            gradient.setColorAt(seg_start + 0.04, QColor(c1[0], c1[1], c1[2], base_alpha // 2))
-            gradient.setColorAt(seg_start + 0.07, QColor(c1[0], c1[1], c1[2], base_alpha))
+            gradient.setColorAt(
+                seg_start + 0.04, QColor(c1[0], c1[1], c1[2], base_alpha // 2)
+            )
+            gradient.setColorAt(
+                seg_start + 0.07, QColor(c1[0], c1[1], c1[2], base_alpha)
+            )
 
             # Middle gradient between two colors
-            gradient.setColorAt(seg_start + seg_len * 0.5, QColor(c2[0], c2[1], c2[2], base_alpha))
+            gradient.setColorAt(
+                seg_start + seg_len * 0.5, QColor(c2[0], c2[1], c2[2], base_alpha)
+            )
 
             # Smooth fade out (longer gradient)
-            gradient.setColorAt(seg_start + seg_len - 0.07, QColor(c2[0], c2[1], c2[2], base_alpha))
-            gradient.setColorAt(seg_start + seg_len - 0.04, QColor(c2[0], c2[1], c2[2], base_alpha // 2))
+            gradient.setColorAt(
+                seg_start + seg_len - 0.07, QColor(c2[0], c2[1], c2[2], base_alpha)
+            )
+            gradient.setColorAt(
+                seg_start + seg_len - 0.04, QColor(c2[0], c2[1], c2[2], base_alpha // 2)
+            )
             gradient.setColorAt(seg_start + seg_len, QColor(c2[0], c2[1], c2[2], 0))
+
+        pen = QPen(QBrush(gradient), border_width)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(center, radius - 1, radius - 1)
+
+    def _draw_purple_border(self, painter: QPainter, center: QPoint, radius: int):
+        """Draw purple pulsing border for selection mode."""
+        angle = self._rainbow_angle
+        gradient = QConicalGradient(QPointF(center), angle)
+
+        # Breathing effect
+        breath = 0.5 + 0.5 * math.sin(self._pulse_phase * math.pi * 2)
+
+        # Purple gradient colors
+        purple_light = (180, 100, 255)  # Light purple
+        purple_dark = (120, 60, 200)  # Dark purple
+
+        if self._is_speaking:
+            base_alpha = 220
+            border_width = 3.5
+        else:
+            base_alpha = int(120 + 80 * breath)
+            border_width = 2.5
+
+        # Create 3-segment purple border (similar to rainbow but monochrome)
+        seg_len = 0.22
+        gap_len = 0.111
+
+        for seg in range(3):
+            seg_start = seg * (seg_len + gap_len)
+
+            # Fade in
+            gradient.setColorAt(
+                seg_start, QColor(purple_light[0], purple_light[1], purple_light[2], 0)
+            )
+            gradient.setColorAt(
+                seg_start + 0.04,
+                QColor(
+                    purple_light[0], purple_light[1], purple_light[2], base_alpha // 2
+                ),
+            )
+            gradient.setColorAt(
+                seg_start + 0.07,
+                QColor(purple_light[0], purple_light[1], purple_light[2], base_alpha),
+            )
+
+            # Middle
+            gradient.setColorAt(
+                seg_start + seg_len * 0.5,
+                QColor(purple_dark[0], purple_dark[1], purple_dark[2], base_alpha),
+            )
+
+            # Fade out
+            gradient.setColorAt(
+                seg_start + seg_len - 0.07,
+                QColor(purple_dark[0], purple_dark[1], purple_dark[2], base_alpha),
+            )
+            gradient.setColorAt(
+                seg_start + seg_len - 0.04,
+                QColor(purple_dark[0], purple_dark[1], purple_dark[2], base_alpha // 2),
+            )
+            gradient.setColorAt(
+                seg_start + seg_len,
+                QColor(purple_dark[0], purple_dark[1], purple_dark[2], 0),
+            )
 
         pen = QPen(QBrush(gradient), border_width)
         pen.setCapStyle(Qt.RoundCap)
@@ -374,7 +484,9 @@ class FloatingBall(QWidget):
                 # Ring parameters - starts small, grows significantly with audio
                 # Use icon_progress for scaling during transition
                 scale = 0.5 + 0.5 * icon_progress
-                base_radius = dot_radius + 20 * expansion * scale  # Much larger expansion
+                base_radius = (
+                    dot_radius + 20 * expansion * scale
+                )  # Much larger expansion
                 wave_amplitude = 3 * expansion * scale + 1  # More visible waves
                 num_waves = 6  # Fewer waves = smoother look
 
@@ -390,8 +502,14 @@ class FloatingBall(QWidget):
 
                     # Gentler wave frequencies for organic but smooth look
                     wave1 = math.sin(angle * num_waves + phase * 1.5) * wave_amplitude
-                    wave2 = math.sin(angle * (num_waves + 2) - phase) * wave_amplitude * 0.4
-                    wave3 = math.sin(angle * (num_waves - 1) + phase * 0.8) * wave_amplitude * 0.2
+                    wave2 = (
+                        math.sin(angle * (num_waves + 2) - phase) * wave_amplitude * 0.4
+                    )
+                    wave3 = (
+                        math.sin(angle * (num_waves - 1) + phase * 0.8)
+                        * wave_amplitude
+                        * 0.2
+                    )
 
                     # Total radius at this angle
                     r = base_radius + wave1 + wave2 + wave3
@@ -445,8 +563,14 @@ class FloatingBall(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 200), 2 * scale))
             painter.setBrush(Qt.NoBrush)
             arc_angle = int(self._rainbow_angle * 16)
-            painter.drawArc(center.x() - arc_size//2, center.y() - arc_size//2,
-                          arc_size, arc_size, arc_angle, 270 * 16)
+            painter.drawArc(
+                center.x() - arc_size // 2,
+                center.y() - arc_size // 2,
+                arc_size,
+                arc_size,
+                arc_angle,
+                270 * 16,
+            )
 
         elif self._is_locked:
             # Locked: subtle lock icon (more transparent)
@@ -454,7 +578,9 @@ class FloatingBall(QWidget):
             painter.setBrush(Qt.NoBrush)
             # Larger lock icon
             painter.drawRect(int(center.x() - 5), int(center.y() - 1), 10, 8)
-            painter.drawArc(int(center.x() - 4), int(center.y() - 8), 8, 10, 0, 180 * 16)
+            painter.drawArc(
+                int(center.x() - 4), int(center.y() - 8), 8, 10, 0, 180 * 16
+            )
 
         else:
             # Idle: small subtle dot
@@ -497,24 +623,32 @@ class FloatingBall(QWidget):
                 animations_active = True
             # Debug: log when scale is changing significantly
             if abs(diff) > 0.05:
-                print(f"[FloatingBall] Animating scale: {self._window_scale:.2f} -> {self._window_scale_target:.2f}")
+                print(
+                    f"[FloatingBall] Animating scale: {self._window_scale:.2f} -> {self._window_scale_target:.2f}"
+                )
 
         # Smooth audio level (gentle attack, very smooth decay)
         if self._audio_level > self._audio_level_smooth:
             # Gentle attack - not too fast
-            self._audio_level_smooth += (self._audio_level - self._audio_level_smooth) * 0.15
+            self._audio_level_smooth += (
+                self._audio_level - self._audio_level_smooth
+            ) * 0.15
             animations_active = True
         else:
             # Very smooth decay for natural fade out
-            self._audio_level_smooth += (self._audio_level - self._audio_level_smooth) * 0.06
+            self._audio_level_smooth += (
+                self._audio_level - self._audio_level_smooth
+            ) * 0.06
             if self._audio_level_smooth > 0.01:
                 animations_active = True
 
         # Adaptive frame rate: slow down when truly idle to save CPU
-        is_truly_idle = (self._state == self.STATE_IDLE and
-                         not animations_active and
-                         not self._is_speaking and
-                         not self._is_processing)
+        is_truly_idle = (
+            self._state == self.STATE_IDLE
+            and not animations_active
+            and not self._is_speaking
+            and not self._is_processing
+        )
 
         current_interval = self._pulse_timer.interval()
         if is_truly_idle:
@@ -537,13 +671,21 @@ class FloatingBall(QWidget):
     def mousePressEvent(self, event):
         """Handle mouse press for drag start."""
         if event.button() == Qt.LeftButton and not self._is_locked:
-            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            self._click_pos = event.globalPosition().toPoint()  # Record for click detection
+            self._drag_position = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
+            self._click_pos = (
+                event.globalPosition().toPoint()
+            )  # Record for click detection
         event.accept()
 
     def mouseMoveEvent(self, event):
         """Handle mouse move for dragging."""
-        if event.buttons() == Qt.LeftButton and self._drag_position and not self._is_locked:
+        if (
+            event.buttons() == Qt.LeftButton
+            and self._drag_position
+            and not self._is_locked
+        ):
             self.move(event.globalPosition().toPoint() - self._drag_position)
         event.accept()
 
@@ -552,7 +694,9 @@ class FloatingBall(QWidget):
         if event.button() == Qt.LeftButton:
             if not self._is_locked and self._click_pos:
                 # Check if it was a click (not a drag)
-                moved = (event.globalPosition().toPoint() - self._click_pos).manhattanLength()
+                moved = (
+                    event.globalPosition().toPoint() - self._click_pos
+                ).manhattanLength()
                 if moved < 10:  # Small movement = click
                     # Left-click: Toggle ASR on/off
                     self.toggleRequested.emit()
@@ -573,10 +717,14 @@ class FloatingBall(QWidget):
         # When locked, shrink to idle size; when unlocked, restore based on state
         if self._is_locked:
             self._window_scale_target = self._SCALE_IDLE  # Shrink to idle size
-            self._icon_scale_target = 0.0    # Hide active icon
+            self._icon_scale_target = 0.0  # Hide active icon
         else:
             # Restore based on current state and processing flag
-            if self._state == self.STATE_RECORDING or self._state == self.STATE_TRANSCRIBING or self._is_processing:
+            if (
+                self._state == self.STATE_RECORDING
+                or self._state == self.STATE_TRANSCRIBING
+                or self._is_processing
+            ):
                 self._window_scale_target = self._SCALE_ACTIVE
                 self._icon_scale_target = 1.0
             else:
@@ -588,7 +736,7 @@ class FloatingBall(QWidget):
 
     def _update_click_through(self):
         """Update Win32 click-through style."""
-        if sys.platform != 'win32':
+        if sys.platform != "win32":
             return
 
         try:
@@ -605,10 +753,21 @@ class FloatingBall(QWidget):
 
             if self._is_locked:
                 # Enable click-through
-                new_style = style | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+                new_style = (
+                    style
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_TOPMOST
+                )
             else:
                 # Disable click-through
-                new_style = (style & ~WS_EX_TRANSPARENT) | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST
+                new_style = (
+                    (style & ~WS_EX_TRANSPARENT)
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_TOPMOST
+                )
 
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
 
@@ -617,8 +776,9 @@ class FloatingBall(QWidget):
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
             SWP_NOACTIVATE = 0x0010
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+            )
         except Exception as e:
             print(f"Win32 API Error: {e}")
 
@@ -626,7 +786,7 @@ class FloatingBall(QWidget):
         """Apply Win32 styles on show."""
         super().showEvent(event)
 
-        if sys.platform != 'win32':
+        if sys.platform != "win32":
             return
 
         try:
@@ -639,8 +799,11 @@ class FloatingBall(QWidget):
 
             user32 = ctypes.windll.user32
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                                 style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST)
+            user32.SetWindowLongW(
+                hwnd,
+                GWL_EXSTYLE,
+                style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            )
 
             HWND_TOPMOST = -1
             SWP_NOMOVE = 0x0002
@@ -655,7 +818,9 @@ class FloatingBall(QWidget):
     def on_state_changed(self, state: str):
         """Handle state changes from backend."""
         old_state = self._state
-        self._log(f"STATE: {old_state} -> {state}, processing={self._is_processing}, scale={self._window_scale:.2f}, target={self._window_scale_target:.2f}")
+        self._log(
+            f"STATE: {old_state} -> {state}, processing={self._is_processing}, scale={self._window_scale:.2f}, target={self._window_scale_target:.2f}"
+        )
 
         if state == "IDLE":
             self._state = self.STATE_IDLE
@@ -668,7 +833,9 @@ class FloatingBall(QWidget):
             else:
                 # Still processing - start short fallback timer (3 seconds)
                 self._shrink_fallback_timer.start(3000)
-                self._log(f"IDLE (processing): waiting for on_insert_complete, fallback 3s")
+                self._log(
+                    f"IDLE (processing): waiting for on_insert_complete, fallback 3s"
+                )
         elif state == "RECORDING":
             self._state = self.STATE_RECORDING
             self._is_processing = False
@@ -683,7 +850,26 @@ class FloatingBall(QWidget):
             self._is_processing = True  # Backend is processing!
             # Ball stays BIG while backend is processing
             # Don't change scale here - keep current size
-            self._log(f"TRANSCRIBING: processing=True, scale stays {self._window_scale_target}")
+            self._log(
+                f"TRANSCRIBING: processing=True, scale stays {self._window_scale_target}"
+            )
+        elif state == "SELECTION_LISTENING":
+            self._state = self.STATE_SELECTION_LISTENING
+            self._is_processing = False
+            self._shrink_fallback_timer.stop()
+            # Purple border, grow the ball
+            self._icon_scale_target = 1.0
+            self._window_scale_target = self._SCALE_ACTIVE
+            self._log(f"SELECTION_LISTENING: purple mode, scale={self._SCALE_ACTIVE}")
+        elif state == "SELECTION_PROCESSING":
+            self._state = self.STATE_SELECTION_PROCESSING
+            self._is_speaking = False
+            self._is_processing = True
+            # Blue border, keep ball big
+            self._window_scale_target = self._SCALE_ACTIVE
+            self._log(
+                f"SELECTION_PROCESSING: processing=True, scale={self._SCALE_ACTIVE}"
+            )
 
         if old_state != self._state:
             self.update()
@@ -691,7 +877,9 @@ class FloatingBall(QWidget):
     @Slot(bool)
     def on_voice_activity(self, is_speaking: bool):
         """Handle voice activity detection updates."""
-        self._log(f"VOICE: {is_speaking}, state={self._state}, scale={self._window_scale:.2f}")
+        self._log(
+            f"VOICE: {is_speaking}, state={self._state}, scale={self._window_scale:.2f}"
+        )
         if self._is_speaking != is_speaking:
             self._is_speaking = is_speaking
 
@@ -712,7 +900,9 @@ class FloatingBall(QWidget):
     @Slot(float)
     def on_level_changed(self, level: float):
         """Handle audio level updates for waveform visualization."""
-        self._audio_level = min(1.0, level * 6.0)  # High sensitivity for better visual response
+        self._audio_level = min(
+            1.0, level * 6.0
+        )  # High sensitivity for better visual response
 
     @Slot(str, bool)
     def on_text_updated(self, text: str, is_final: bool):
@@ -725,7 +915,9 @@ class FloatingBall(QWidget):
     @Slot()
     def on_insert_complete(self):
         """Handle text insertion complete - shrink ball now that processing is done."""
-        self._log(f"INSERT_COMPLETE: state={self._state}, processing={self._is_processing}")
+        self._log(
+            f"INSERT_COMPLETE: state={self._state}, processing={self._is_processing}"
+        )
 
         # Cancel fallback timer
         self._shrink_fallback_timer.stop()

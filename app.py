@@ -41,6 +41,12 @@ from .core.hotword import (
 from .core.command import CommandDetector, CommandExecutor
 from .core.debug import DebugSession, DebugConfig
 from .core.insight_store import InsightStore
+from .core.selection import (
+    SelectionDetector,
+    SelectionProcessor,
+    SelectionCommand,
+    CommandType,
+)
 from .system.hotkey import HotkeyManager
 from .system.output import OutputInjector
 from .ui.streaming_display import DisplayBuffer, DisplayState
@@ -55,6 +61,8 @@ class AppState(Enum):
     IDLE = auto()
     RECORDING = auto()
     TRANSCRIBING = auto()
+    SELECTION_LISTENING = auto()  # Listening for voice command on selected text
+    SELECTION_PROCESSING = auto()  # Processing selected text with LLM
 
 
 class VoiceTypeApp:
@@ -120,6 +128,13 @@ class VoiceTypeApp:
 
         # Sound control
         self._sound_enabled = True
+
+        # Selection mode (smart detection: same hotkey, auto-detect if text selected)
+        self._selection_mode = False
+        self._selected_text: str = None
+        self._original_clipboard: str = None
+        self.selection_detector: SelectionDetector = None
+        self.selection_processor: SelectionProcessor = None
 
         # Auto-send control (press Enter after text insertion)
         self._auto_send_enabled = False
@@ -439,6 +454,11 @@ class VoiceTypeApp:
         )
         print("[INSIGHT] Voice insight store initialized")
 
+        # Selection mode components
+        self.selection_detector = SelectionDetector(self.output_injector)
+        self.selection_processor = SelectionProcessor(self.polisher)
+        print("[SELECTION] Selection mode initialized")
+
     def _on_speech_start(self) -> None:
         """Called when speech is detected."""
         logger.debug("Speech detected")
@@ -581,6 +601,51 @@ class VoiceTypeApp:
                 # Emit interim text to UI (before polish)
                 if text:
                     self._emit_text(text, is_final=False)
+
+                # === Selection Command Detection ===
+                # Check if ASR text is a selection command (润色, 翻译成英文, etc.)
+                # If detected, check for selected text and process it
+                if text and self.selection_processor:
+                    selection_cmd = SelectionCommand.parse(text)
+                    if (
+                        selection_cmd
+                        and selection_cmd.command_type != CommandType.CUSTOM
+                    ):
+                        # This looks like a selection command, check for selected text
+                        print(
+                            f"[SELECTION] Detected command: {selection_cmd.command_type.name}"
+                        )
+                        detection = self.selection_detector.detect()
+                        if detection.has_selection and detection.selected_text:
+                            print(
+                                f"[SELECTION] Found selected text: {len(detection.selected_text)} chars"
+                            )
+                            # Process selected text with command
+                            result = self.selection_processor.process(
+                                detection.selected_text, selection_cmd
+                            )
+                            if result.success and result.output_text:
+                                # Replace selected text with result
+                                self.output_injector.insert_text(result.output_text)
+                                print(
+                                    f"[SELECTION] OK! Replaced ({result.processing_time_ms:.0f}ms)"
+                                )
+                                inserted = True
+                                final_text = (
+                                    f"[选择指令] {selection_cmd.command_type.name}"
+                                )
+                                # Restore original clipboard
+                                if detection.original_clipboard is not None:
+                                    self.selection_detector.restore_clipboard(
+                                        detection.original_clipboard
+                                    )
+                                continue  # Skip normal processing
+                            else:
+                                print(f"[SELECTION] Processing failed: {result.error}")
+                        else:
+                            print(
+                                "[SELECTION] No selected text, treating as normal dictation"
+                            )
 
                 # === Layer 0: Voice Command Detection (BEFORE any processing) ===
                 # Check raw ASR text for commands to achieve lowest latency
@@ -770,10 +835,12 @@ class VoiceTypeApp:
         print(f"[HOTKEY] Pressed! Current state: {self.state.name}")
         with self._lock:
             if self.state == AppState.IDLE:
+                # Normal recording start
                 self._start_recording()
             elif self.state == AppState.RECORDING:
+                # Stop recording
                 self._stop_recording()
-            # TRANSCRIBING state is no longer used (ASR runs in background)
+            # TRANSCRIBING: ignore hotkey
 
     def _start_recording(self) -> None:
         """Start recording."""
@@ -830,6 +897,168 @@ class VoiceTypeApp:
         self.state = AppState.IDLE
         self._emit_state("IDLE")
         print("[STATE] -> IDLE")
+
+    # =========================================================================
+    # Selection Mode Methods
+    # =========================================================================
+
+    def _try_enter_selection_mode(self) -> bool:
+        """
+        Try to enter selection mode by detecting selected text.
+
+        Returns:
+            True if entered selection mode, False otherwise (no selection)
+        """
+        # Debug logging to file
+        debug_file = Path(__file__).parent / "DebugLog" / "selection_debug.log"
+
+        def dbg(msg):
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+
+        dbg("[SELECTION] Trying to detect selected text...")
+        if not self.selection_detector:
+            dbg("[SELECTION] No detector available!")
+            return False
+
+        # Detect selection (sends Ctrl+C and checks clipboard)
+        result = self.selection_detector.detect()
+        dbg(
+            f"[SELECTION] Detection result: has_selection={result.has_selection}, "
+            f"text='{result.selected_text[:50] if result.selected_text else None}...', "
+            f"orig_clip='{result.original_clipboard[:30] if result.original_clipboard else None}...'"
+        )
+
+        if result.has_selection and result.selected_text:
+            # Store selection info
+            self._selection_mode = True
+            self._selected_text = result.selected_text
+            self._original_clipboard = result.original_clipboard
+
+            # Enter selection listening mode (silent, seamless experience)
+            self.state = AppState.SELECTION_LISTENING
+            self._emit_state("SELECTION_LISTENING")
+
+            # Same beep as normal recording (consistent experience)
+            self._beep(800, 150)
+
+            print(f"[SELECTION] Text selected ({len(self._selected_text)} chars)")
+
+            # Start recording for command
+            self._session_count += 1
+            self.state = AppState.RECORDING
+            self._emit_state("RECORDING")
+            self.audio_capture.start()
+
+            return True
+
+        return False
+
+    def _stop_selection_recording(self) -> None:
+        """Stop recording in selection mode and process the command."""
+        # Beep: low pitch = stop recording
+        self._beep(400, 150)
+        print("[SELECTION] Recording stopped, processing command...")
+
+        self.state = AppState.SELECTION_PROCESSING
+        self._emit_state("SELECTION_PROCESSING")
+
+        # Stop capture and get audio
+        final_audio = self.audio_capture.stop()
+
+        if final_audio is None or len(final_audio) < 4000:  # < 0.25s
+            print("[SELECTION] Recording too short, canceling")
+            self._cancel_selection_mode()
+            return
+
+        # Queue for ASR (will be processed by _asr_worker_selection)
+        # For now, process synchronously to keep it simple
+        self._process_selection_audio(final_audio)
+
+    def _process_selection_audio(self, audio) -> None:
+        """Process audio in selection mode - transcribe and execute command."""
+        try:
+            # Transcribe command
+            result = self.asr_engine.transcribe(audio)
+            command_text = result.text.strip()
+            print(f"[SELECTION] Command ASR: '{command_text}'")
+
+            if not command_text:
+                print("[SELECTION] No command recognized, canceling")
+                self._cancel_selection_mode()
+                return
+
+            # Parse command
+            command = SelectionCommand.parse(command_text)
+            if not command:
+                print(
+                    f"[SELECTION] Unknown command: '{command_text}', treating as custom"
+                )
+                # SelectionCommand.parse already handles custom commands
+                self._cancel_selection_mode()
+                return
+
+            print(f"[SELECTION] Command type: {command.command_type.name}")
+
+            # Process with LLM
+            if self.selection_processor:
+                result = self.selection_processor.process(self._selected_text, command)
+
+                if result.success and result.output_text:
+                    # Replace selected text with processed result
+                    # The text should still be selected, so just paste
+                    self.output_injector.insert_text(result.output_text)
+                    print(
+                        f"[SELECTION] OK! Replaced with {len(result.output_text)} chars ({result.processing_time_ms:.0f}ms)"
+                    )
+
+                    # Subtle success beep (same as normal dictation end)
+                    self._beep(400, 150)
+                else:
+                    print(f"[SELECTION] Processing failed: {result.error}")
+                    self._emit_error(f"Selection processing failed: {result.error}")
+                    # Error beep
+                    self._beep(300, 200)
+            else:
+                print("[SELECTION] No processor available")
+                self._beep(300, 200)
+
+        except Exception as e:
+            print(f"[SELECTION] Error: {e}")
+            logger.error(f"Selection processing error: {e}")
+            self._emit_error(str(e))
+            self._beep(300, 200)
+
+        finally:
+            # Always cleanup and return to IDLE
+            self._cleanup_selection_mode()
+
+    def _cancel_selection_mode(self) -> None:
+        """Cancel selection mode and restore state."""
+        print("[SELECTION] Canceled")
+        self._beep(300, 150)  # Low beep for cancel
+
+        # Stop recording if active
+        if self.audio_capture and self.audio_capture.is_recording:
+            self.audio_capture.stop()
+
+        self._cleanup_selection_mode()
+
+    def _cleanup_selection_mode(self) -> None:
+        """Cleanup selection mode state."""
+        # Restore original clipboard if we have it
+        if self._original_clipboard is not None and self.selection_detector:
+            self.selection_detector.restore_clipboard(self._original_clipboard)
+
+        # Reset state
+        self._selection_mode = False
+        self._selected_text = None
+        self._original_clipboard = None
+
+        self.state = AppState.IDLE
+        self._emit_state("IDLE")
+        self._emit_insert_complete()
+        print("[SELECTION] Cleanup done, back to IDLE")
 
     def start(self) -> None:
         """
