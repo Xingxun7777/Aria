@@ -1,0 +1,21 @@
+"""
+Wakeword Module
+===============
+Detects and executes application-level commands via wakeword.
+
+Usage:
+    from core.wakeword import WakewordDetector, WakewordExecutor
+
+    detector = WakewordDetector()
+    executor = WakewordExecutor(app_instance, bridge)
+
+    result = detector.detect("瑶瑶，开启自动发送")
+    if result:
+        cmd_id, action, value, response = result
+        executor.execute(cmd_id, action, value, response)
+"""
+
+from .detector import WakewordDetector
+from .executor import WakewordExecutor
+
+__all__ = ["WakewordDetector", "WakewordExecutor"]

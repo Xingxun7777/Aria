@@ -39,6 +39,7 @@ from .core.hotword import (
     FuzzyMatchConfig,
 )
 from .core.command import CommandDetector, CommandExecutor
+from .core.wakeword import WakewordDetector, WakewordExecutor
 from .core.debug import DebugSession, DebugConfig
 from .core.insight_store import InsightStore
 from .core.selection import (
@@ -105,6 +106,8 @@ class VoiceTypeApp:
         self.audio_capture: AudioCapture = None
         self.asr_engine: WhisperEngine = None
         self.output_injector = OutputInjector()
+        self._clipboard_lock = threading.Lock()  # Thread-safe clipboard access
+        self.output_injector.set_clipboard_lock(self._clipboard_lock)
         self._asr_engine_type: str = "whisper"  # "whisper" or "funasr"
         self.display = DisplayBuffer()
 
@@ -117,6 +120,10 @@ class VoiceTypeApp:
         # Voice command system (Layer 0: Command detection before text insertion)
         self.command_detector: CommandDetector = None
         self.command_executor: CommandExecutor = None
+
+        # Wakeword system (Layer -1: App-level commands via "瑶瑶")
+        self.wakeword_detector: WakewordDetector = None
+        self.wakeword_executor: WakewordExecutor = None
 
         # ASR worker thread (non-blocking transcription)
         self._asr_queue: queue.Queue = queue.Queue()
@@ -138,6 +145,9 @@ class VoiceTypeApp:
 
         # Auto-send control (press Enter after text insertion)
         self._auto_send_enabled = False
+
+        # Sleeping mode: ignore all input except wakeword commands
+        self._is_sleeping = False
 
         # Config file watcher (hot-reload)
         self._config_path = Path(__file__).parent / "config" / "hotwords.json"
@@ -163,6 +173,78 @@ class VoiceTypeApp:
         """Check if auto-send is enabled."""
         return self._auto_send_enabled
 
+    def set_sleeping(self, sleeping: bool, *, force_emit: bool = False) -> None:
+        """
+        Set sleeping mode.
+
+        When sleeping:
+        - VAD and ASR continue running (wakeword must still work)
+        - All non-wakeword input is ignored
+        - UI shows sleeping indicator
+
+        Args:
+            sleeping: True to enter sleeping mode, False to wake up
+            force_emit: If True, emit UI signals even if state didn't change
+                       (useful for wakeword to re-sync UI if it got out of sync)
+        """
+        with self._lock:
+            changed = self._is_sleeping != sleeping
+            self._is_sleeping = sleeping
+            bridge = self._bridge  # Save reference to avoid race condition
+
+        # Debug logging helper
+        def _log(msg):
+            import datetime
+            from pathlib import Path
+
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            line = f"[{ts}] [SLEEPING] {msg}\n"
+            print(line.strip())
+            log_path = Path(__file__).parent / "DebugLog" / "wakeword_debug.log"
+            log_path.parent.mkdir(exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+
+        # Log state change
+        if changed:
+            action = "Entering" if sleeping else "Exiting"
+            _log(f"{action} sleeping mode")
+        elif force_emit:
+            _log(f"Re-sync UI: sleeping={sleeping}")
+
+        # Emit UI signals if changed or forced
+        if not bridge or not (changed or force_emit):
+            _log(
+                f"Early return: bridge={bridge is not None}, changed={changed}, force_emit={force_emit}"
+            )
+            return
+
+        # Emit settingChanged first (for popup menu)
+        _log(f"About to emit signals, bridge={bridge is not None}")
+        try:
+            bridge.emit_setting_changed("sleeping", sleeping)
+            _log(f"emit_setting_changed('sleeping', {sleeping}) called OK")
+        except Exception as e:
+            _log(f"Warning: Failed to emit settingChanged: {e}")
+
+        # Emit stateChanged (for floating ball visual)
+        try:
+            if sleeping:
+                bridge.emit_state("SLEEPING")
+            else:
+                # When waking up, check if we're currently recording
+                # If so, restore to RECORDING state (user still has hotkey pressed)
+                if self.state == AppState.RECORDING:
+                    bridge.emit_state("RECORDING")
+                    _log("emit_state('RECORDING') called OK (wake during recording)")
+                else:
+                    bridge.emit_state("IDLE")
+            _log(
+                f"emit_state({'SLEEPING' if sleeping else 'IDLE/RECORDING'}) called OK"
+            )
+        except Exception as e:
+            _log(f"Warning: Failed to emit stateChanged: {e}")
+
     def set_bridge(self, bridge) -> None:
         """
         Set the UI bridge for Qt frontend integration.
@@ -175,6 +257,11 @@ class VoiceTypeApp:
         - emit_insert_complete()
         """
         self._bridge = bridge
+        # Also update wakeword executor's bridge reference
+        # (it was initialized with None before set_bridge was called)
+        if self.wakeword_executor:
+            self.wakeword_executor.bridge = bridge
+            print(f"[BRIDGE] Updated wakeword executor bridge: {bridge is not None}")
 
     def _emit_state(self, state: str) -> None:
         """Emit state change to UI bridge if available."""
@@ -390,10 +477,11 @@ class VoiceTypeApp:
 
         # Set hotwords based on engine type
         if engine_type == "funasr" and hasattr(self.asr_engine, "set_hotwords"):
-            # FunASR: use native hotword support
-            self.asr_engine.set_hotwords(self.hotword_manager.config.prompt_words)
+            # FunASR: use weighted hotwords (high weight = repeated for emphasis)
+            weighted_hotwords = self.hotword_manager.get_weighted_hotwords()
+            self.asr_engine.set_hotwords(weighted_hotwords)
             print(
-                f"[HOTWORD] FunASR hotwords: {len(self.hotword_manager.config.prompt_words)} words"
+                f"[HOTWORD] FunASR hotwords: {len(weighted_hotwords)} words (with weight repetition)"
             )
         elif engine_type == "fireredasr":
             # FireRedASR: NO native hotword support, rely on Layer 2/3 post-processing
@@ -440,13 +528,28 @@ class VoiceTypeApp:
             self.command_executor = CommandExecutor(
                 self.output_injector,
                 self.command_detector.commands,
-                self.command_detector.commands.get("cooldown_ms", 500),
+                self.command_detector.cooldown_ms,
             )
             print(
                 f"[COMMAND] Voice commands enabled: {len(self.command_detector.commands)} commands"
             )
         else:
             print("[COMMAND] Voice commands disabled")
+
+        # Layer -1: Wakeword system (app-level commands via "瑶瑶")
+        self.wakeword_detector = WakewordDetector()
+        if self.wakeword_detector.enabled:
+            self.wakeword_executor = WakewordExecutor(
+                self,
+                self._bridge,
+                self.wakeword_detector.cooldown_ms,
+            )
+            print(
+                f"[WAKEWORD] Enabled: '{self.wakeword_detector.wakeword}' "
+                f"({len(self.wakeword_detector.commands)} commands)"
+            )
+        else:
+            print("[WAKEWORD] Disabled")
 
         # Insight store for voice memo recording
         self.insight_store = InsightStore(
@@ -647,6 +750,34 @@ class VoiceTypeApp:
                                 "[SELECTION] No selected text, treating as normal dictation"
                             )
 
+                # === Layer -1: Wakeword Detection (app-level commands via "瑶瑶") ===
+                # Check for wakeword to control app settings (auto-send, etc.)
+                if text and self.wakeword_detector and self.wakeword_executor:
+                    wakeword_result = self.wakeword_detector.detect(text)
+                    if wakeword_result:
+                        cmd_id, action, value, response = wakeword_result
+                        success = self.wakeword_executor.execute(
+                            cmd_id, action, value, response
+                        )
+                        status = "OK" if success else "FAIL"
+                        print(f"[WAKEWORD] {status}: {cmd_id} (raw ASR: '{text}')")
+                        # Notify UI about wakeword command
+                        if self._bridge and hasattr(self._bridge, "emit_command"):
+                            self._bridge.emit_command(f"瑶瑶:{cmd_id}", success)
+                        inserted = success
+                        final_text = (
+                            f"[唤醒词] {response}" if response else f"[唤醒词] {cmd_id}"
+                        )
+                        continue  # Skip all processing layers
+
+                # === Sleeping Mode Check ===
+                # If sleeping, ignore all input (wakeword already handled above)
+                with self._lock:
+                    is_sleeping = self._is_sleeping
+                if is_sleeping:
+                    print(f"[SLEEPING] Ignoring input: '{text[:50]}...'")
+                    continue  # Skip all processing layers
+
                 # === Layer 0: Voice Command Detection (BEFORE any processing) ===
                 # Check raw ASR text for commands to achieve lowest latency
                 if text and self.command_detector and self.command_executor:
@@ -824,7 +955,10 @@ class VoiceTypeApp:
         self._stop_event.set()
         if self._asr_thread and self._asr_thread.is_alive():
             self._asr_thread.join(timeout=2.0)
-            logger.info("ASR worker thread joined")
+            if self._asr_thread.is_alive():
+                logger.warning("ASR thread did not stop in 2s")
+            else:
+                logger.info("ASR worker thread joined")
 
     def _on_audio_level(self, level: float) -> None:
         """Called with audio level updates."""
@@ -832,6 +966,13 @@ class VoiceTypeApp:
 
     def _on_hotkey(self) -> None:
         """Called when hotkey is pressed - toggle recording."""
+        # Allow hotkey in sleeping mode - wakeword detection happens BEFORE
+        # sleeping check in _asr_worker(), so "瑶瑶醒来" will still work
+        with self._lock:
+            is_sleeping = self._is_sleeping
+        if is_sleeping:
+            print("[HOTKEY] Pressed in sleeping mode - wakeword detection enabled")
+
         print(f"[HOTKEY] Pressed! Current state: {self.state.name}")
         with self._lock:
             if self.state == AppState.IDLE:
@@ -893,10 +1034,12 @@ class VoiceTypeApp:
             print("[STATE] -> IDLE (no audio)")
             return
 
-        # Immediately return to IDLE (ASR runs in background)
+        # Internal state returns to IDLE, but DON'T emit to UI yet!
+        # UI should stay in TRANSCRIBING until on_insert_complete() is called
+        # This allows the loading animation to display properly
         self.state = AppState.IDLE
-        self._emit_state("IDLE")
-        print("[STATE] -> IDLE")
+        # REMOVED: self._emit_state("IDLE") - moved to on_insert_complete flow
+        print("[STATE] -> IDLE (internal, UI stays TRANSCRIBING)")
 
     # =========================================================================
     # Selection Mode Methods
@@ -930,25 +1073,27 @@ class VoiceTypeApp:
         )
 
         if result.has_selection and result.selected_text:
-            # Store selection info
-            self._selection_mode = True
-            self._selected_text = result.selected_text
-            self._original_clipboard = result.original_clipboard
+            # Lock for thread-safe state modification
+            with self._lock:
+                # Store selection info
+                self._selection_mode = True
+                self._selected_text = result.selected_text
+                self._original_clipboard = result.original_clipboard
 
-            # Enter selection listening mode (silent, seamless experience)
-            self.state = AppState.SELECTION_LISTENING
-            self._emit_state("SELECTION_LISTENING")
+                # Enter selection listening mode (silent, seamless experience)
+                self.state = AppState.SELECTION_LISTENING
+                self._emit_state("SELECTION_LISTENING")
 
-            # Same beep as normal recording (consistent experience)
-            self._beep(800, 150)
+                # Same beep as normal recording (consistent experience)
+                self._beep(800, 150)
 
-            print(f"[SELECTION] Text selected ({len(self._selected_text)} chars)")
+                print(f"[SELECTION] Text selected ({len(self._selected_text)} chars)")
 
-            # Start recording for command
-            self._session_count += 1
-            self.state = AppState.RECORDING
-            self._emit_state("RECORDING")
-            self.audio_capture.start()
+                # Start recording for command
+                self._session_count += 1
+                self.state = AppState.RECORDING
+                self._emit_state("RECORDING")
+                self.audio_capture.start()
 
             return True
 
@@ -1154,14 +1299,25 @@ class VoiceTypeApp:
         if self.hotword_manager:
             self.hotword_manager.reload()
 
-            # Update Layer 1: ASR initial_prompt
+            # Update Layer 1: ASR engine hotwords
             if self.asr_engine:
-                initial_prompt = self.hotword_manager.build_initial_prompt()
-                if initial_prompt:
-                    self.asr_engine.set_initial_prompt(initial_prompt)
+                if self._asr_engine_type == "funasr" and hasattr(
+                    self.asr_engine, "set_hotwords"
+                ):
+                    # FunASR: update weighted hotwords
+                    weighted_hotwords = self.hotword_manager.get_weighted_hotwords()
+                    self.asr_engine.set_hotwords(weighted_hotwords)
                     print(
-                        f"[HOT-RELOAD] Updated initial_prompt: {initial_prompt[:50]}..."
+                        f"[HOT-RELOAD] Updated FunASR hotwords: {len(weighted_hotwords)} words"
                     )
+                else:
+                    # Whisper: update initial_prompt
+                    initial_prompt = self.hotword_manager.build_initial_prompt()
+                    if initial_prompt:
+                        self.asr_engine.set_initial_prompt(initial_prompt)
+                        print(
+                            f"[HOT-RELOAD] Updated initial_prompt: {initial_prompt[:50]}..."
+                        )
 
             # Update Layer 2: Regex replacements
             if self.hotword_processor:
@@ -1183,6 +1339,11 @@ class VoiceTypeApp:
 
             # Update Layer 3: Polisher
             self.polisher = self.hotword_manager.get_active_polisher()
+
+            # Update selection processor's polisher reference
+            if self.selection_processor:
+                self.selection_processor.polisher = self.polisher
+                print("[HOT-RELOAD] Updated selection processor polisher")
 
             logger.info("Configuration hot-reloaded (all 4 layers)")
             print("[HOT-RELOAD] Config reloaded successfully!")

@@ -23,7 +23,9 @@ def main():
     """Main entry point for Qt frontend with floating ball UI."""
     # Parse arguments
     parser = argparse.ArgumentParser(description="VoiceType Qt Frontend")
-    parser.add_argument("--hotkey", default="grave", help="Hotkey for recording (default: grave/`)")
+    parser.add_argument(
+        "--hotkey", default="grave", help="Hotkey for recording (default: grave/`)"
+    )
     parser.add_argument("--demo", action="store_true", help="Use mock backend for demo")
     args = parser.parse_args()
 
@@ -44,6 +46,7 @@ def main():
     if icon.isNull():
         # Fallback: create a simple colored icon
         from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor
+
         pixmap = QPixmap(32, 32)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
@@ -94,6 +97,7 @@ def main():
             else:
                 # Fallback: show near cursor
                 from PySide6.QtGui import QCursor
+
                 history.showAt(QCursor.pos())
         elif reason == QSystemTrayIcon.DoubleClick:  # Double click
             # Open settings and navigate to hotwords tab (index 1)
@@ -113,6 +117,34 @@ def main():
     bridge.commandExecuted.connect(ball.on_command_executed)  # Voice command feedback
     bridge.error.connect(lambda msg: QMessageBox.warning(None, "VoiceType Error", msg))
 
+    # Handle setting changes from backend (e.g., via wakeword commands)
+    def on_setting_changed(setting: str, value: bool):
+        # Write to debug log file
+        from pathlib import Path
+        import datetime
+
+        log_path = (
+            Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+        )
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [MAIN] on_setting_changed received: {setting} = {value}\n")
+        print(f"[UI] Setting changed via wakeword: {setting} = {value}")
+        if setting == "auto_send":
+            action_auto_send.setChecked(value)
+            ball.set_auto_send(value)  # Update floating ball color indicator
+        elif setting == "mute" or setting == "sound_enabled":
+            # sound_enabled=False means mute=True
+            action_mute.setChecked(not value if setting == "sound_enabled" else value)
+        elif setting == "sleeping":
+            # Update popup menu's exit sleeping button visibility
+            ball.set_sleeping_state(value)
+            # Also update ball visual state as fallback
+            # (in case stateChanged signal was missed/reordered)
+            ball.on_state_changed("SLEEPING" if value else "IDLE")
+
+    bridge.settingChanged.connect(on_setting_changed)
+
     # Sound effects disabled - only hotkey press sounds in app.py
     # (start_recording beep and stop_recording beep)
 
@@ -122,6 +154,7 @@ def main():
     if args.demo:
         # Demo mode with mock backend
         from .mock_backend import MockBackend
+
         backend = MockBackend(bridge)
         print("VoiceType Qt Frontend Started (Demo Mode - Floating Ball)")
     else:
@@ -135,17 +168,19 @@ def main():
             print(f"VoiceType Qt Frontend Started (Hotkey: {args.hotkey})")
         except Exception as e:
             # Clean up any partially started resources
-            if backend is not None and hasattr(backend, 'stop'):
+            if backend is not None and hasattr(backend, "stop"):
                 try:
                     backend.stop()
                 except Exception:
                     pass  # Ignore cleanup errors
 
             QMessageBox.critical(
-                None, "Startup Error",
-                f"Failed to start VoiceType backend:\n{e}\n\nFalling back to demo mode."
+                None,
+                "Startup Error",
+                f"Failed to start VoiceType backend:\n{e}\n\nFalling back to demo mode.",
             )
             from .mock_backend import MockBackend
+
             backend = MockBackend(bridge)
 
     # Connect ball actions
@@ -154,18 +189,22 @@ def main():
     # Connect mute action to backend
     def on_mute_toggled():
         muted = action_mute.isChecked()
-        if hasattr(backend, 'set_sound_enabled'):
+        if hasattr(backend, "set_sound_enabled"):
             backend.set_sound_enabled(not muted)
         # Also mute UI sounds
         from .sound import get_sound_manager
+
         get_sound_manager().enabled = not muted
+
     action_mute.triggered.connect(on_mute_toggled)
 
     # Connect auto-send action to backend
     def on_auto_send_toggled():
         enabled = action_auto_send.isChecked()
-        if hasattr(backend, 'set_auto_send'):
+        if hasattr(backend, "set_auto_send"):
             backend.set_auto_send(enabled)
+        ball.set_auto_send(enabled)  # Update floating ball color indicator
+
     action_auto_send.triggered.connect(on_auto_send_toggled)
 
     # Settings window: show and bring to front
@@ -180,7 +219,7 @@ def main():
     # Handle enable toggle from popup menu
     def on_enable_toggled(enabled):
         print(f"[VoiceType] Enable toggled: {enabled}")
-        if hasattr(backend, 'set_enabled'):
+        if hasattr(backend, "set_enabled"):
             backend.set_enabled(enabled)
 
     ball.enableToggled.connect(on_enable_toggled)
@@ -188,15 +227,24 @@ def main():
     # Handle mode change from popup menu
     def on_mode_changed(mode):
         print(f"[VoiceType] Polish mode changed: {mode}")
-        if hasattr(backend, 'set_polish_mode'):
+        if hasattr(backend, "set_polish_mode"):
             backend.set_polish_mode(mode)
         # Sync settings window
         settings.set_polish_mode(mode)
 
     ball.modeChanged.connect(on_mode_changed)
 
+    # Handle sleep toggle from popup menu (fallback button)
+    def on_sleep_toggled(sleeping):
+        print(f"[VoiceType] Sleep toggled via UI: {sleeping}")
+        if hasattr(backend, "set_sleeping"):
+            backend.set_sleeping(sleeping)
+
+    if ball._popup_menu:
+        ball._popup_menu.sleepToggled.connect(on_sleep_toggled)
+
     # Sync initial mode from backend to popup menu
-    if hasattr(backend, 'get_polish_mode'):
+    if hasattr(backend, "get_polish_mode"):
         initial_mode = backend.get_polish_mode()
         ball.set_polish_mode(initial_mode)
         print(f"[VoiceType] Initial polish mode: {initial_mode}")
@@ -206,7 +254,7 @@ def main():
         print("[VoiceType] Cleaning up and quitting...")
         # Hide tray icon first to prevent ghost icons on Windows
         tray.hide()
-        if hasattr(backend, 'stop'):
+        if hasattr(backend, "stop"):
             backend.stop()
         app.quit()
 
@@ -219,23 +267,23 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    atexit.register(lambda: backend.stop() if hasattr(backend, 'stop') else None)
+    atexit.register(lambda: backend.stop() if hasattr(backend, "stop") else None)
 
     # Settings saved -> reload backend config and sync popup menu
     def on_settings_saved(config):
-        if hasattr(backend, 'reload_config'):
+        if hasattr(backend, "reload_config"):
             backend.reload_config()
 
         # Sync hotkey if changed
-        general = config.get('general', {})
-        saved_hotkey = general.get('hotkey', '')
-        if saved_hotkey and hasattr(backend, 'set_hotkey'):
+        general = config.get("general", {})
+        saved_hotkey = general.get("hotkey", "")
+        if saved_hotkey and hasattr(backend, "set_hotkey"):
             # Convert Qt key sequence format to hotkey format if needed
-            hotkey_lower = saved_hotkey.lower().replace(' ', '')
+            hotkey_lower = saved_hotkey.lower().replace(" ", "")
             backend.set_hotkey(hotkey_lower)
 
         # Sync popup menu with saved mode
-        saved_mode = config.get('polish_mode', 'fast')
+        saved_mode = config.get("polish_mode", "fast")
         ball.set_polish_mode(saved_mode)
         print(f"[VoiceType] Settings saved, polish mode synced: {saved_mode}")
 
@@ -245,10 +293,9 @@ def main():
     ball.show()
 
     print("VoiceType Floating Ball is now visible.")
-    print("  - Left-click: Show popup menu")
-    print("  - Double-click: Open settings")
-    print("  - Middle-click: Toggle recording")
-    print("  - Right-click: Lock position")
+    print("  - Left-click: Toggle recording")
+    print("  - Right-click: Show popup menu")
+    print("  - Middle-click: Lock position")
     print("  - Drag: Move ball (when unlocked)")
     print("  - System tray single-click: Show history (Ctrl+1-9 to copy)")
     print("  - System tray double-click: Open hotwords settings")

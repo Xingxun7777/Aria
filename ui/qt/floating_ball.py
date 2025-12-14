@@ -53,6 +53,7 @@ class FloatingBall(QWidget):
         "selection_listening"  # Purple: waiting for voice command
     )
     STATE_SELECTION_PROCESSING = "selection_processing"  # Blue: processing with LLM
+    STATE_SLEEPING = "sleeping"  # Sleeping: dim, ignore all input
 
     def __init__(self, size: int = 48):
         super().__init__()
@@ -102,6 +103,15 @@ class FloatingBall(QWidget):
         # Command execution visual feedback
         self._command_flash_active = False
         self._command_flash_color = QColor(100, 180, 255, 200)  # Default: blue
+
+        # Bounce animation for command execution (physical feedback)
+        self._bounce_active = False
+        self._bounce_phase = 0.0  # 0.0 -> 1.0 during animation
+        self._bounce_amplitude = 8.0  # Max pixels to move
+        self._bounce_duration_frames = 12  # ~400ms at 33ms/frame
+
+        # Auto-send state indicator (persistent color tint)
+        self._auto_send_enabled = False
 
         # Debug log file for tracking state changes (controlled by config)
         self._debug_log_path = None
@@ -247,12 +257,36 @@ class FloatingBall(QWidget):
         center = self.rect().center()
         painter.translate(center)
         painter.scale(self._window_scale, self._window_scale)
+
+        # Apply bounce offset (command execution feedback)
+        if self._bounce_active or self._bounce_phase > 0:
+            # Sine wave bounce: up -> down -> up (nod effect)
+            bounce_y = (
+                math.sin(self._bounce_phase * math.pi * 2) * self._bounce_amplitude
+            )
+            painter.translate(0, -bounce_y)
+
         painter.translate(-center)
 
         radius = self.ball_size // 2
 
+        # Debug: Log state during paint (to diagnose gray ball issue)
+        if (
+            hasattr(self, "_last_logged_state")
+            and self._last_logged_state != self._state
+        ):
+            print(
+                f"[PAINT] State changed: {self._last_logged_state} -> {self._state}, flash_active={self._command_flash_active}"
+            )
+        self._last_logged_state = self._state
+
         # Glass-morphism ball body
-        if self._is_locked:
+        is_sleeping_visual = self._state == self.STATE_SLEEPING
+        if is_sleeping_visual:
+            # Sleeping: very dim, muted appearance
+            base_alpha = 40
+            highlight_alpha = 8
+        elif self._is_locked:
             # Locked: very transparent, nearly invisible
             base_alpha = 50
             highlight_alpha = 10
@@ -263,11 +297,23 @@ class FloatingBall(QWidget):
             base_alpha = 180
             highlight_alpha = 45
 
-        # Main ball gradient (dark glass with soft edge)
+        # Main ball gradient - use purple/blue tint for selection modes
         gradient = QRadialGradient(center, radius)
-        gradient.setColorAt(0, QColor(45, 45, 50, base_alpha))
-        gradient.setColorAt(0.85, QColor(35, 35, 40, base_alpha))
-        gradient.setColorAt(1.0, QColor(30, 30, 35, int(base_alpha * 0.7)))
+        if self._state == self.STATE_SELECTION_LISTENING:
+            # Purple tinted background for selection listening mode
+            gradient.setColorAt(0, QColor(70, 45, 90, base_alpha))
+            gradient.setColorAt(0.85, QColor(55, 35, 70, base_alpha))
+            gradient.setColorAt(1.0, QColor(45, 30, 60, int(base_alpha * 0.7)))
+        elif self._state == self.STATE_SELECTION_PROCESSING:
+            # Blue tinted background for selection processing mode
+            gradient.setColorAt(0, QColor(45, 55, 90, base_alpha))
+            gradient.setColorAt(0.85, QColor(35, 45, 70, base_alpha))
+            gradient.setColorAt(1.0, QColor(30, 40, 60, int(base_alpha * 0.7)))
+        else:
+            # Default dark glass
+            gradient.setColorAt(0, QColor(45, 45, 50, base_alpha))
+            gradient.setColorAt(0.85, QColor(35, 35, 40, base_alpha))
+            gradient.setColorAt(1.0, QColor(30, 30, 35, int(base_alpha * 0.7)))
 
         # Draw ball body
         painter.setPen(Qt.NoPen)
@@ -301,6 +347,11 @@ class FloatingBall(QWidget):
             painter.setPen(QPen(QColor(100, 150, 255, 120), 2))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
+        elif self._state == self.STATE_SLEEPING:
+            # Sleeping: very dim border
+            painter.setPen(QPen(QColor(150, 150, 200, 30), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._is_locked:
             # Very subtle border when locked (more transparent)
             painter.setPen(QPen(QColor(255, 255, 255, 10), 1))
@@ -309,6 +360,42 @@ class FloatingBall(QWidget):
         else:
             # Subtle white border when idle
             painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, radius - 1, radius - 1)
+
+        # Command flash overlay (for wake-up animation and command feedback)
+        if self._command_flash_active:
+            print(f"[PAINT] Rendering flash! state={self._state}")
+            flash_gradient = QRadialGradient(center, radius)
+            flash_color = self._command_flash_color
+            # Inner bright, outer fade
+            flash_gradient.setColorAt(
+                0,
+                QColor(
+                    flash_color.red(),
+                    flash_color.green(),
+                    flash_color.blue(),
+                    flash_color.alpha(),
+                ),
+            )
+            flash_gradient.setColorAt(
+                0.6,
+                QColor(
+                    flash_color.red(),
+                    flash_color.green(),
+                    flash_color.blue(),
+                    flash_color.alpha() // 2,
+                ),
+            )
+            flash_gradient.setColorAt(
+                1.0,
+                QColor(flash_color.red(), flash_color.green(), flash_color.blue(), 0),
+            )
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(flash_gradient))
+            painter.drawEllipse(center, radius, radius)
+            # Also draw a brighter border ring
+            painter.setPen(QPen(flash_color, 2.5))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
 
@@ -471,10 +558,18 @@ class FloatingBall(QWidget):
             base_alpha = int(180 * max(0.3, icon_progress))
 
             if level < 0.08:
-                # No significant audio - just show solid dot
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(255, 255, 255, base_alpha))
-                painter.drawEllipse(center, dot_radius, dot_radius)
+                # No significant audio - show dot or ring based on auto-send state
+                if self._auto_send_enabled:
+                    # Auto-send ON: hollow ring (smaller, thicker)
+                    ring_radius = 5
+                    painter.setPen(QPen(QColor(255, 255, 255, base_alpha), 3))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawEllipse(center, ring_radius, ring_radius)
+                else:
+                    # Auto-send OFF: solid dot (default)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(255, 255, 255, base_alpha))
+                    painter.drawEllipse(center, dot_radius, dot_radius)
             else:
                 # Audio detected - draw wavy ring (dot has "expanded" into this)
                 # Ring starts from dot size and expands with level
@@ -572,6 +667,13 @@ class FloatingBall(QWidget):
                 270 * 16,
             )
 
+        elif self._state == self.STATE_SLEEPING:
+            # Sleeping: small dim ring (similar to auto-send but dimmer)
+            ring_radius = 4
+            painter.setPen(QPen(QColor(150, 150, 200, 50), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, ring_radius, ring_radius)
+
         elif self._is_locked:
             # Locked: subtle lock icon (more transparent)
             painter.setPen(QPen(QColor(255, 255, 255, 100), 1.5))
@@ -635,12 +737,20 @@ class FloatingBall(QWidget):
             ) * 0.15
             animations_active = True
         else:
-            # Very smooth decay for natural fade out
+            # Faster decay for responsive fade out (~0.5s response)
             self._audio_level_smooth += (
                 self._audio_level - self._audio_level_smooth
-            ) * 0.06
+            ) * 0.15
             if self._audio_level_smooth > 0.01:
                 animations_active = True
+
+        # Bounce animation update (for command execution feedback)
+        if self._bounce_active:
+            self._bounce_phase += 1.0 / self._bounce_duration_frames
+            if self._bounce_phase >= 1.0:
+                self._bounce_phase = 1.0
+                self._bounce_active = False
+            animations_active = True
 
         # Adaptive frame rate: slow down when truly idle to save CPU
         is_truly_idle = (
@@ -727,6 +837,10 @@ class FloatingBall(QWidget):
             ):
                 self._window_scale_target = self._SCALE_ACTIVE
                 self._icon_scale_target = 1.0
+            elif self._state == self.STATE_SLEEPING:
+                # Respect SLEEPING state's smaller scale (bug fix)
+                self._window_scale_target = self._SCALE_IDLE * 0.9
+                self._icon_scale_target = 0.0
             else:
                 self._window_scale_target = self._SCALE_IDLE
                 self._icon_scale_target = 0.0
@@ -817,16 +931,70 @@ class FloatingBall(QWidget):
     @Slot(str)
     def on_state_changed(self, state: str):
         """Handle state changes from backend."""
+
+        # Debug logging to file
+        def _flog(msg):
+            from pathlib import Path
+            import datetime
+
+            log_path = (
+                Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+            )
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] [BALL] {msg}\n")
+
+        # Normalize state string to handle whitespace/case mismatches
+        state = (state or "").strip().upper()
+
         old_state = self._state
+        _flog(f"on_state_changed: '{old_state}' -> '{state}'")
+        # Always print state changes to console for debugging
+        print(
+            f"[FloatingBall] STATE CHANGE: '{old_state}' -> '{state}' (STATE_SLEEPING='{self.STATE_SLEEPING}')"
+        )
         self._log(
             f"STATE: {old_state} -> {state}, processing={self._is_processing}, scale={self._window_scale:.2f}, target={self._window_scale_target:.2f}"
         )
 
         if state == "IDLE":
+            was_sleeping = old_state == self.STATE_SLEEPING
+            # Also check if we were in a dim/sleeping-like visual state
+            # (scale target is smaller than idle, indicating sleeping appearance)
+            was_visually_sleeping = self._window_scale_target < self._SCALE_IDLE
+            _flog(
+                f"IDLE check: was_sleeping={was_sleeping}, was_visually={was_visually_sleeping}, old='{old_state}', target={self._window_scale_target:.2f}"
+            )
+            print(
+                f"[FloatingBall] IDLE: was_sleeping={was_sleeping}, was_visually_sleeping={was_visually_sleeping}, old_state='{old_state}', STATE_SLEEPING='{self.STATE_SLEEPING}'"
+            )
             self._state = self.STATE_IDLE
             self._is_speaking = False
+
+            # Force restore from SLEEPING - always reset visual state
+            # Use OR condition to catch cases where old_state tracking failed
+            if was_sleeping or was_visually_sleeping:
+                self._is_processing = False  # Ensure clean state
+                self._icon_scale_target = 0.0
+                self._window_scale_target = self._SCALE_IDLE
+                _flog(f"WAKE UP! Restoring scale to {self._SCALE_IDLE}")
+                print(
+                    f"[FloatingBall] WAKE UP! old={old_state}, new={self._state}, was_visually_sleeping={was_visually_sleeping}, forcing repaint"
+                )
+                self._log(f"IDLE (from SLEEPING): FORCE restore to {self._SCALE_IDLE}")
+
+                # Trigger wake-up animation: bounce only (flash disabled per user feedback)
+                self._bounce_active = True
+                self._bounce_phase = 0.0
+                print(f"[WAKE] Bounce activated! state={self._state}")
+
+                # Ensure smooth animation by setting timer to high FPS
+                self._pulse_timer.setInterval(33)  # 30 FPS for smooth wake animation
+
+                # Force immediate repaint
+                self.update()
             # Only shrink if NOT processing (backend finished)
-            if not self._is_processing:
+            elif not self._is_processing:
                 self._icon_scale_target = 0.0
                 self._window_scale_target = self._SCALE_IDLE
                 self._log(f"IDLE (not processing): SHRINK to {self._SCALE_IDLE}")
@@ -870,6 +1038,17 @@ class FloatingBall(QWidget):
             self._log(
                 f"SELECTION_PROCESSING: processing=True, scale={self._SCALE_ACTIVE}"
             )
+        elif state == "SLEEPING":
+            print(
+                f"[FloatingBall] SLEEPING received! Setting state to '{self.STATE_SLEEPING}'"
+            )
+            self._state = self.STATE_SLEEPING
+            self._is_speaking = False
+            self._is_processing = False
+            # Sleeping: shrink slightly, dim appearance
+            self._window_scale_target = self._SCALE_IDLE * 0.9
+            self._icon_scale_target = 0.0
+            self._log(f"SLEEPING: dim mode, scale={self._SCALE_IDLE * 0.9}")
 
         if old_state != self._state:
             self.update()
@@ -927,29 +1106,27 @@ class FloatingBall(QWidget):
         # This is the correct behavior - ball should be small when backend is idle
         self._is_speaking = False
         self._icon_scale_target = 0.0
-        self._window_scale_target = self._SCALE_IDLE
-        self._log(f">>> SHRINK to {self._SCALE_IDLE}")
+
+        # Respect SLEEPING state's smaller scale (bug fix: don't override sleeping shrink)
+        if self._state == self.STATE_SLEEPING:
+            self._window_scale_target = self._SCALE_IDLE * 0.9  # Keep at 0.765
+            self._log(f">>> SHRINK to {self._SCALE_IDLE * 0.9} (sleeping)")
+        else:
+            self._window_scale_target = self._SCALE_IDLE
+            self._log(f">>> SHRINK to {self._SCALE_IDLE}")
 
         self.update()
 
     @Slot(str, bool)
     def on_command_executed(self, command_id: str, success: bool):
-        """Handle voice command execution - flash blue briefly."""
+        """Handle voice command execution - bounce animation only (no flash per user request)."""
         self._log(f"COMMAND_EXECUTED: {command_id}, success={success}")
 
-        # Brief visual feedback: flash command color
+        # Only bounce animation for successful commands (flash disabled per user feedback)
         if success:
-            # Blue flash for success
-            self._command_flash_color = QColor(100, 180, 255, 200)
-        else:
-            # Red flash for failure
-            self._command_flash_color = QColor(255, 100, 100, 200)
-
-        self._command_flash_active = True
-        self.update()
-
-        # Clear flash after 300ms
-        QTimer.singleShot(300, self._clear_command_flash)
+            self._bounce_active = True
+            self._bounce_phase = 0.0
+            self.update()
 
     def _clear_command_flash(self):
         """Clear command execution flash."""
@@ -964,8 +1141,17 @@ class FloatingBall(QWidget):
             self._is_processing = False
             self._is_speaking = False
             self._icon_scale_target = 0.0
-            self._window_scale_target = self._SCALE_IDLE
-            self._log(f">>> SHRINK (fallback) to {self._SCALE_IDLE}")
+
+            # Respect SLEEPING state's smaller scale (bug fix: don't override sleeping shrink)
+            if self._state == self.STATE_SLEEPING:
+                self._window_scale_target = self._SCALE_IDLE * 0.9
+                self._log(
+                    f">>> SHRINK (fallback) to {self._SCALE_IDLE * 0.9} (sleeping)"
+                )
+            else:
+                self._window_scale_target = self._SCALE_IDLE
+                self._log(f">>> SHRINK (fallback) to {self._SCALE_IDLE}")
+
             self.update()
 
     def unlock(self):
@@ -985,3 +1171,31 @@ class FloatingBall(QWidget):
         """
         if self._popup_menu:
             self._popup_menu.setMode(mode)
+
+    def set_sleeping_state(self, is_sleeping: bool) -> None:
+        """
+        Set sleeping state for popup menu (shows/hides exit sleeping button).
+
+        Args:
+            is_sleeping: True if currently in sleeping mode
+        """
+        if self._popup_menu:
+            self._popup_menu.set_sleeping_state(is_sleeping)
+
+    def set_auto_send(self, enabled: bool) -> None:
+        """
+        Set auto-send state indicator (changes ball interior color).
+
+        Args:
+            enabled: True if auto-send is enabled
+        """
+        print(
+            f"[FloatingBall] set_auto_send called: {enabled} (was: {self._auto_send_enabled})"
+        )
+        if self._auto_send_enabled != enabled:
+            self._auto_send_enabled = enabled
+            self._log(f"AUTO_SEND state changed: {enabled}")
+            print(
+                f"[FloatingBall] AUTO_SEND state changed to: {enabled}, calling update()"
+            )
+            self.update()
