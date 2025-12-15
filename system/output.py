@@ -43,46 +43,83 @@ VK_V = 0x56
 
 # Virtual key codes - Extended for commands
 VK_CODES = {
-    'enter': 0x0D,
-    'return': 0x0D,
-    'backspace': 0x08,
-    'delete': 0x2E,
-    'tab': 0x09,
-    'escape': 0x1B,
-    'space': 0x20,
-    'up': 0x26,
-    'down': 0x28,
-    'left': 0x25,
-    'right': 0x27,
-    'home': 0x24,
-    'end': 0x23,
-    'pageup': 0x21,
-    'pagedown': 0x22,
+    "enter": 0x0D,
+    "return": 0x0D,
+    "backspace": 0x08,
+    "delete": 0x2E,
+    "tab": 0x09,
+    "escape": 0x1B,
+    "space": 0x20,
+    "up": 0x26,
+    "down": 0x28,
+    "left": 0x25,
+    "right": 0x27,
+    "home": 0x24,
+    "end": 0x23,
+    "pageup": 0x21,
+    "pagedown": 0x22,
     # Letter keys (A-Z)
-    'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45,
-    'f': 0x46, 'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A,
-    'k': 0x4B, 'l': 0x4C, 'm': 0x4D, 'n': 0x4E, 'o': 0x4F,
-    'p': 0x50, 'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
-    'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58, 'y': 0x59,
-    'z': 0x5A,
+    "a": 0x41,
+    "b": 0x42,
+    "c": 0x43,
+    "d": 0x44,
+    "e": 0x45,
+    "f": 0x46,
+    "g": 0x47,
+    "h": 0x48,
+    "i": 0x49,
+    "j": 0x4A,
+    "k": 0x4B,
+    "l": 0x4C,
+    "m": 0x4D,
+    "n": 0x4E,
+    "o": 0x4F,
+    "p": 0x50,
+    "q": 0x51,
+    "r": 0x52,
+    "s": 0x53,
+    "t": 0x54,
+    "u": 0x55,
+    "v": 0x56,
+    "w": 0x57,
+    "x": 0x58,
+    "y": 0x59,
+    "z": 0x5A,
     # Number keys (0-9)
-    '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34,
-    '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
+    "0": 0x30,
+    "1": 0x31,
+    "2": 0x32,
+    "3": 0x33,
+    "4": 0x34,
+    "5": 0x35,
+    "6": 0x36,
+    "7": 0x37,
+    "8": 0x38,
+    "9": 0x39,
     # Function keys
-    'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
-    'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
-    'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+    "f1": 0x70,
+    "f2": 0x71,
+    "f3": 0x72,
+    "f4": 0x73,
+    "f5": 0x74,
+    "f6": 0x75,
+    "f7": 0x76,
+    "f8": 0x77,
+    "f9": 0x78,
+    "f10": 0x79,
+    "f11": 0x7A,
+    "f12": 0x7B,
 }
 
 # Modifier key codes
 VK_MODIFIERS = {
-    'ctrl': 0x11,
-    'control': 0x11,
-    'shift': 0x10,
-    'alt': 0x12,
-    'win': 0x5B,
-    'lwin': 0x5B,
-    'rwin': 0x5C,
+    "ctrl": 0x11,
+    "control": 0x11,
+    "shift": 0x10,
+    "alt": 0x12,
+    "win": 0x5B,
+    "lwin": 0x5B,
+    "rwin": 0x5C,
 }
 
 # ULONG_PTR is 8 bytes on 64-bit Windows, 4 bytes on 32-bit
@@ -151,9 +188,10 @@ user32.GetClipboardData.restype = ctypes.c_void_p
 @dataclass
 class OutputConfig:
     """Output injection configuration."""
-    paste_delay_ms: int = 50      # Delay between clipboard set and paste
+
+    paste_delay_ms: int = 50  # Delay between clipboard set and paste
     restore_clipboard: bool = True  # Restore original clipboard after paste
-    restore_delay_ms: int = 100   # Delay before restoring clipboard
+    restore_delay_ms: int = 100  # Delay before restoring clipboard
 
 
 class OutputInjector:
@@ -167,6 +205,11 @@ class OutputInjector:
 
     def __init__(self, config: Optional[OutputConfig] = None):
         self.config = config or OutputConfig()
+        self._clipboard_lock = None  # Optional thread lock for clipboard operations
+
+    def set_clipboard_lock(self, lock) -> None:
+        """Set a threading lock for thread-safe clipboard operations."""
+        self._clipboard_lock = lock
 
     def _get_clipboard_text(self) -> Optional[str]:
         """Get current clipboard text content."""
@@ -205,7 +248,7 @@ class OutputInjector:
                 user32.EmptyClipboard()
 
                 # Allocate memory for text (including null terminator)
-                text_bytes = (text + '\0').encode('utf-16-le')
+                text_bytes = (text + "\0").encode("utf-16-le")
                 size = len(text_bytes)
 
                 handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
@@ -265,7 +308,9 @@ class OutputInjector:
 
         result = user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
         if result != 4:
-            logger.warning(f"SendInput returned {result}/4, error={ctypes.get_last_error()}")
+            logger.warning(
+                f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
+            )
 
     def insert_text(self, text: str) -> bool:
         """
@@ -381,10 +426,12 @@ class OutputInjector:
         # Send all inputs
         result = user32.SendInput(total_inputs, inputs, ctypes.sizeof(INPUT))
         if result != total_inputs:
-            logger.warning(f"SendInput returned {result}/{total_inputs}, error={ctypes.get_last_error()}")
+            logger.warning(
+                f"SendInput returned {result}/{total_inputs}, error={ctypes.get_last_error()}"
+            )
             return False
 
-        mod_str = '+'.join(modifiers) + '+' if modifiers else ''
+        mod_str = "+".join(modifiers) + "+" if modifiers else ""
         logger.info(f"Key sent: {mod_str}{key}")
         return True
 
