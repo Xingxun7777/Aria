@@ -31,6 +31,7 @@ logger = get_system_logger()
 try:
     from funasr import AutoModel
     from funasr.utils.postprocess_utils import rich_transcription_postprocess
+
     FUNASR_AVAILABLE = True
 except ImportError:
     FUNASR_AVAILABLE = False
@@ -40,6 +41,7 @@ except ImportError:
 @dataclass
 class FunASRConfig:
     """Configuration for FunASR engine."""
+
     # Model selection
     model_name: str = "paraformer-zh"  # or "iic/SenseVoiceSmall"
     device: str = "cuda"  # "cuda" or "cpu"
@@ -107,13 +109,23 @@ class FunASREngine(ASREngine):
                     model=self.config.model_name,
                     trust_remote_code=True,
                     vad_model=self.config.vad_model if self.config.enable_vad else None,
-                    vad_kwargs={"max_single_segment_time": self.config.max_single_segment_time},
-                    device=f"{self.config.device}:0" if self.config.device == "cuda" else self.config.device,
+                    vad_kwargs={
+                        "max_single_segment_time": self.config.max_single_segment_time
+                    },
+                    device=(
+                        f"{self.config.device}:0"
+                        if self.config.device == "cuda"
+                        else self.config.device
+                    ),
                 )
             else:
                 # Paraformer model
                 # Device format: cuda -> cuda:0
-                device = f"{self.config.device}:0" if self.config.device == "cuda" else self.config.device
+                device = (
+                    f"{self.config.device}:0"
+                    if self.config.device == "cuda"
+                    else self.config.device
+                )
 
                 model_kwargs = {
                     "model": self.config.model_name,
@@ -125,7 +137,9 @@ class FunASREngine(ASREngine):
 
                 if self.config.enable_vad:
                     model_kwargs["vad_model"] = self.config.vad_model
-                    model_kwargs["vad_kwargs"] = {"max_single_segment_time": self.config.max_single_segment_time}
+                    model_kwargs["vad_kwargs"] = {
+                        "max_single_segment_time": self.config.max_single_segment_time
+                    }
 
                 if self.config.enable_punc:
                     model_kwargs["punc_model"] = self.config.punc_model
@@ -136,6 +150,8 @@ class FunASREngine(ASREngine):
             logger.info(f"FunASR model loaded in {load_time:.2f}s")
 
         except Exception as e:
+            # Ensure model is cleaned up on failure
+            self._model = None
             logger.error(f"Failed to load FunASR model: {e}")
             raise
 
@@ -150,6 +166,7 @@ class FunASREngine(ASREngine):
         For true streaming, consider using paraformer-zh-streaming model.
         """
         from typing import Generator
+
         # Collect all audio from generator
         audio_chunks = []
         for chunk in audio_generator:
@@ -178,8 +195,12 @@ class FunASREngine(ASREngine):
             raise RuntimeError("Model not loaded. Call load() first.")
 
         # Log model state for debugging
-        logger.info(f"FunASR transcribe called. Model type: {type(self._model)}, config.model_name: {self.config.model_name}")
-        print(f"[ASR DEBUG] Model loaded: {self._model is not None}, Model name: {self.config.model_name}")
+        logger.info(
+            f"FunASR transcribe called. Model type: {type(self._model)}, config.model_name: {self.config.model_name}"
+        )
+        print(
+            f"[ASR DEBUG] Model loaded: {self._model is not None}, Model name: {self.config.model_name}"
+        )
 
         with self._lock:
             start_time = time.time()
@@ -225,7 +246,9 @@ class FunASREngine(ASREngine):
                     "abs_max": float(np.abs(audio_float).max()),
                 }
                 logger.info(f"FunASR starting generate() - audio stats: {audio_stats}")
-                print(f"[ASR DEBUG] Audio stats: shape={audio_float.shape}, abs_max={audio_stats['abs_max']:.4f}, non_zero={audio_stats['non_zero']}")
+                print(
+                    f"[ASR DEBUG] Audio stats: shape={audio_float.shape}, abs_max={audio_stats['abs_max']:.4f}, non_zero={audio_stats['non_zero']}"
+                )
 
                 result = self._model.generate(**gen_kwargs)
 
@@ -247,30 +270,34 @@ class FunASREngine(ASREngine):
                     # Remove spaces between Chinese characters (Paraformer adds them)
                     # Keep spaces around English/numbers
                     import re
+
                     # Remove space between two Chinese characters
-                    text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
+                    text = re.sub(
+                        r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])", r"\1\2", text
+                    )
                     # May need multiple passes for consecutive spaces
-                    text = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', text)
+                    text = re.sub(
+                        r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])", r"\1\2", text
+                    )
                 else:
                     text = ""
 
                 transcribe_time = time.time() - start_time
-                logger.debug(f"FunASR transcribed in {transcribe_time:.3f}s: {text[:50]}...")
+                logger.debug(
+                    f"FunASR transcribed in {transcribe_time:.3f}s: {text[:50]}..."
+                )
 
                 return ASRResult(
                     text=text.strip(),
                     type=TranscriptType.FINAL,
                     language="zh",
-                    confidence=1.0  # FunASR doesn't provide confidence
+                    confidence=1.0,  # FunASR doesn't provide confidence
                 )
 
             except Exception as e:
                 logger.error(f"FunASR transcription error: {e}")
                 return ASRResult(
-                    text="",
-                    type=TranscriptType.FINAL,
-                    language="zh",
-                    confidence=0.0
+                    text="", type=TranscriptType.FINAL, language="zh", confidence=0.0
                 )
 
     def set_hotwords(self, hotwords: List[str]) -> None:
@@ -303,20 +330,17 @@ def check_funasr_installation() -> dict:
     Returns:
         Dict with installation info
     """
-    info = {
-        "installed": FUNASR_AVAILABLE,
-        "version": None,
-        "models_available": []
-    }
+    info = {"installed": FUNASR_AVAILABLE, "version": None, "models_available": []}
 
     if FUNASR_AVAILABLE:
         try:
             import funasr
+
             info["version"] = getattr(funasr, "__version__", "unknown")
             info["models_available"] = [
                 "paraformer-zh",
                 "paraformer-zh-streaming",
-                "iic/SenseVoiceSmall"
+                "iic/SenseVoiceSmall",
             ]
         except Exception as e:
             info["error"] = str(e)

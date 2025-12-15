@@ -4,8 +4,13 @@
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Optional, Callable
+
+# Add parent to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from voicetype.core.utils import get_config_path
 
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -129,10 +134,7 @@ class SettingsWindow(QMainWindow):
         self.resize(900, 650)
         self.setStyleSheet(styles.STYLESHEET_SETTINGS)
 
-        self.config_path = (
-            config_path
-            or Path(__file__).parent.parent.parent / "config" / "hotwords.json"
-        )
+        self.config_path = config_path or get_config_path("hotwords.json")
         self.config = {}
 
         self._init_ui()
@@ -615,27 +617,30 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(QLabel("<h2>高级设置</h2>"))
 
-        # Whisper settings
-        whisper_group = QGroupBox("Whisper ASR")
-        whisper_layout = QFormLayout(whisper_group)
+        # ASR settings (FunASR)
+        asr_group = QGroupBox("语音识别 (FunASR)")
+        asr_layout = QFormLayout(asr_group)
 
-        self.whisper_model = QComboBox()
-        self.whisper_model.addItems(
-            ["tiny", "base", "small", "medium", "large", "large-v3"]
+        self.asr_model = QComboBox()
+        self.asr_model.addItems(
+            [
+                "大模型 (paraformer-zh) - 推荐，准确度高",
+                "小模型 (SenseVoice) - 显存<8GB时使用",
+            ]
         )
-        self.whisper_model.setCurrentText("large-v3")
-        whisper_layout.addRow("模型:", self.whisper_model)
+        self.asr_model.setCurrentIndex(0)
+        asr_layout.addRow("模型:", self.asr_model)
 
-        self.whisper_device = QComboBox()
-        self.whisper_device.addItems(["cuda", "cpu"])
-        whisper_layout.addRow("设备:", self.whisper_device)
+        self.asr_device = QComboBox()
+        self.asr_device.addItems(["cuda", "cpu"])
+        asr_layout.addRow("设备:", self.asr_device)
 
-        self.whisper_language = QComboBox()
-        self.whisper_language.addItems(["zh", "en", "ja", "auto"])
-        self.whisper_language.setCurrentText("zh")
-        whisper_layout.addRow("语言:", self.whisper_language)
+        # Model info label
+        model_info = QLabel("大模型约需3GB显存，小模型约需1.5GB显存")
+        model_info.setStyleSheet("color: #888; font-size: 12px;")
+        asr_layout.addRow("", model_info)
 
-        layout.addWidget(whisper_group)
+        layout.addWidget(asr_group)
 
         # VAD settings
         vad_group = QGroupBox("VAD (语音活动检测)")
@@ -752,22 +757,19 @@ class SettingsWindow(QMainWindow):
         self.timeout.setValue(polish.get("timeout", 30))
 
         # === Advanced tab ===
-        # Whisper settings
-        whisper = self.config.get("whisper", {})
-        whisper_model = whisper.get("model", "large-v3")
-        idx = self.whisper_model.findText(whisper_model)
-        if idx >= 0:
-            self.whisper_model.setCurrentIndex(idx)
+        # FunASR settings
+        funasr = self.config.get("funasr", {})
+        funasr_model = funasr.get("model_name", "paraformer-zh")
+        # Map model name to combo index (0=large/paraformer, 1=small/sensevoice)
+        if "sensevoice" in funasr_model.lower():
+            self.asr_model.setCurrentIndex(1)
+        else:
+            self.asr_model.setCurrentIndex(0)
 
-        whisper_device = whisper.get("device", "cuda")
-        idx = self.whisper_device.findText(whisper_device)
+        funasr_device = funasr.get("device", "cuda")
+        idx = self.asr_device.findText(funasr_device)
         if idx >= 0:
-            self.whisper_device.setCurrentIndex(idx)
-
-        whisper_lang = whisper.get("language", "zh")
-        idx = self.whisper_language.findText(whisper_lang)
-        if idx >= 0:
-            self.whisper_language.setCurrentIndex(idx)
+            self.asr_device.setCurrentIndex(idx)
 
         # VAD settings
         vad = self.config.get("vad", {})
@@ -795,7 +797,7 @@ class SettingsWindow(QMainWindow):
         """Save configuration to hotwords.json."""
         # Track if restart-required settings changed
         restart_needed = False
-        old_whisper = self.config.get("whisper", {})
+        old_funasr = self.config.get("funasr", {})
         old_vad = self.config.get("vad", {})
 
         # === General tab ===
@@ -845,23 +847,27 @@ class SettingsWindow(QMainWindow):
         self.config["polish"]["timeout"] = self.timeout.value()
         self.config["polish"]["prompt_template"] = self.prompt_edit.toPlainText()
 
-        # === Advanced tab - Whisper ===
-        if "whisper" not in self.config:
-            self.config["whisper"] = {}
-        new_whisper_model = self.whisper_model.currentText()
-        new_whisper_device = self.whisper_device.currentText()
-        new_whisper_lang = self.whisper_language.currentText()
+        # === Advanced tab - FunASR ===
+        if "funasr" not in self.config:
+            self.config["funasr"] = {}
+
+        # Map combo index to model name
+        asr_model_idx = self.asr_model.currentIndex()
+        new_funasr_model = (
+            "paraformer-zh" if asr_model_idx == 0 else "iic/SenseVoiceSmall"
+        )
+        new_funasr_device = self.asr_device.currentText()
 
         if (
-            old_whisper.get("model") != new_whisper_model
-            or old_whisper.get("device") != new_whisper_device
-            or old_whisper.get("language") != new_whisper_lang
+            old_funasr.get("model_name") != new_funasr_model
+            or old_funasr.get("device") != new_funasr_device
         ):
             restart_needed = True
 
-        self.config["whisper"]["model"] = new_whisper_model
-        self.config["whisper"]["device"] = new_whisper_device
-        self.config["whisper"]["language"] = new_whisper_lang
+        self.config["funasr"]["model_name"] = new_funasr_model
+        self.config["funasr"]["device"] = new_funasr_device
+        # Ensure asr_engine is set to funasr
+        self.config["asr_engine"] = "funasr"
 
         # === Advanced tab - VAD ===
         if "vad" not in self.config:
@@ -913,7 +919,7 @@ class SettingsWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "设置已保存",
-                    "设置已保存。\n\n⚠️ Whisper/VAD 设置更改需要重启应用才能生效。",
+                    "设置已保存。\n\n⚠️ 语音识别/VAD 设置更改需要重启应用才能生效。",
                 )
             else:
                 # Visual feedback: temporarily change button text to confirm save

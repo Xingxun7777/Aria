@@ -11,6 +11,7 @@ from typing import List, Dict, Optional
 from pathlib import Path
 
 from ..logging import get_system_logger
+from ..utils import get_config_path
 from .polish import AIPolisher, PolishConfig
 from .local_polish import LocalPolishEngine, LocalPolishConfig
 
@@ -20,12 +21,17 @@ logger = get_system_logger()
 @dataclass
 class HotWordConfig:
     """HotWord system configuration."""
+
     config_path: Optional[str] = None
 
     # Loaded from config file
     enable_initial_prompt: bool = True
-    hotwords: List[str] = field(default_factory=list)  # Primary: target words user wants
-    replacements: Dict[str, str] = field(default_factory=dict)  # Optional: explicit corrections
+    hotwords: List[str] = field(
+        default_factory=list
+    )  # Primary: target words user wants
+    replacements: Dict[str, str] = field(
+        default_factory=dict
+    )  # Optional: explicit corrections
     domain_context: str = ""
 
     # Internal: merged list for ASR/AI (auto-generated)
@@ -58,7 +64,9 @@ class HotWordConfig:
             # Build prompt_words: merge hotwords + replacements values + legacy prompt_words
             legacy_prompt_words = data.get("prompt_words", [])
             replacement_values = list(set(self.replacements.values()))
-            self.prompt_words = list(set(self.hotwords + replacement_values + legacy_prompt_words))
+            self.prompt_words = list(
+                set(self.hotwords + replacement_values + legacy_prompt_words)
+            )
 
             # Load polish mode
             self.polish_mode = data.get("polish_mode", "fast")
@@ -70,8 +78,10 @@ class HotWordConfig:
                     "enabled": polish_data.get("enabled", False),
                     "api_url": polish_data.get("api_url", "http://localhost:3000"),
                     "api_key": polish_data.get("api_key", ""),
-                    "model": polish_data.get("model", "google/gemini-2.5-flash-lite-preview-09-2025"),
-                    "timeout": polish_data.get("timeout", 10.0)
+                    "model": polish_data.get(
+                        "model", "google/gemini-2.5-flash-lite-preview-09-2025"
+                    ),
+                    "timeout": polish_data.get("timeout", 10.0),
                 }
                 # Allow optional prompt_template override from config
                 if "prompt_template" in polish_data:
@@ -91,10 +101,12 @@ class HotWordConfig:
                     enabled=local_polish_data.get("enabled", False),
                     model_path=model_path,
                     n_gpu_layers=local_polish_data.get("n_gpu_layers", -1),
-                    n_ctx=local_polish_data.get("n_ctx", 512)
+                    n_ctx=local_polish_data.get("n_ctx", 512),
                 )
 
-            logger.info(f"Loaded {len(self.hotwords)} hotwords, {len(self.replacements)} replacements, polish_mode={self.polish_mode}")
+            logger.info(
+                f"Loaded {len(self.hotwords)} hotwords, {len(self.replacements)} replacements, polish_mode={self.polish_mode}"
+            )
 
         except FileNotFoundError:
             logger.warning(f"HotWord config not found: {path}")
@@ -165,8 +177,7 @@ class HotWordManager:
     @classmethod
     def from_default(cls) -> "HotWordManager":
         """Create manager with default config path."""
-        package_dir = Path(__file__).parent.parent.parent
-        config_path = package_dir / "config" / "hotwords.json"
+        config_path = get_config_path("hotwords.json")
 
         if config_path.exists():
             config = HotWordConfig(config_path=str(config_path))
@@ -231,7 +242,9 @@ class HotWordManager:
         """Get local polisher instance for fast mode (lazy init)."""
         if self.config.local_polish_config and self.config.local_polish_config.enabled:
             if self._local_polisher is None:
-                self._local_polisher = LocalPolishEngine(self.config.local_polish_config)
+                self._local_polisher = LocalPolishEngine(
+                    self.config.local_polish_config
+                )
             return self._local_polisher
         return None
 
@@ -283,6 +296,35 @@ class HotWordManager:
         # Save to config file
         if self.config.config_path:
             self.config.save_to_file()
+
+    def get_weighted_hotwords(self) -> List[str]:
+        """
+        Get hotwords with weight-based repetition for FunASR.
+
+        Higher weight = more repetitions = higher recognition priority.
+        Weight 1.0 = 1 occurrence, 0.5 = 1 occurrence, 2.0 = 2 occurrences.
+
+        Returns:
+            List of hotwords with repetitions based on weights.
+        """
+        # Load weights from config file
+        weights = {}
+        if self.config.config_path:
+            try:
+                with open(self.config.config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                weights = data.get("hotword_weights", {})
+            except Exception:
+                pass
+
+        result = []
+        for word in self.config.hotwords:
+            weight = weights.get(word, 1.0)
+            # Repeat based on weight (minimum 1)
+            repeat_count = max(1, int(weight))
+            result.extend([word] * repeat_count)
+
+        return result
 
     def reload(self) -> None:
         """Reload configuration from file."""

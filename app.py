@@ -52,6 +52,7 @@ from .system.hotkey import HotkeyManager
 from .system.output import OutputInjector
 from .ui.streaming_display import DisplayBuffer, DisplayState
 from .core.logging import get_system_logger
+from .core.utils import get_config_path, get_models_path
 
 logger = get_system_logger()
 
@@ -150,7 +151,7 @@ class VoiceTypeApp:
         self._is_sleeping = False
 
         # Config file watcher (hot-reload)
-        self._config_path = Path(__file__).parent / "config" / "hotwords.json"
+        self._config_path = get_config_path("hotwords.json")
         self._config_mtime = 0.0
         self._watcher_thread: threading.Thread = None
 
@@ -359,24 +360,33 @@ class VoiceTypeApp:
     def _load_asr_config(self) -> dict:
         """Load ASR configuration from hotwords.json."""
         import json
-        from pathlib import Path
 
-        config_path = Path(__file__).parent / "config" / "hotwords.json"
+        config_path = get_config_path("hotwords.json")
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return {
-                "engine": data.get("asr_engine", "whisper"),
+                "engine": data.get("asr_engine", "funasr"),
                 "whisper": data.get("whisper", {}),
                 "funasr": data.get("funasr", {}),
+                "vad": data.get("vad", {}),
             }
         except Exception as e:
             logger.warning(f"Failed to load ASR config: {e}, using defaults")
-            return {"engine": "whisper", "whisper": {}, "funasr": {}}
+            return {"engine": "funasr", "whisper": {}, "funasr": {}, "vad": {}}
 
     def _init_components(self) -> None:
         """Initialize audio and ASR components."""
         print("Initializing components...")
+
+        # Load config from hotwords.json
+        asr_cfg = self._load_asr_config()
+
+        # VAD config with validation (clamp to valid ranges)
+        vad_cfg = asr_cfg.get("vad", {})
+        vad_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
+        vad_min_speech = max(50, min(1000, vad_cfg.get("min_speech_ms", 150)))
+        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 1200)))
 
         # Audio capture with VAD
         audio_config = AudioConfig(
@@ -384,9 +394,9 @@ class VoiceTypeApp:
             channels=1,
             enable_vad=True,
             vad_config=VADConfig(
-                threshold=0.2,  # Lowered for better speech detection
-                min_speech_ms=150,  # Shorter minimum for quick phrases
-                min_silence_ms=1200,  # Allow natural pauses (1.2s before auto-end)
+                threshold=vad_threshold,
+                min_speech_ms=vad_min_speech,
+                min_silence_ms=vad_min_silence,
             ),
         )
         self.audio_capture = AudioCapture(audio_config)
@@ -398,8 +408,7 @@ class VoiceTypeApp:
             on_audio_level=self._on_audio_level,
         )
 
-        # ASR engine - load config from hotwords.json
-        asr_cfg = self._load_asr_config()
+        # ASR engine selection
         engine_type = asr_cfg["engine"]
 
         if engine_type == "funasr":
@@ -416,7 +425,7 @@ class VoiceTypeApp:
                 print("Loading FunASR model (this may take a few seconds)...")
                 funasr_cfg = asr_cfg["funasr"]
                 asr_config = FunASRConfig(
-                    model_name=funasr_cfg.get("model", "paraformer-zh"),
+                    model_name=funasr_cfg.get("model_name", "paraformer-zh"),
                     device=funasr_cfg.get("device", "cuda"),
                     enable_vad=funasr_cfg.get("enable_vad", True),
                     enable_punc=funasr_cfg.get("enable_punc", True),
@@ -443,12 +452,11 @@ class VoiceTypeApp:
                     FireRedASRConfig,
                 )
 
+                # Default model path: models/FireRedASR-AED-L relative to app
+                default_model_path = str(get_models_path("FireRedASR-AED-L"))
                 asr_config = FireRedASRConfig(
                     model_type=model_type,
-                    model_path=firered_cfg.get(
-                        "model_path",
-                        r"G:\AIBOX\FireRedASR\pretrained_models\FireRedASR-AED-L",
-                    ),
+                    model_path=firered_cfg.get("model_path", default_model_path),
                     use_gpu=firered_cfg.get("use_gpu", True),
                     beam_size=firered_cfg.get("beam_size", 2),
                 )
@@ -456,20 +464,19 @@ class VoiceTypeApp:
                 self.asr_engine.load()
             print(f"FireRedASR ready! ({model_type.upper()})")
         else:
-            # Whisper (default)
-            print("Loading Whisper model (this may take a few seconds)...")
-            whisper_cfg = asr_cfg["whisper"]
-            asr_config = WhisperConfig(
-                model_name=whisper_cfg.get("model", "large-v3-turbo"),
-                device=whisper_cfg.get("device", "cuda"),
-                language=whisper_cfg.get("language", "zh"),
-                compute_type=whisper_cfg.get("compute_type", "float16"),
+            # Unknown engine type - fall back to FunASR
+            logger.warning(
+                f"Unknown ASR engine '{engine_type}', falling back to FunASR"
             )
-            self.asr_engine = WhisperEngine(asr_config)
+            self._asr_engine_type = "funasr"
+            funasr_cfg = asr_cfg.get("funasr", {})
+            asr_config = FunASRConfig(
+                model_name=funasr_cfg.get("model_name", "paraformer-zh"),
+                device=funasr_cfg.get("device", "cuda"),
+            )
+            self.asr_engine = FunASREngine(asr_config)
             self.asr_engine.load()
-            print(
-                f"Whisper model loaded! ({asr_config.model_name}, {asr_config.compute_type})"
-            )
+            print(f"FunASR model loaded (fallback): {asr_config.model_name}")
 
         # HotWord system initialization
         print("Loading hotword configuration...")
@@ -1295,8 +1302,14 @@ class VoiceTypeApp:
         return self._running
 
     def reload_config(self) -> None:
-        """Reload configuration from hotwords.json (hot-reload support)."""
-        if self.hotword_manager:
+        """Reload configuration from hotwords.json (hot-reload support).
+
+        Thread-safe: Uses self._lock to prevent race conditions with ASR worker.
+        """
+        with self._lock:
+            if not self.hotword_manager:
+                return
+
             self.hotword_manager.reload()
 
             # Update Layer 1: ASR engine hotwords

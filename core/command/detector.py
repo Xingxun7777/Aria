@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from ..logging import get_system_logger
+from ..utils import get_config_path
 
 logger = get_system_logger()
 
@@ -36,14 +37,14 @@ class CommandDetector:
         self.enabled = False
         self.prefix = "小助手"
         self.commands: Dict[str, Any] = {}
+        self.cooldown_ms = 500  # Cooldown between command executions
 
         self._load_config(config_path)
 
     def _load_config(self, config_path: Optional[str] = None) -> None:
         """Load command configuration from JSON file."""
         if config_path is None:
-            # Default path: config/commands.json relative to project root
-            config_path = Path(__file__).parent.parent.parent / "config" / "commands.json"
+            config_path = get_config_path("commands.json")
         else:
             config_path = Path(config_path)
 
@@ -52,14 +53,16 @@ class CommandDetector:
             return
 
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
 
-            self.enabled = config.get('enabled', False)
-            self.prefix = config.get('prefix', '小助手')
-            self.commands = config.get('commands', {})
+            self.enabled = config.get("enabled", False)
+            self.prefix = config.get("prefix", "小助手")
+            self.commands = config.get("commands", {})
 
-            logger.info(f"Command detector loaded: {len(self.commands)} commands, prefix='{self.prefix}'")
+            logger.info(
+                f"Command detector loaded: {len(self.commands)} commands, prefix='{self.prefix}'"
+            )
 
         except Exception as e:
             logger.error(f"Failed to load command config: {e}")
@@ -87,10 +90,10 @@ class CommandDetector:
             return None
 
         # Extract command part (after prefix)
-        cmd_text = text[len(self.prefix):].strip()
+        cmd_text = text[len(self.prefix) :].strip()
 
         # Remove common separators after prefix
-        for sep in ['，', ',', ' ', '。', '.', '：', ':']:
+        for sep in ["，", ",", " ", "。", ".", "：", ":"]:
             if cmd_text.startswith(sep):
                 cmd_text = cmd_text[1:].strip()
                 break

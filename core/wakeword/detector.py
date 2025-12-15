@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
+from ..utils import get_config_path
 from ..utils.phonetic import get_matcher, PinyinMatcher
 
 
@@ -36,9 +37,7 @@ class WakewordDetector:
     def _load_config(self, config_path: Optional[str] = None) -> None:
         """Load wakeword configuration from JSON."""
         if config_path is None:
-            config_path = (
-                Path(__file__).parent.parent.parent / "config" / "wakeword.json"
-            )
+            config_path = get_config_path("wakeword.json")
         else:
             config_path = Path(config_path)
 
