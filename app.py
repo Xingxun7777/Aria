@@ -1345,6 +1345,13 @@ class VoiceTypeApp:
                 self.selection_processor.polisher = self.polisher
                 print("[HOT-RELOAD] Updated selection processor polisher")
 
+            # Update wakeword detector
+            if self.wakeword_detector:
+                self.wakeword_detector.reload()
+                print(
+                    f"[HOT-RELOAD] Updated wakeword: '{self.wakeword_detector.wakeword}'"
+                )
+
             logger.info("Configuration hot-reloaded (all 4 layers)")
             print("[HOT-RELOAD] Config reloaded successfully!")
 
@@ -1435,6 +1442,35 @@ class VoiceTypeApp:
         if self.hotword_manager:
             return self.hotword_manager.polish_mode
         return "fast"  # Default
+
+    def set_wakeword(self, wakeword: str) -> None:
+        """
+        Set wakeword from UI.
+
+        Args:
+            wakeword: New wakeword (e.g., "瑶瑶", "小朋友", "小溪")
+        """
+        if self.wakeword_detector:
+            self.wakeword_detector.set_wakeword(wakeword)
+            logger.info(f"Wakeword set to: {wakeword}")
+
+    def get_wakeword(self) -> str:
+        """Get current wakeword."""
+        if self.wakeword_detector:
+            return self.wakeword_detector.wakeword
+        return "瑶瑶"
+
+    def get_available_wakewords(self) -> list:
+        """Get list of available wakeword options."""
+        if self.wakeword_detector:
+            return self.wakeword_detector.get_available_wakewords()
+        return ["瑶瑶", "小朋友", "小溪", "助手"]
+
+    def get_command_hints(self) -> list:
+        """Get list of command hints for UI display."""
+        if self.wakeword_detector:
+            return self.wakeword_detector.get_command_hints()
+        return []
 
     def set_hotkey(self, hotkey: str) -> bool:
         """

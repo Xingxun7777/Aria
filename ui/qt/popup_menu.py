@@ -2,10 +2,24 @@
 # Styled popup menu for VoiceType floating ball
 # Left-click menu with enable toggle, polish modes, and settings
 
-from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QPoint
+from PySide6.QtCore import (
+    Qt,
+    Signal,
+    QTimer,
+    QPropertyAnimation,
+    QEasingCurve,
+    Property,
+    QPoint,
+)
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QFrame, QGraphicsDropShadowEffect, QButtonGroup
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QButtonGroup,
 )
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QFont
 
@@ -120,6 +134,7 @@ class PopupMenu(QWidget):
     modeChanged = Signal(str)  # "quality" or "fast"
     settingsRequested = Signal()
     lockToggled = Signal(bool)  # Lock position toggle
+    sleepToggled = Signal(bool)  # Sleep/wake toggle
     closed = Signal()
 
     def __init__(self, parent=None):
@@ -127,7 +142,7 @@ class PopupMenu(QWidget):
         self._enabled = True
         self._current_mode = "fast"  # Default matches config
         self._is_locked = False
-
+        self._is_sleeping = False
         self._init_window()
         self._init_ui()
         self._apply_shadow()
@@ -135,9 +150,7 @@ class PopupMenu(QWidget):
     def _init_window(self):
         """Setup window flags for popup."""
         self.setWindowFlags(
-            Qt.Popup |
-            Qt.FramelessWindowHint |
-            Qt.NoDropShadowWindowHint
+            Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedWidth(200)
@@ -150,13 +163,15 @@ class PopupMenu(QWidget):
 
         # Container with background
         self.container = QFrame()
-        self.container.setStyleSheet("""
+        self.container.setStyleSheet(
+            """
             QFrame {
                 background-color: rgba(35, 35, 40, 0.95);
                 border-radius: 12px;
                 border: 1px solid rgba(255, 255, 255, 0.1);
             }
-        """)
+        """
+        )
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(12, 12, 12, 12)
         container_layout.setSpacing(12)
@@ -164,13 +179,15 @@ class PopupMenu(QWidget):
         # --- Enable Toggle Row ---
         enable_row = QHBoxLayout()
         enable_label = QLabel("VoiceType")
-        enable_label.setStyleSheet("""
+        enable_label.setStyleSheet(
+            """
             QLabel {
                 color: white;
                 font-size: 14px;
                 font-weight: bold;
             }
-        """)
+        """
+        )
         self.toggle = ToggleSwitch()
         self.toggle.setChecked(True)
         self.toggle.toggled.connect(self._on_enable_toggled)
@@ -188,12 +205,14 @@ class PopupMenu(QWidget):
 
         # --- Polish Mode Label ---
         mode_label = QLabel("润色模式")
-        mode_label.setStyleSheet("""
+        mode_label.setStyleSheet(
+            """
             QLabel {
                 color: rgba(255, 255, 255, 0.6);
                 font-size: 11px;
             }
-        """)
+        """
+        )
         container_layout.addWidget(mode_label)
 
         # --- Mode Buttons ---
@@ -226,7 +245,8 @@ class PopupMenu(QWidget):
         # --- Settings Button ---
         self.settings_btn = QPushButton("高级设置")
         self.settings_btn.setCursor(Qt.PointingHandCursor)
-        self.settings_btn.setStyleSheet("""
+        self.settings_btn.setStyleSheet(
+            """
             QPushButton {
                 background-color: transparent;
                 border: none;
@@ -239,7 +259,8 @@ class PopupMenu(QWidget):
                 color: rgba(130, 200, 255, 1.0);
                 text-decoration: underline;
             }
-        """)
+        """
+        )
         self.settings_btn.clicked.connect(self._on_settings_clicked)
         container_layout.addWidget(self.settings_btn)
 
@@ -252,12 +273,14 @@ class PopupMenu(QWidget):
         # --- Lock Position Row ---
         lock_row = QHBoxLayout()
         lock_label = QLabel("🔒 锁定位置")
-        lock_label.setStyleSheet("""
+        lock_label.setStyleSheet(
+            """
             QLabel {
                 color: rgba(255, 255, 255, 0.8);
                 font-size: 13px;
             }
-        """)
+        """
+        )
         self.lock_toggle = ToggleSwitch()
         self.lock_toggle.setChecked(False)
         self.lock_toggle.toggled.connect(self._on_lock_toggled)
@@ -266,6 +289,26 @@ class PopupMenu(QWidget):
         lock_row.addStretch()
         lock_row.addWidget(self.lock_toggle)
         container_layout.addLayout(lock_row)
+
+        # --- Sleep Toggle Row ---
+        sleep_row = QHBoxLayout()
+        sleep_label = QLabel("😴 休眠模式")
+        sleep_label.setStyleSheet(
+            """
+            QLabel {
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 13px;
+            }
+        """
+        )
+        self.sleep_toggle = ToggleSwitch()
+        self.sleep_toggle.setChecked(False)
+        self.sleep_toggle.toggled.connect(self._on_sleep_toggled)
+
+        sleep_row.addWidget(sleep_label)
+        sleep_row.addStretch()
+        sleep_row.addWidget(self.sleep_toggle)
+        container_layout.addLayout(sleep_row)
 
         layout.addWidget(self.container)
 
@@ -299,6 +342,11 @@ class PopupMenu(QWidget):
         self._is_locked = locked
         self.lockToggled.emit(locked)
 
+    def _on_sleep_toggled(self, sleeping):
+        """Handle sleep toggle."""
+        self._is_sleeping = sleeping
+        self.sleepToggled.emit(sleeping)
+
     def setEnabled(self, enabled):
         """Set the enable state."""
         self._enabled = enabled
@@ -317,6 +365,16 @@ class PopupMenu(QWidget):
         self._is_locked = locked
         self.lock_toggle.setChecked(locked)
 
+    def setSleeping(self, sleeping):
+        """Set the sleeping state."""
+        self._is_sleeping = sleeping
+        self.sleep_toggle.setChecked(sleeping)
+
+    # Alias for compatibility with floating_ball.py
+    def set_sleeping_state(self, is_sleeping):
+        """Alias for setSleeping - compatibility with snake_case naming."""
+        self.setSleeping(is_sleeping)
+
     def showAt(self, global_pos: QPoint):
         """Show popup at specified position."""
         # Adjust position to be above and to the left of the ball
@@ -326,6 +384,7 @@ class PopupMenu(QWidget):
 
         # Ensure on screen
         from PySide6.QtWidgets import QApplication
+
         screen = QApplication.primaryScreen()
         if screen:
             geom = screen.availableGeometry()

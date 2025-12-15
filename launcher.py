@@ -186,7 +186,14 @@ try:
 
     emit_progress("python_env")  # 5%
 
-    # CRITICAL: Load FunASR BEFORE PySide6 (they conflict due to modelscope)
+    # CRITICAL: Import PySide6 FIRST to initialize Windows DLLs properly
+    # This prevents PyTorch DLL loading crash (access violation in _load_dll_libraries)
+    log("Pre-importing PySide6 for DLL initialization...")
+    import PySide6.QtCore  # Minimal Qt import to init DLLs
+
+    log("PySide6 pre-import done")
+
+    # Now safe to load FunASR/PyTorch
     # Check if FunASR is configured and pre-load it
     import json
     from pathlib import Path
@@ -198,21 +205,19 @@ try:
         asr_engine = config.get("asr_engine", "whisper")
         if asr_engine == "funasr":
             log("Pre-loading FunASR (before Qt imports)...")
-            emit_progress("funasr_model", "加载模型中...", 20)
+            emit_progress("funasr_model", "加载语音模型中...", 20)
             print("Pre-loading FunASR model (before Qt)...")
             from voicetype.core.asr.funasr_engine import FunASREngine, FunASRConfig
 
             funasr_cfg = config.get("funasr", {})
             pre_config = FunASRConfig(
-                model_name=funasr_cfg.get("model", "paraformer-zh"),
+                model_name=funasr_cfg.get("model_name", "paraformer-zh"),
+                vad_model=funasr_cfg.get("vad_model", "fsmn-vad"),
+                punc_model=funasr_cfg.get("punc_model", "ct-punc"),
                 device=funasr_cfg.get("device", "cuda"),
-                enable_vad=funasr_cfg.get("enable_vad", True),
-                enable_punc=funasr_cfg.get("enable_punc", True),
             )
-            # Pre-initialize engine and cache it globally
             _preloaded_asr = FunASREngine(pre_config)
             _preloaded_asr.load()
-            # Store in a module-level variable that app.py can access
             import voicetype
 
             voicetype._preloaded_asr_engine = _preloaded_asr

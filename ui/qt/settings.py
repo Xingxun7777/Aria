@@ -8,13 +8,32 @@ from pathlib import Path
 from typing import Optional, Callable
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QListWidget, QStackedWidget, QLabel, QLineEdit,
-    QCheckBox, QComboBox, QPushButton, QPlainTextEdit,
-    QFormLayout, QRadioButton, QButtonGroup, QTableWidget,
-    QTableWidgetItem, QSpinBox, QDoubleSpinBox, QListWidgetItem,
-    QInputDialog, QMessageBox, QKeySequenceEdit, QSlider,
-    QGroupBox, QAbstractItemView
+    QMainWindow,
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QListWidget,
+    QStackedWidget,
+    QLabel,
+    QLineEdit,
+    QCheckBox,
+    QComboBox,
+    QPushButton,
+    QPlainTextEdit,
+    QFormLayout,
+    QRadioButton,
+    QButtonGroup,
+    QTableWidget,
+    QTableWidgetItem,
+    QSpinBox,
+    QDoubleSpinBox,
+    QListWidgetItem,
+    QInputDialog,
+    QMessageBox,
+    QKeySequenceEdit,
+    QSlider,
+    QGroupBox,
+    QAbstractItemView,
 )
 from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
 from PySide6.QtGui import QKeySequence
@@ -22,6 +41,7 @@ from . import styles
 
 # Import shared prompt constant from hotword module
 from ...core.hotword import DEFAULT_POLISH_PROMPT
+from ...core.utils.phonetic import get_matcher
 
 
 def get_audio_input_devices() -> list:
@@ -31,12 +51,13 @@ def get_audio_input_devices() -> list:
     """
     try:
         import sounddevice as sd
+
         devices = []
         default_device = sd.default.device[0]
 
         for i, d in enumerate(sd.query_devices()):
-            if d['max_input_channels'] > 0:
-                name = d['name']
+            if d["max_input_channels"] > 0:
+                name = d["name"]
                 if i == default_device:
                     name = f"[默认] {name}"
                 devices.append((name, i))
@@ -49,6 +70,7 @@ def get_audio_input_devices() -> list:
 
 class ApiTestWorker(QObject):
     """Worker for async API connection testing."""
+
     finished = Signal(bool, str, int)  # success, message, status_code
 
     def __init__(self, api_url: str, api_key: str, model: str):
@@ -69,14 +91,14 @@ class ApiTestWorker(QObject):
             data = {
                 "model": self.model or "gpt-3.5-turbo",
                 "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 5
+                "max_tokens": 5,
             }
 
             response = requests.post(
                 f"{self.api_url}/v1/chat/completions",
                 headers=headers,
                 json=data,
-                timeout=5  # Reduced timeout for faster feedback
+                timeout=5,  # Reduced timeout for faster feedback
             )
 
             if response.status_code == 200:
@@ -107,7 +129,10 @@ class SettingsWindow(QMainWindow):
         self.resize(900, 650)
         self.setStyleSheet(styles.STYLESHEET_SETTINGS)
 
-        self.config_path = config_path or Path(__file__).parent.parent.parent / "config" / "hotwords.json"
+        self.config_path = (
+            config_path
+            or Path(__file__).parent.parent.parent / "config" / "hotwords.json"
+        )
         self.config = {}
 
         self._init_ui()
@@ -181,6 +206,36 @@ class SettingsWindow(QMainWindow):
         self.chk_minimize = QCheckBox("启动时最小化到托盘")
         layout.addWidget(self.chk_minimize)
 
+        layout.addSpacing(20)
+
+        # Wakeword settings
+        wakeword_group = QGroupBox("语音唤醒词")
+        wakeword_layout = QVBoxLayout(wakeword_group)
+
+        # Wakeword input
+        wakeword_input_layout = QHBoxLayout()
+        wakeword_label = QLabel("唤醒词:")
+        self.wakeword_edit = QLineEdit()
+        self.wakeword_edit.setPlaceholderText("瑶瑶")
+        self.wakeword_edit.textChanged.connect(self._on_wakeword_text_changed)
+        wakeword_input_layout.addWidget(wakeword_label)
+        wakeword_input_layout.addWidget(self.wakeword_edit)
+        wakeword_layout.addLayout(wakeword_input_layout)
+
+        # Pinyin hint
+        self.pinyin_hint = QLabel("")
+        self.pinyin_hint.setStyleSheet(
+            "color: #888; font-size: 11px; margin-left: 50px;"
+        )
+        wakeword_layout.addWidget(self.pinyin_hint)
+
+        # Example commands hint
+        example_hint = QLabel('💡 例: "瑶瑶开启自动发送"、"瑶瑶休眠"')
+        example_hint.setStyleSheet("color: #666; font-size: 11px; margin-top: 5px;")
+        wakeword_layout.addWidget(example_hint)
+
+        layout.addWidget(wakeword_group)
+
         layout.addStretch()
 
         # Save button
@@ -201,7 +256,9 @@ class SettingsWindow(QMainWindow):
 
         # --- Header ---
         layout.addWidget(QLabel("<h2>专业词汇</h2>"))
-        subtitle = QLabel("添加您常用的专业术语、品牌名、人名等，系统会自动识别并纠正谐音错误")
+        subtitle = QLabel(
+            "添加您常用的专业术语、品牌名、人名等，系统会自动识别并纠正谐音错误"
+        )
         subtitle.setStyleSheet("color: #666; margin-bottom: 10px;")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -262,7 +319,9 @@ class SettingsWindow(QMainWindow):
         self.advanced_group.setChecked(False)  # Default collapsed
         advanced_layout = QVBoxLayout()
 
-        adv_hint = QLabel("大部分谐音错误会被自动纠正。只有在遇到重复识别问题时才需要手动添加规则。")
+        adv_hint = QLabel(
+            "大部分谐音错误会被自动纠正。只有在遇到重复识别问题时才需要手动添加规则。"
+        )
         adv_hint.setStyleSheet("color: #666; font-size: 11px;")
         adv_hint.setWordWrap(True)
         advanced_layout.addWidget(adv_hint)
@@ -309,13 +368,15 @@ class SettingsWindow(QMainWindow):
         text, ok = QInputDialog.getText(
             self,
             "添加专业词汇",
-            "输入词汇（支持中英文混合）:\n\n示例：Claude、GitHub、第一性原理"
+            "输入词汇（支持中英文混合）:\n\n示例：Claude、GitHub、第一性原理",
         )
         if ok and text.strip():
             word = text.strip()
             # Check duplicate
-            existing = [self.prompt_words_list.item(i).text()
-                       for i in range(self.prompt_words_list.count())]
+            existing = [
+                self.prompt_words_list.item(i).text()
+                for i in range(self.prompt_words_list.count())
+            ]
             if word in existing:
                 QMessageBox.warning(self, "重复", f"'{word}' 已在列表中")
                 return
@@ -326,13 +387,15 @@ class SettingsWindow(QMainWindow):
         text, ok = QInputDialog.getMultiLineText(
             self,
             "批量导入",
-            "每行一个词汇（或用逗号、顿号分隔）:\n\n示例:\nclaude\ngithub\n三方会谈"
+            "每行一个词汇（或用逗号、顿号分隔）:\n\n示例:\nclaude\ngithub\n三方会谈",
         )
         if ok and text.strip():
             # Support multiple separators
-            words = re.split(r'[,\n，、;；]', text)
-            existing = {self.prompt_words_list.item(i).text()
-                       for i in range(self.prompt_words_list.count())}
+            words = re.split(r"[,\n，、;；]", text)
+            existing = {
+                self.prompt_words_list.item(i).text()
+                for i in range(self.prompt_words_list.count())
+            }
             added = 0
             for word in words:
                 word = word.strip()
@@ -344,7 +407,9 @@ class SettingsWindow(QMainWindow):
             if added > 0:
                 QMessageBox.information(self, "导入完成", f"成功添加 {added} 个词汇")
             else:
-                QMessageBox.information(self, "导入完成", "没有新词汇被添加（可能已存在）")
+                QMessageBox.information(
+                    self, "导入完成", "没有新词汇被添加（可能已存在）"
+                )
 
     def _remove_prompt_words(self):
         for item in self.prompt_words_list.selectedItems():
@@ -411,9 +476,10 @@ class SettingsWindow(QMainWindow):
 
     def _restore_default_prompt(self):
         reply = QMessageBox.question(
-            self, "确认",
+            self,
+            "确认",
             "确定要恢复默认 Prompt 模板吗？",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             self.prompt_edit.setPlainText(self.DEFAULT_PROMPT)
@@ -471,7 +537,11 @@ class SettingsWindow(QMainWindow):
     def _test_api_connection(self):
         """Test API connection with a simple request (non-blocking)."""
         # Prevent concurrent tests
-        if hasattr(self, '_api_thread') and self._api_thread is not None and self._api_thread.isRunning():
+        if (
+            hasattr(self, "_api_thread")
+            and self._api_thread is not None
+            and self._api_thread.isRunning()
+        ):
             return
 
         api_url = self.api_url.text().strip()
@@ -483,7 +553,7 @@ class SettingsWindow(QMainWindow):
             return
 
         # Disable button during test
-        if hasattr(self, '_api_test_button'):
+        if hasattr(self, "_api_test_button"):
             self._api_test_button.setEnabled(False)
             self._api_test_button.setText("测试中...")
 
@@ -505,7 +575,7 @@ class SettingsWindow(QMainWindow):
     def _on_api_test_finished(self, success: bool, message: str, status_code: int):
         """Handle API test result."""
         # Re-enable button using stored reference
-        if hasattr(self, '_api_test_button'):
+        if hasattr(self, "_api_test_button"):
             self._api_test_button.setEnabled(True)
             self._api_test_button.setText("测试连接")
 
@@ -513,11 +583,27 @@ class SettingsWindow(QMainWindow):
             QMessageBox.information(self, "成功", f"{message}\n\n状态码: {status_code}")
         elif status_code > 0:
             QMessageBox.warning(
-                self, "连接失败",
-                f"API 返回错误\n\n状态码: {status_code}\n响应: {message}"
+                self,
+                "连接失败",
+                f"API 返回错误\n\n状态码: {status_code}\n响应: {message}",
             )
         else:
             QMessageBox.warning(self, "连接失败", message)
+
+    def _on_wakeword_text_changed(self, text: str):
+        """Update pinyin hint when wakeword text changes."""
+        if text.strip():
+            try:
+                matcher = get_matcher()
+                pinyin = matcher.to_pinyin(text.strip())
+                pinyin_str = " ".join(pinyin)
+                self.pinyin_hint.setText(
+                    f"拼音: {pinyin_str} (同音字均可识别，如：摇摇、妖妖)"
+                )
+            except Exception:
+                self.pinyin_hint.setText("")
+        else:
+            self.pinyin_hint.setText("")
 
     # ==========================================================================
     # Tab 5: Advanced
@@ -534,7 +620,9 @@ class SettingsWindow(QMainWindow):
         whisper_layout = QFormLayout(whisper_group)
 
         self.whisper_model = QComboBox()
-        self.whisper_model.addItems(["tiny", "base", "small", "medium", "large", "large-v3"])
+        self.whisper_model.addItems(
+            ["tiny", "base", "small", "medium", "large", "large-v3"]
+        )
         self.whisper_model.setCurrentText("large-v3")
         whisper_layout.addRow("模型:", self.whisper_model)
 
@@ -572,7 +660,9 @@ class SettingsWindow(QMainWindow):
         local_layout = QFormLayout(local_group)
 
         self.local_model_path = QLineEdit()
-        self.local_model_path.setPlaceholderText("models/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+        self.local_model_path.setPlaceholderText(
+            "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+        )
         local_layout.addRow("模型路径:", self.local_model_path)
 
         layout.addWidget(local_group)
@@ -596,7 +686,7 @@ class SettingsWindow(QMainWindow):
             return
 
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
+            with open(self.config_path, "r", encoding="utf-8") as f:
                 self.config = json.load(f)
         except Exception as e:
             print(f"Failed to load config: {e}")
@@ -688,6 +778,19 @@ class SettingsWindow(QMainWindow):
         local_polish = self.config.get("local_polish", {})
         self.local_model_path.setText(local_polish.get("model_path", ""))
 
+        # Wakeword - load from wakeword.json
+        wakeword_path = self.config_path.parent / "wakeword.json"
+        if wakeword_path.exists():
+            try:
+                with open(wakeword_path, "r", encoding="utf-8") as f:
+                    wakeword_config = json.load(f)
+                wakeword = wakeword_config.get("wakeword", "瑶瑶")
+                self.wakeword_edit.setText(wakeword)
+            except Exception:
+                self.wakeword_edit.setText("瑶瑶")
+        else:
+            self.wakeword_edit.setText("瑶瑶")
+
     def save_config(self):
         """Save configuration to hotwords.json."""
         # Track if restart-required settings changed
@@ -729,7 +832,9 @@ class SettingsWindow(QMainWindow):
         self.config["replacements"] = replacements
 
         # === Polish tab ===
-        self.config["polish_mode"] = "fast" if self.radio_fast.isChecked() else "quality"
+        self.config["polish_mode"] = (
+            "fast" if self.radio_fast.isChecked() else "quality"
+        )
 
         # === API settings ===
         if "polish" not in self.config:
@@ -747,9 +852,11 @@ class SettingsWindow(QMainWindow):
         new_whisper_device = self.whisper_device.currentText()
         new_whisper_lang = self.whisper_language.currentText()
 
-        if (old_whisper.get("model") != new_whisper_model or
-            old_whisper.get("device") != new_whisper_device or
-            old_whisper.get("language") != new_whisper_lang):
+        if (
+            old_whisper.get("model") != new_whisper_model
+            or old_whisper.get("device") != new_whisper_device
+            or old_whisper.get("language") != new_whisper_lang
+        ):
             restart_needed = True
 
         self.config["whisper"]["model"] = new_whisper_model
@@ -762,8 +869,10 @@ class SettingsWindow(QMainWindow):
         new_vad_threshold = self.vad_threshold.value()
         new_vad_silence = self.vad_min_silence.value()
 
-        if (old_vad.get("threshold") != new_vad_threshold or
-            old_vad.get("min_silence_ms") != new_vad_silence):
+        if (
+            old_vad.get("threshold") != new_vad_threshold
+            or old_vad.get("min_silence_ms") != new_vad_silence
+        ):
             restart_needed = True
 
         self.config["vad"]["threshold"] = new_vad_threshold
@@ -774,21 +883,42 @@ class SettingsWindow(QMainWindow):
             self.config["local_polish"] = {}
         self.config["local_polish"]["model_path"] = self.local_model_path.text()
 
+        # === Wakeword - save to wakeword.json ===
+        wakeword_path = self.config_path.parent / "wakeword.json"
+        new_wakeword = self.wakeword_edit.text().strip() or "瑶瑶"
+        try:
+            # Load existing wakeword config
+            if wakeword_path.exists():
+                with open(wakeword_path, "r", encoding="utf-8") as f:
+                    wakeword_config = json.load(f)
+            else:
+                wakeword_config = {"enabled": True, "wakeword": "瑶瑶", "commands": {}}
+
+            # Update wakeword
+            wakeword_config["wakeword"] = new_wakeword
+
+            # Save back
+            with open(wakeword_path, "w", encoding="utf-8") as f:
+                json.dump(wakeword_config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Failed to save wakeword config: {e}")
+
         # Save to file
         try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
 
             # Only show message if restart needed (important info)
             if restart_needed:
                 QMessageBox.information(
-                    self, "设置已保存",
-                    "设置已保存。\n\n⚠️ Whisper/VAD 设置更改需要重启应用才能生效。"
+                    self,
+                    "设置已保存",
+                    "设置已保存。\n\n⚠️ Whisper/VAD 设置更改需要重启应用才能生效。",
                 )
             else:
                 # Visual feedback: temporarily change button text to confirm save
                 sender = self.sender()
-                if sender and hasattr(sender, 'setText'):
+                if sender and hasattr(sender, "setText"):
                     original_text = sender.text()
                     sender.setText("已保存 ✓")
                     # Restore original text after 1.5 seconds
