@@ -93,12 +93,17 @@ class WakewordDetector:
             return None
 
         # Find matching command
+        # Normalize: remove spaces for matching (ASR may add spaces between words)
+        command_text_normalized = command_text.replace(" ", "")
+
         for cmd_id, cmd_config in self.commands.items():
             triggers = cmd_config.get("triggers", [])
             for trigger in triggers:
+                trigger_normalized = trigger.replace(" ", "")
                 # Require minimum trigger length to avoid false matches
-                if len(trigger) >= 2 and (
-                    trigger in command_text or command_text in trigger
+                if len(trigger_normalized) >= 2 and (
+                    trigger_normalized in command_text_normalized
+                    or command_text_normalized in trigger_normalized
                 ):
                     action = cmd_config.get("action")
                     value = cmd_config.get("value")
