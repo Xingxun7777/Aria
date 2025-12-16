@@ -131,9 +131,11 @@ def start_splash():
                 log(f"Using pythonw: {pythonw}")
 
         log(f"Launching: {python_exe} {splash_script} {port}")
+        # Use the directory containing this launcher as cwd
+        launcher_dir = os.path.dirname(os.path.abspath(__file__))
         splash_proc = subprocess.Popen(
             [python_exe, splash_script, str(port)],
-            cwd=r"G:\AIBOX\voicetype",
+            cwd=launcher_dir,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -172,9 +174,13 @@ try:
     log(f"Version: {sys.version}")
     log(f"CWD: {os.getcwd()}")
 
-    os.chdir(r"G:\AIBOX")
-    sys.path.insert(0, r"G:\AIBOX")
-    log("Path set OK")
+    # Set working directory and path relative to this launcher
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(project_dir)
+    os.chdir(parent_dir)
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    log(f"Path set OK: {parent_dir}")
 
     # === Start Splash Screen ===
     splash_proc, reporter = start_splash()
@@ -228,22 +234,27 @@ try:
             log("Pre-loading FireRedASR (before Qt imports)...")
             emit_progress("funasr_model", "加载模型中...", 20)
             print("Pre-loading FireRedASR model (before Qt)...")
-            # Add FireRedASR repo to path
-            fireredasr_path = r"G:\AIBOX\FireRedASR"
+            # Add FireRedASR repo to path (check config first, then sibling directory)
+            firered_cfg = config.get("fireredasr", {})
+            fireredasr_path = firered_cfg.get("repo_path", "")
+            if not fireredasr_path or not os.path.exists(fireredasr_path):
+                # Try sibling directory (../FireRedASR)
+                fireredasr_path = os.path.join(parent_dir, "FireRedASR")
             if os.path.exists(fireredasr_path) and fireredasr_path not in sys.path:
                 sys.path.insert(0, fireredasr_path)
+                log(f"Added FireRedASR to path: {fireredasr_path}")
             from voicetype.core.asr.fireredasr_engine import (
                 FireRedASREngine,
                 FireRedASRConfig,
             )
 
-            firered_cfg = config.get("fireredasr", {})
+            # Default model path: look in FireRedASR sibling directory
+            default_model_path = os.path.join(
+                fireredasr_path, "pretrained_models", "FireRedASR-AED-L"
+            )
             pre_config = FireRedASRConfig(
                 model_type=firered_cfg.get("model_type", "aed"),
-                model_path=firered_cfg.get(
-                    "model_path",
-                    r"G:\AIBOX\FireRedASR\pretrained_models\FireRedASR-AED-L",
-                ),
+                model_path=firered_cfg.get("model_path", default_model_path),
                 use_gpu=firered_cfg.get("use_gpu", True),
                 beam_size=firered_cfg.get("beam_size", 2),
             )

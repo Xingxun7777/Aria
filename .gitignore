@@ -54,3 +54,10 @@ DebugLog/
 # Large model files
 models/*.gguf
 *.tmp.*
+
+# Portable build artifacts
+dist_portable/
+build_portable/
+
+# User data
+data/

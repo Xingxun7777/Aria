@@ -1,5 +1,7 @@
-"""Configuration management module."""
+"""Configuration management module.
 
-from .settings import Settings, get_settings
+Note: Legacy settings.py has been removed. Configuration is now handled by
+hotwords.json and wakeword.json files loaded by HotWordManager.
+"""
 
-__all__ = ['Settings', 'get_settings']
+__all__ = []

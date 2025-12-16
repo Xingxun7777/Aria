@@ -202,8 +202,9 @@ class SettingsWindow(QMainWindow):
         layout.addSpacing(20)
 
         # Startup options
-        self.chk_startup = QCheckBox("开机自启动")
-        layout.addWidget(self.chk_startup)
+        self.chk_start_active = QCheckBox("启动时激活语音（默认开始录音）")
+        self.chk_start_active.setToolTip("勾选后，程序启动时自动进入录音待机状态")
+        layout.addWidget(self.chk_start_active)
 
         self.chk_minimize = QCheckBox("启动时最小化到托盘")
         layout.addWidget(self.chk_minimize)
@@ -282,19 +283,29 @@ class SettingsWindow(QMainWindow):
 
         layout.addSpacing(20)
 
-        # --- Main: Vocabulary list ---
+        # --- Main: Vocabulary list with weights ---
         list_header = QLabel("<b>词汇列表</b>")
         layout.addWidget(list_header)
 
-        guide_label = QLabel("这些词会被优先识别，无需手动添加纠错规则")
+        guide_label = QLabel("调整权重：0=禁用，1=低，2=正常，3=高")
         guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
         layout.addWidget(guide_label)
 
-        # List widget with multi-select
-        self.prompt_words_list = QListWidget()
-        self.prompt_words_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.prompt_words_list.setMinimumHeight(150)
-        layout.addWidget(self.prompt_words_list)
+        # Table widget with word and weight columns
+        self.vocab_table = QTableWidget(0, 3)
+        self.vocab_table.setHorizontalHeaderLabels(["词汇", "权重", ""])
+        self.vocab_table.horizontalHeader().setStretchLastSection(False)
+        self.vocab_table.setColumnWidth(0, 200)  # Word column
+        self.vocab_table.setColumnWidth(1, 180)  # Weight slider column
+        self.vocab_table.setColumnWidth(2, 50)  # Weight value display
+        self.vocab_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.vocab_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.vocab_table.setMinimumHeight(200)
+        self.vocab_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.vocab_table)
+
+        # Store weights dict for saving
+        self._hotword_weights = {}
 
         # Action buttons
         btn_layout = QHBoxLayout()
@@ -366,6 +377,43 @@ class SettingsWindow(QMainWindow):
 
         return w
 
+    def _add_vocab_row(self, word: str, weight: float = 1.0):
+        """Add a vocabulary row with word and weight slider."""
+        row = self.vocab_table.rowCount()
+        self.vocab_table.insertRow(row)
+
+        # Word column (read-only)
+        word_item = QTableWidgetItem(word)
+        word_item.setFlags(word_item.flags() & ~Qt.ItemIsEditable)
+        self.vocab_table.setItem(row, 0, word_item)
+
+        # Clamp weight to valid range (0-3), convert old float values
+        weight = max(0, min(3, int(weight + 0.5)))
+
+        # Weight slider (0-3 range: 0=off, 1=low, 2=normal, 3=high)
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(0)
+        slider.setMaximum(3)
+        slider.setValue(weight)
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.setTickInterval(1)
+        self.vocab_table.setCellWidget(row, 1, slider)
+
+        # Weight value display
+        weight_label = QLabel(str(weight))
+        weight_label.setAlignment(Qt.AlignCenter)
+        self.vocab_table.setCellWidget(row, 2, weight_label)
+
+        # Connect slider to update label and store weight
+        def on_slider_change(value, w=word, lbl=weight_label):
+            lbl.setText(str(value))
+            self._hotword_weights[w] = value
+
+        slider.valueChanged.connect(on_slider_change)
+
+        # Store initial weight
+        self._hotword_weights[word] = weight
+
     def _add_prompt_word(self):
         text, ok = QInputDialog.getText(
             self,
@@ -376,13 +424,13 @@ class SettingsWindow(QMainWindow):
             word = text.strip()
             # Check duplicate
             existing = [
-                self.prompt_words_list.item(i).text()
-                for i in range(self.prompt_words_list.count())
+                self.vocab_table.item(i, 0).text()
+                for i in range(self.vocab_table.rowCount())
             ]
             if word in existing:
                 QMessageBox.warning(self, "重复", f"'{word}' 已在列表中")
                 return
-            self.prompt_words_list.addItem(word)
+            self._add_vocab_row(word, 1.0)
 
     def _batch_import_words(self):
         """Batch import words from text input."""
@@ -395,14 +443,14 @@ class SettingsWindow(QMainWindow):
             # Support multiple separators
             words = re.split(r"[,\n，、;；]", text)
             existing = {
-                self.prompt_words_list.item(i).text()
-                for i in range(self.prompt_words_list.count())
+                self.vocab_table.item(i, 0).text()
+                for i in range(self.vocab_table.rowCount())
             }
             added = 0
             for word in words:
                 word = word.strip()
                 if word and word not in existing:
-                    self.prompt_words_list.addItem(word)
+                    self._add_vocab_row(word, 1.0)
                     existing.add(word)
                     added += 1
 
@@ -414,8 +462,14 @@ class SettingsWindow(QMainWindow):
                 )
 
     def _remove_prompt_words(self):
-        for item in self.prompt_words_list.selectedItems():
-            self.prompt_words_list.takeItem(self.prompt_words_list.row(item))
+        rows = set()
+        for item in self.vocab_table.selectedItems():
+            rows.add(item.row())
+        # Remove rows in reverse order to avoid index shifting
+        for row in sorted(rows, reverse=True):
+            word = self.vocab_table.item(row, 0).text()
+            self._hotword_weights.pop(word, None)
+            self.vocab_table.removeRow(row)
 
     def _add_replacement_row(self):
         row = self.replace_table.rowCount()
@@ -710,7 +764,9 @@ class SettingsWindow(QMainWindow):
                     self.audio_device.setCurrentIndex(i)
                     break
 
-        self.chk_startup.setChecked(general.get("auto_startup", False))
+        self.chk_start_active.setChecked(
+            general.get("start_active", True)
+        )  # Default: active
         self.chk_minimize.setChecked(general.get("minimize_to_tray", False))
 
         # === Hotwords tab ===
@@ -723,11 +779,14 @@ class SettingsWindow(QMainWindow):
         if replacements:
             self.advanced_group.setChecked(True)
 
-        # Prompt words (support both "hotwords" and legacy "prompt_words")
-        self.prompt_words_list.clear()
+        # Prompt words with weights (support both "hotwords" and legacy "prompt_words")
+        self.vocab_table.setRowCount(0)
+        self._hotword_weights = {}
         words = self.config.get("hotwords", self.config.get("prompt_words", []))
+        weights = self.config.get("hotword_weights", {})
         for word in words:
-            self.prompt_words_list.addItem(word)
+            weight = weights.get(word, 1.0)
+            self._add_vocab_row(word, weight)
 
         # Replacements
         replacements = self.config.get("replacements", {})
@@ -806,7 +865,7 @@ class SettingsWindow(QMainWindow):
         hotkey_seq = self.hotkey_edit.keySequence().toString()
         self.config["general"]["hotkey"] = hotkey_seq if hotkey_seq else "grave"
         self.config["general"]["audio_device"] = self.audio_device.currentText()
-        self.config["general"]["auto_startup"] = self.chk_startup.isChecked()
+        self.config["general"]["start_active"] = self.chk_start_active.isChecked()
         self.config["general"]["minimize_to_tray"] = self.chk_minimize.isChecked()
 
         # === Hotwords tab ===
@@ -814,11 +873,14 @@ class SettingsWindow(QMainWindow):
         self.config["enable_initial_prompt"] = True
         self.config["domain_context"] = self.domain_ctx.text()
 
-        # Hotwords (use "hotwords" key, remove legacy "prompt_words" if present)
+        # Hotwords with weights (use "hotwords" key, remove legacy "prompt_words" if present)
         hotwords = []
-        for i in range(self.prompt_words_list.count()):
-            hotwords.append(self.prompt_words_list.item(i).text())
+        for i in range(self.vocab_table.rowCount()):
+            word_item = self.vocab_table.item(i, 0)
+            if word_item:
+                hotwords.append(word_item.text())
         self.config["hotwords"] = hotwords
+        self.config["hotword_weights"] = self._hotword_weights.copy()
         self.config.pop("prompt_words", None)  # Remove legacy key
 
         # Replacements

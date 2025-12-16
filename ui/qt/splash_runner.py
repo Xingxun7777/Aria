@@ -13,11 +13,23 @@ import os
 import traceback
 
 # Set up path for imports - must be before any voicetype imports
-sys.path.insert(0, r"G:\AIBOX")
-os.chdir(r"G:\AIBOX\voicetype")
+# Calculate paths relative to this script's location
+# This script is at: voicetype/ui/qt/splash_runner.py
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_voicetype_dir = os.path.dirname(
+    os.path.dirname(_script_dir)
+)  # Go up from ui/qt to voicetype
+_parent_dir = os.path.dirname(
+    _voicetype_dir
+)  # Go up from voicetype to parent (e.g., AIBOX)
+
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+os.chdir(_voicetype_dir)
 
 # Log file for splash errors
 SPLASH_LOG = os.path.join(os.path.dirname(__file__), "..", "..", "splash_error.log")
+
 
 def log_error(msg):
     try:
@@ -27,6 +39,7 @@ def log_error(msg):
             os.fsync(f.fileno())  # Force write to disk
     except:
         pass
+
 
 try:
     from PySide6.QtWidgets import QApplication
@@ -47,7 +60,7 @@ def main():
             sys.exit(1)
 
         port = int(sys.argv[1])
-        address = ('localhost', port)
+        address = ("localhost", port)
         log_error(f"Listening on port {port}")
 
         # Create listener FIRST and start it BEFORE Qt app

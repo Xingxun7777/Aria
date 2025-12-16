@@ -317,12 +317,18 @@ class HotWordManager:
             except Exception:
                 pass
 
+        # Weight mapping: UI value -> FunASR score
+        # 0=disabled, 1=low(5), 2=normal(10), 3=high(20)
+        weight_to_score = {0: 0, 1: 5, 2: 10, 3: 20}
+
         result = []
         for word in self.config.hotwords:
-            weight = weights.get(word, 1.0)
-            # Repeat based on weight (minimum 1)
-            repeat_count = max(1, int(weight))
-            result.extend([word] * repeat_count)
+            ui_weight = weights.get(word, 2)  # Default to normal(2)
+            if ui_weight <= 0:
+                continue  # Skip disabled words
+            score = weight_to_score.get(int(ui_weight), 10)
+            # FunASR format: "word score" (e.g., "阿里巴巴 20")
+            result.append(f"{word} {score}")
 
         return result
 

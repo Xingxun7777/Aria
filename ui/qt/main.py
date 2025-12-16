@@ -166,6 +166,21 @@ def main():
             backend.set_bridge(bridge)
             backend.start()
             print(f"VoiceType Qt Frontend Started (Hotkey: {args.hotkey})")
+
+            # Check start_active setting - if False, disable hotkey listening
+            import json
+            from voicetype.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                start_active = config.get("general", {}).get("start_active", True)
+                if not start_active:
+                    backend.set_enabled(False)
+                    print("[VoiceType] Started in disabled mode (start_active=False)")
+            except Exception as e:
+                print(f"[VoiceType] Could not read start_active setting: {e}")
         except Exception as e:
             # Clean up any partially started resources
             if backend is not None and hasattr(backend, "stop"):

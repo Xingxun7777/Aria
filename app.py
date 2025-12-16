@@ -1365,7 +1365,29 @@ class VoiceTypeApp:
                     f"[HOT-RELOAD] Updated wakeword: '{self.wakeword_detector.wakeword}'"
                 )
 
-            logger.info("Configuration hot-reloaded (all 4 layers)")
+            # Update VAD settings
+            if self.audio_capture and self.audio_capture._vad:
+                try:
+                    import json
+
+                    with open(self._config_path, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    vad_cfg = config.get("vad", {})
+                    new_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
+                    new_min_silence = max(
+                        100, min(5000, vad_cfg.get("min_silence_ms", 1200))
+                    )
+
+                    # Update VAD config in place
+                    self.audio_capture._vad.config.threshold = new_threshold
+                    self.audio_capture._vad.config.min_silence_ms = new_min_silence
+                    print(
+                        f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, min_silence={new_min_silence}ms"
+                    )
+                except Exception as e:
+                    print(f"[HOT-RELOAD] VAD update failed: {e}")
+
+            logger.info("Configuration hot-reloaded (all 4 layers + VAD)")
             print("[HOT-RELOAD] Config reloaded successfully!")
 
     def _config_watcher(self) -> None:
