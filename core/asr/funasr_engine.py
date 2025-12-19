@@ -27,15 +27,30 @@ from ..logging import get_system_logger
 
 logger = get_system_logger()
 
-# Check if FunASR is available
-try:
-    from funasr import AutoModel
-    from funasr.utils.postprocess_utils import rich_transcription_postprocess
+# Lazy import - FunASR is heavy, only import when actually used
+AutoModel = None
+rich_transcription_postprocess = None
+FUNASR_AVAILABLE = None  # Will be set on first check
 
-    FUNASR_AVAILABLE = True
-except ImportError:
-    FUNASR_AVAILABLE = False
-    logger.warning("funasr not installed. Run: pip install funasr")
+
+def check_funasr_installation() -> bool:
+    """Check if FunASR is available (lazy check)."""
+    global AutoModel, rich_transcription_postprocess, FUNASR_AVAILABLE
+    if FUNASR_AVAILABLE is not None:
+        return FUNASR_AVAILABLE
+    try:
+        from funasr import AutoModel as _AutoModel
+        from funasr.utils.postprocess_utils import (
+            rich_transcription_postprocess as _rich_postprocess,
+        )
+
+        AutoModel = _AutoModel
+        rich_transcription_postprocess = _rich_postprocess
+        FUNASR_AVAILABLE = True
+    except ImportError:
+        FUNASR_AVAILABLE = False
+        logger.warning("funasr not installed. Run: pip install funasr")
+    return FUNASR_AVAILABLE
 
 
 @dataclass
@@ -92,6 +107,8 @@ class FunASREngine(ASREngine):
 
     def load(self) -> None:
         """Load the FunASR model."""
+        # Ensure installation check is done first
+        check_funasr_installation()
         if not FUNASR_AVAILABLE:
             raise RuntimeError("funasr not installed. Run: pip install funasr")
 
@@ -324,9 +341,9 @@ class FunASREngine(ASREngine):
         return FUNASR_AVAILABLE
 
 
-def check_funasr_installation() -> dict:
+def get_funasr_info() -> dict:
     """
-    Check FunASR installation status.
+    Get FunASR installation status info.
 
     Returns:
         Dict with installation info
