@@ -9,7 +9,8 @@ Supports large-v3-turbo for additional 5x speedup.
 
 # Fix OpenMP conflict between PyTorch and faster-whisper
 import os
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import numpy as np
 import time
@@ -26,10 +27,11 @@ logger = get_asr_logger()
 @dataclass
 class WhisperConfig:
     """Whisper engine configuration."""
+
     model_name: str = "large-v3-turbo"  # Default to turbo for speed
-    device: str = "cuda"                 # cpu, cuda
-    language: Optional[str] = "zh"       # None = auto-detect
-    compute_type: str = "float16"        # float16, int8, int8_float16
+    device: str = "cuda"  # cpu, cuda
+    language: Optional[str] = "zh"  # None = auto-detect
+    compute_type: str = "float16"  # float16, int8, int8_float16
 
     # HotWord support - vocabulary hints for decoder
     initial_prompt: Optional[str] = None
@@ -89,7 +91,7 @@ class WhisperEngine(ASREngine):
                 self._model = WhisperModel(
                     self.config.model_name,
                     device=self.config.device,
-                    compute_type=self.config.compute_type
+                    compute_type=self.config.compute_type,
                 )
 
                 self._load_time = time.time() - start
@@ -135,18 +137,18 @@ class WhisperEngine(ASREngine):
         try:
             # Build transcribe kwargs
             transcribe_kwargs = {
-                'language': self.config.language,
-                'task': 'transcribe',
-                'beam_size': self.config.beam_size,
-                'vad_filter': True,  # Filter out silence
+                "language": self.config.language,
+                "task": "transcribe",
+                "beam_size": self.config.beam_size,
+                "vad_filter": True,  # Filter out silence
                 # Disable conditioning on previous text to prevent hallucination loops
                 # When True (default), ASR errors can propagate to subsequent segments
-                'condition_on_previous_text': False,
+                "condition_on_previous_text": False,
             }
 
             # Add initial_prompt if set (HotWord support)
             if self.config.initial_prompt:
-                transcribe_kwargs['initial_prompt'] = self.config.initial_prompt
+                transcribe_kwargs["initial_prompt"] = self.config.initial_prompt
 
             # Transcribe - faster-whisper accepts numpy array directly
             segments, info = self._model.transcribe(audio, **transcribe_kwargs)
@@ -162,8 +164,10 @@ class WhisperEngine(ASREngine):
             transcribe_time = (end_time - start_time) * 1000
             audio_duration = len(audio) / self.config.sample_rate
 
-            logger.info(f"Transcribed {audio_duration:.1f}s audio in {transcribe_time:.0f}ms "
-                       f"({audio_duration / (transcribe_time/1000):.1f}x realtime)")
+            logger.info(
+                f"Transcribed {audio_duration:.1f}s audio in {transcribe_time:.0f}ms "
+                f"({audio_duration / (transcribe_time/1000):.1f}x realtime)"
+            )
 
             return ASRResult(
                 text=full_text,
@@ -172,7 +176,7 @@ class WhisperEngine(ASREngine):
                 start_time=0.0,
                 end_time=audio_duration,
                 language=info.language if info else "zh",
-                language_confidence=info.language_probability if info else 1.0
+                language_confidence=info.language_probability if info else 1.0,
             )
 
         except Exception as e:
@@ -180,8 +184,7 @@ class WhisperEngine(ASREngine):
             raise
 
     def transcribe_stream(
-        self,
-        audio_generator: Generator[np.ndarray, None, None]
+        self, audio_generator: Generator[np.ndarray, None, None]
     ) -> Generator[ASRResult, None, None]:
         """
         Streaming transcription with interim results.
@@ -205,7 +208,7 @@ class WhisperEngine(ASREngine):
                         text=result.text,
                         type=TranscriptType.INTERIM,
                         confidence=0.8,
-                        language=result.language
+                        language=result.language,
                     )
 
                 # Keep last 0.5s for continuity
@@ -221,7 +224,5 @@ class WhisperEngine(ASREngine):
             if len(audio) > self.config.sample_rate * 0.1:
                 result = self.transcribe(audio)
                 yield ASRResult(
-                    text=result.text,
-                    type=TranscriptType.FINAL,
-                    confidence=1.0
+                    text=result.text, type=TranscriptType.FINAL, confidence=1.0
                 )

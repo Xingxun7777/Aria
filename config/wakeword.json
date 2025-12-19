@@ -3,6 +3,7 @@
   "wakeword": "遥遥",
   "available_wakewords": [
     "瑶瑶",
+    "遥遥",
     "小朋友",
     "小溪",
     "助手",
@@ -76,6 +77,119 @@
         "出来"
       ],
       "response": "已开启语音"
+    },
+    "selection_polish": {
+      "action": "selection_process",
+      "value": "polish",
+      "triggers": [
+        "润色",
+        "润色一下",
+        "帮我润色",
+        "优化一下",
+        "帮我优化"
+      ],
+      "response": "正在润色..."
+    },
+    "selection_translate_en": {
+      "action": "selection_process",
+      "value": "translate_en",
+      "triggers": [
+        "翻译成英文",
+        "翻译英文",
+        "译成英文",
+        "转英文",
+        "英文翻译"
+      ],
+      "response": "正在翻译..."
+    },
+    "selection_translate_zh": {
+      "action": "selection_process",
+      "value": "translate_zh",
+      "triggers": [
+        "翻译成中文",
+        "翻译中文",
+        "译成中文",
+        "转中文",
+        "中文翻译"
+      ],
+      "response": "正在翻译..."
+    },
+    "selection_translate_ja": {
+      "action": "selection_process",
+      "value": "translate_ja",
+      "triggers": [
+        "翻译成日文",
+        "翻译日文",
+        "译成日文",
+        "转日文",
+        "日文翻译",
+        "翻译成日语",
+        "翻译日语",
+        "译成日语",
+        "转日语",
+        "日语翻译"
+      ],
+      "response": "正在翻译..."
+    },
+    "selection_expand": {
+      "action": "selection_process",
+      "value": "expand",
+      "triggers": [
+        "扩写",
+        "扩写一下",
+        "帮我扩写",
+        "展开",
+        "展开一下"
+      ],
+      "response": "正在扩写..."
+    },
+    "selection_summarize": {
+      "action": "selection_process",
+      "value": "summarize",
+      "triggers": [
+        "缩写",
+        "缩写一下",
+        "总结",
+        "总结一下",
+        "精简",
+        "精简一下"
+      ],
+      "response": "正在缩写..."
+    },
+    "selection_rewrite": {
+      "action": "selection_process",
+      "value": "rewrite",
+      "triggers": [
+        "重写",
+        "重写一下",
+        "改写",
+        "改写一下"
+      ],
+      "response": "正在重写..."
+    },
+    "translate_popup": {
+      "action": "translate_popup",
+      "value": null,
+      "triggers": [
+        "什么意思",
+        "啥意思",
+        "这是什么意思"
+      ],
+      "response": "正在翻译..."
+    },
+    "ask_ai": {
+      "action": "ask_ai",
+      "value": null,
+      "triggers": [
+        "问问AI",
+        "问AI",
+        "问一下AI",
+        "问问",
+        "帮我问问",
+        "解释一下",
+        "帮我解释"
+      ],
+      "response": "正在连接AI..."
     }
   }
 }

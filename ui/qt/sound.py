@@ -29,6 +29,7 @@ class SoundManager:
         # Try to initialize Qt multimedia (optional)
         try:
             from PySide6.QtMultimedia import QSoundEffect
+
             self._use_qt_audio = True
         except ImportError:
             pass
@@ -60,35 +61,35 @@ class SoundManager:
             sound_map[event]()
 
     def _play_start(self):
-        """Play start recording sound."""
-        self._beep(800, 100)  # High short beep
+        """Play start recording sound (short, subtle)."""
+        self._beep(800, 50)  # High short beep
 
     def _play_stop(self):
-        """Play stop recording sound."""
-        self._beep(600, 100)  # Lower short beep
+        """Play stop recording sound (short, subtle)."""
+        self._beep(600, 50)  # Lower short beep
 
     def _play_success(self):
-        """Play success sound."""
-        self._beep(1000, 50)
-        self._beep(1200, 100)  # Rising tone
+        """Play success sound - DISABLED for silent operation."""
+        pass  # No sound
 
     def _play_lock(self):
-        """Play lock sound."""
-        self._beep(500, 80)  # Low click
+        """Play lock sound - DISABLED for silent operation."""
+        pass  # No sound
 
     def _play_unlock(self):
-        """Play unlock sound."""
-        self._beep(700, 80)  # Higher click
+        """Play unlock sound - DISABLED for silent operation."""
+        pass  # No sound
 
     def _play_error(self):
-        """Play error sound."""
-        self._beep(300, 200)  # Low long beep
+        """Play error sound - DISABLED for silent operation."""
+        pass  # No sound
 
     def _beep(self, frequency: int, duration: int):
         """Generate a beep sound."""
-        if sys.platform == 'win32':
+        if sys.platform == "win32":
             try:
                 import winsound
+
                 winsound.Beep(frequency, duration)
             except Exception:
                 pass

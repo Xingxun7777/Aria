@@ -18,6 +18,7 @@ import time
 import threading
 import queue
 import winsound
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
@@ -26,6 +27,23 @@ if sys.platform == "win32" and sys.stdout is not None:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 if sys.platform == "win32" and sys.stderr is not None:
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+# === Centralized Debug Logging (works with pythonw.exe) ===
+import datetime
+
+_DEBUG_LOG_PATH = Path(__file__).parent / "DebugLog" / "pipeline_debug.log"
+
+
+def _pipeline_log(stage: str, msg: str):
+    """Log to pipeline debug file - works even without console."""
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    try:
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [{stage}] {msg}\n")
+    except Exception:
+        pass  # Silent fail
+
 
 from .core.audio.capture import AudioCapture, AudioConfig
 from .core.audio.vad import VADConfig
@@ -48,6 +66,7 @@ from .core.selection import (
     SelectionCommand,
     CommandType,
 )
+from .core.action import TranslationAction, ChatAction
 from .system.hotkey import HotkeyManager
 from .system.output import OutputInjector
 from .ui.streaming_display import DisplayBuffer, DisplayState
@@ -65,6 +84,16 @@ class AppState(Enum):
     TRANSCRIBING = auto()
     SELECTION_LISTENING = auto()  # Listening for voice command on selected text
     SELECTION_PROCESSING = auto()  # Processing selected text with LLM
+
+
+@dataclass
+class StreamingConfig:
+    """流式识别配置"""
+
+    enabled: bool = True  # 是否启用流式显示
+    chunk_interval_ms: int = 1500  # 每1.5秒触发中间识别（降低延迟）
+    min_chunk_samples: int = 16000  # 最少1秒音频才处理 (16000 samples = 1s @ 16kHz)
+    min_speech_ms: int = 1000  # 最少说话1秒才开始流式识别（更快响应）
 
 
 class VoiceTypeApp:
@@ -154,6 +183,13 @@ class VoiceTypeApp:
         self._config_path = get_config_path("hotwords.json")
         self._config_mtime = 0.0
         self._watcher_thread: threading.Thread = None
+
+        # Streaming ASR (interim results while speaking)
+        self._streaming_config = StreamingConfig()
+        self._interim_timer: threading.Timer = None
+        self._last_interim_text: str = ""
+        self._interim_generation: int = 0  # Generation token to prevent stale updates
+        self._asr_lock = threading.Lock()  # Prevent concurrent ASR calls
 
     def _beep(self, frequency: int, duration: int) -> None:
         """Play beep if sound is enabled."""
@@ -294,6 +330,11 @@ class VoiceTypeApp:
         if self._bridge:
             self._bridge.emit_voice_activity(is_speaking)
 
+    def _emit_action(self, action) -> None:
+        """Emit UI action to bridge (v1.1 action-driven architecture)."""
+        if self._bridge:
+            self._bridge.emit_action(action)
+
     def _is_hallucination(self, text: str) -> bool:
         """
         Detect Whisper hallucinations (random outputs when no real speech).
@@ -365,15 +406,70 @@ class VoiceTypeApp:
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            general = data.get("general", {})
             return {
                 "engine": data.get("asr_engine", "funasr"),
                 "whisper": data.get("whisper", {}),
                 "funasr": data.get("funasr", {}),
                 "vad": data.get("vad", {}),
+                "audio_device": general.get("audio_device"),  # Device name string
             }
         except Exception as e:
             logger.warning(f"Failed to load ASR config: {e}, using defaults")
-            return {"engine": "funasr", "whisper": {}, "funasr": {}, "vad": {}}
+            return {
+                "engine": "funasr",
+                "whisper": {},
+                "funasr": {},
+                "vad": {},
+                "audio_device": None,
+            }
+
+    def _find_audio_device_id(self, device_name: str) -> int:
+        """
+        Find audio device ID by name.
+
+        Args:
+            device_name: Device name (e.g., "Microsoft 声音映射器 - Input")
+
+        Returns:
+            Device ID (int), or None if not found (uses default)
+        """
+        if not device_name:
+            return None
+
+        try:
+            import sounddevice as sd
+
+            # List all input devices
+            devices = sd.query_devices()
+
+            for i, d in enumerate(devices):
+                if d["max_input_channels"] > 0:  # Input device
+                    # Exact match
+                    if d["name"] == device_name:
+                        logger.info(f"Found audio device: {device_name} -> ID {i}")
+                        return i
+                    # Partial match (in case of encoding issues)
+                    if device_name in d["name"] or d["name"] in device_name:
+                        logger.info(
+                            f"Found audio device (partial): {d['name']} -> ID {i}"
+                        )
+                        return i
+
+            # Not found - log available devices for debugging
+            input_devices = [
+                (i, d["name"])
+                for i, d in enumerate(devices)
+                if d["max_input_channels"] > 0
+            ]
+            logger.warning(
+                f"Audio device '{device_name}' not found. Available: {input_devices}"
+            )
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to find audio device: {e}")
+            return None
 
     def _init_components(self) -> None:
         """Initialize audio and ASR components."""
@@ -388,11 +484,22 @@ class VoiceTypeApp:
         vad_min_speech = max(50, min(1000, vad_cfg.get("min_speech_ms", 150)))
         vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 1200)))
 
+        # Find audio device ID from config name
+        audio_device_name = asr_cfg.get("audio_device")
+        audio_device_id = self._find_audio_device_id(audio_device_name)
+        if audio_device_name:
+            print(
+                f"[AUDIO] Configured device: '{audio_device_name}' -> ID {audio_device_id}"
+            )
+        else:
+            print("[AUDIO] Using system default input device")
+
         # Audio capture with VAD
         audio_config = AudioConfig(
             sample_rate=16000,
             channels=1,
             enable_vad=True,
+            device_id=audio_device_id,  # Use configured device
             vad_config=VADConfig(
                 threshold=vad_threshold,
                 min_speech_ms=vad_min_speech,
@@ -433,6 +540,28 @@ class VoiceTypeApp:
                 self.asr_engine = FunASREngine(asr_config)
                 self.asr_engine.load()
             print(f"FunASR ready!")
+        elif engine_type == "whisper":
+            # Whisper (faster-whisper, supports English hotwords via initial_prompt)
+            self._asr_engine_type = "whisper"
+            # Check for pre-loaded engine (loaded before Qt to avoid conflict)
+            import voicetype
+
+            preloaded = getattr(voicetype, "_preloaded_asr_engine", None)
+            if preloaded is not None and isinstance(preloaded, WhisperEngine):
+                print("Using pre-loaded Whisper engine")
+                self.asr_engine = preloaded
+            else:
+                whisper_cfg = asr_cfg.get("whisper", {})
+                print("Loading Whisper model (this may take a few seconds)...")
+                asr_config = WhisperConfig(
+                    model_name=whisper_cfg.get("model_name", "large-v3-turbo"),
+                    device=whisper_cfg.get("device", "cuda"),
+                    language=whisper_cfg.get("language", "zh"),
+                    compute_type=whisper_cfg.get("compute_type", "float16"),
+                )
+                self.asr_engine = WhisperEngine(asr_config)
+                self.asr_engine.load()
+            print(f"Whisper ready!")
         elif engine_type == "fireredasr":
             # FireRedASR (SOTA Chinese/English)
             self._asr_engine_type = "fireredasr"
@@ -527,7 +656,13 @@ class VoiceTypeApp:
             if mode == "fast":
                 print(f"[POLISH] Local polish enabled (Qwen, fast mode)")
             else:
-                print(f"[POLISH] AI polish enabled (Gemini, quality mode)")
+                # Show actual model from config
+                cfg = self.hotword_manager.config.polish_config
+                model_name = cfg.model if cfg else "unknown"
+                short_name = (
+                    model_name.split("/")[-1] if "/" in model_name else model_name
+                )
+                print(f"[POLISH] AI polish enabled ({short_name}, quality mode)")
 
         # Layer 0: Voice command system
         self.command_detector = CommandDetector()
@@ -575,8 +710,13 @@ class VoiceTypeApp:
         print("\n[MIC] Speaking...")
         self._emit_voice_activity(True)
 
+        # Start streaming ASR (interim results while speaking)
+        self._last_interim_text = ""
+        self._start_interim_timer()
+
     def _on_speech_end(self, audio) -> None:
         """Called when speech ends - queue for transcription (non-blocking)."""
+        self._stop_interim_timer()  # Stop streaming ASR
         self._emit_voice_activity(False)
 
         if audio is None or len(audio) < 1600:  # < 0.1s
@@ -591,6 +731,153 @@ class VoiceTypeApp:
         except queue.Full:
             print("[WARN] ASR queue full, dropping segment")
 
+    # ========== Streaming ASR (interim results) ==========
+
+    def _start_interim_timer(self) -> None:
+        """启动中间识别定时器"""
+        if not self._streaming_config.enabled:
+            print("[STREAM] Disabled, skipping timer")
+            return
+
+        # Cancel existing timer (but don't increment generation)
+        if self._interim_timer:
+            self._interim_timer.cancel()
+            self._interim_timer = None
+
+        # Capture current generation for the callback
+        current_gen = self._interim_generation
+        print(
+            f"[STREAM] Starting timer (gen={current_gen}, interval={self._streaming_config.chunk_interval_ms}ms)",
+            flush=True,
+        )
+        self._interim_timer = threading.Timer(
+            self._streaming_config.chunk_interval_ms / 1000,
+            self._do_interim_transcription,
+            args=(current_gen,),
+        )
+        self._interim_timer.daemon = True
+        self._interim_timer.start()
+
+    def _stop_interim_timer(self) -> None:
+        """停止中间识别定时器"""
+        self._interim_generation += 1  # Invalidate any running/pending callbacks
+        if self._interim_timer:
+            self._interim_timer.cancel()
+            self._interim_timer = None
+
+    def _do_interim_transcription(self, generation: int) -> None:
+        """执行中间识别（在定时器线程中运行）"""
+        try:
+            # Check generation token - if mismatched, this callback is stale
+            if generation != self._interim_generation:
+                print(
+                    f"[STREAM] Stale callback (gen={generation}, current={self._interim_generation})"
+                )
+                return
+
+            # Check if still recording
+            if self.state != AppState.RECORDING:
+                print(f"[STREAM] Not recording (state={self.state})")
+                return
+
+            # Get current speech buffer from VAD
+            if not self.audio_capture or not self.audio_capture._vad:
+                print("[STREAM] No audio capture or VAD")
+                return
+
+            # Check ASR engine is ready
+            if not self.asr_engine:
+                print("[STREAM] No ASR engine")
+                return
+
+            vad = self.audio_capture._vad
+            speech_duration_ms = vad.get_speech_duration_ms()
+            print(
+                f"[STREAM] Check: duration={speech_duration_ms:.0f}ms, min={self._streaming_config.min_speech_ms}ms"
+            )
+
+            # Only process if minimum duration reached
+            if speech_duration_ms < self._streaming_config.min_speech_ms:
+                # Not enough audio yet, schedule next check
+                if (
+                    self.state == AppState.RECORDING
+                    and generation == self._interim_generation
+                ):
+                    self._start_interim_timer()
+                return
+
+            audio = vad.get_current_speech_buffer()
+            if audio is None or len(audio) < self._streaming_config.min_chunk_samples:
+                if (
+                    self.state == AppState.RECORDING
+                    and generation == self._interim_generation
+                ):
+                    self._start_interim_timer()
+                return
+
+            # Limit audio length to avoid O(n²) performance degradation
+            # Only process last 10 seconds for interim (160000 samples @ 16kHz)
+            MAX_INTERIM_SAMPLES = 160000
+            if len(audio) > MAX_INTERIM_SAMPLES:
+                audio = audio[-MAX_INTERIM_SAMPLES:]
+
+            # Try to acquire ASR lock (non-blocking) - skip if ASR is busy
+            if not self._asr_lock.acquire(blocking=False):
+                # ASR busy (likely final transcription), skip this interim
+                if (
+                    self.state == AppState.RECORDING
+                    and generation == self._interim_generation
+                ):
+                    self._start_interim_timer()
+                return
+
+            text_to_emit = None
+            try:
+                # Double-check after acquiring lock
+                if (
+                    generation != self._interim_generation
+                    or self.state != AppState.RECORDING
+                ):
+                    return
+
+                # Quick transcription (no hotword processing for interim)
+                result = self.asr_engine.transcribe(audio)
+                text = result.text.strip() if result and result.text else ""
+
+                # Final check before emitting
+                if generation != self._interim_generation:
+                    return
+
+                # Only emit if text changed (avoid flickering)
+                if text and text != self._last_interim_text:
+                    self._last_interim_text = text
+                    text_to_emit = text  # Defer emit until after releasing lock
+            finally:
+                self._asr_lock.release()
+
+            # Emit outside lock to avoid blocking final transcription
+            if text_to_emit:
+                self._emit_text(text_to_emit, is_final=False)
+                print(f"[INTERIM] {text_to_emit}")
+
+            # Schedule next interim transcription if still recording
+            if (
+                self.state == AppState.RECORDING
+                and generation == self._interim_generation
+            ):
+                self._start_interim_timer()
+
+        except Exception as e:
+            logger.warning(f"Interim transcription error: {e}")
+            # Continue anyway, schedule next attempt
+            if (
+                self.state == AppState.RECORDING
+                and generation == self._interim_generation
+            ):
+                self._start_interim_timer()
+
+    # ========== End Streaming ASR ==========
+
     def _asr_worker(self) -> None:
         """Worker thread for ASR transcription (runs in background)."""
         import wave
@@ -598,6 +885,7 @@ class VoiceTypeApp:
         import numpy as np
 
         logger.info("ASR worker thread started")
+        _pipeline_log("ASR", "Worker thread started, waiting for audio...")
 
         while not self._stop_event.is_set():
             try:
@@ -606,6 +894,10 @@ class VoiceTypeApp:
             except queue.Empty:
                 continue
 
+            _pipeline_log(
+                "ASR",
+                f">>> Got audio from queue: session={session_id}, samples={len(audio)}",
+            )
             print("[...] Transcribing...")
 
             # Create debug session
@@ -661,10 +953,14 @@ class VoiceTypeApp:
                 # Transcribe (Layer 1: initial_prompt already set)
                 import time as time_module
 
+                _pipeline_log("ASR", "Starting transcription...")
                 asr_start = time_module.time()
-                result = self.asr_engine.transcribe(audio)
+                # Use lock to prevent concurrent ASR (interim vs final)
+                with self._asr_lock:
+                    result = self.asr_engine.transcribe(audio)
                 asr_time = (time_module.time() - asr_start) * 1000
                 text = result.text.strip()
+                _pipeline_log("ASR", f"Transcription done: '{text}' ({asr_time:.0f}ms)")
 
                 # Get initial prompt info
                 initial_prompt = (
@@ -713,49 +1009,10 @@ class VoiceTypeApp:
                     self._emit_text(text, is_final=False)
 
                 # === Selection Command Detection ===
-                # Check if ASR text is a selection command (润色, 翻译成英文, etc.)
-                # If detected, check for selected text and process it
-                if text and self.selection_processor:
-                    selection_cmd = SelectionCommand.parse(text)
-                    if (
-                        selection_cmd
-                        and selection_cmd.command_type != CommandType.CUSTOM
-                    ):
-                        # This looks like a selection command, check for selected text
-                        print(
-                            f"[SELECTION] Detected command: {selection_cmd.command_type.name}"
-                        )
-                        detection = self.selection_detector.detect()
-                        if detection.has_selection and detection.selected_text:
-                            print(
-                                f"[SELECTION] Found selected text: {len(detection.selected_text)} chars"
-                            )
-                            # Process selected text with command
-                            result = self.selection_processor.process(
-                                detection.selected_text, selection_cmd
-                            )
-                            if result.success and result.output_text:
-                                # Replace selected text with result
-                                self.output_injector.insert_text(result.output_text)
-                                print(
-                                    f"[SELECTION] OK! Replaced ({result.processing_time_ms:.0f}ms)"
-                                )
-                                inserted = True
-                                final_text = (
-                                    f"[选择指令] {selection_cmd.command_type.name}"
-                                )
-                                # Restore original clipboard
-                                if detection.original_clipboard is not None:
-                                    self.selection_detector.restore_clipboard(
-                                        detection.original_clipboard
-                                    )
-                                continue  # Skip normal processing
-                            else:
-                                print(f"[SELECTION] Processing failed: {result.error}")
-                        else:
-                            print(
-                                "[SELECTION] No selected text, treating as normal dictation"
-                            )
+                # REMOVED: Automatic selection detection based on ASR keywords
+                # Selection processing is now ONLY triggered via wakeword (瑶瑶润色, etc.)
+                # This prevents accidental Ctrl+C during normal dictation
+                # See: wakeword/executor.py -> _selection_process()
 
                 # === Layer -1: Wakeword Detection (app-level commands via "瑶瑶") ===
                 # Check for wakeword to control app settings (auto-send, etc.)
@@ -889,13 +1146,16 @@ class VoiceTypeApp:
 
                     final_text = text
                     print(f"[TEXT] {text}")
+                    _pipeline_log("OUTPUT", f"Final text: '{text}'")
 
                     # Emit final text to UI
                     self._emit_text(text, is_final=True)
 
                     # Insert into active application
+                    _pipeline_log("OUTPUT", "Calling output_injector.insert_text()...")
                     self.output_injector.insert_text(text)
                     inserted = True
+                    _pipeline_log("OUTPUT", ">>> Text inserted successfully!")
                     print("[OK] Inserted!")
 
                     # Auto-send: press Enter after text insertion if enabled
@@ -911,10 +1171,12 @@ class VoiceTypeApp:
                     # Note: UI notification moved to finally block to ensure it always fires
                 else:
                     print("[WARN] No speech recognized")
+                    _pipeline_log("ASR", "No speech recognized (empty result)")
                     debug.log_error("No speech recognized")
 
             except Exception as e:
                 logger.error(f"Transcription error: {e}")
+                _pipeline_log("ERROR", f"Transcription exception: {e}")
                 print(f"[ERR] Error: {e}")
                 debug.log_error(f"Transcription error: {e}")
 
@@ -973,27 +1235,38 @@ class VoiceTypeApp:
 
     def _on_hotkey(self) -> None:
         """Called when hotkey is pressed - toggle recording."""
+        _pipeline_log("HOTKEY", ">>> Hotkey callback triggered!")
+
         # Allow hotkey in sleeping mode - wakeword detection happens BEFORE
         # sleeping check in _asr_worker(), so "瑶瑶醒来" will still work
         with self._lock:
             is_sleeping = self._is_sleeping
         if is_sleeping:
             print("[HOTKEY] Pressed in sleeping mode - wakeword detection enabled")
+            _pipeline_log("HOTKEY", "In sleeping mode, wakeword detection enabled")
 
         print(f"[HOTKEY] Pressed! Current state: {self.state.name}")
+        _pipeline_log("HOTKEY", f"Current state: {self.state.name}")
+
         with self._lock:
             if self.state == AppState.IDLE:
                 # Normal recording start
+                _pipeline_log("HOTKEY", "Starting recording...")
                 self._start_recording()
             elif self.state == AppState.RECORDING:
                 # Stop recording
+                _pipeline_log("HOTKEY", "Stopping recording...")
                 self._stop_recording()
+            else:
+                _pipeline_log("HOTKEY", f"Ignored (state={self.state.name})")
             # TRANSCRIBING: ignore hotkey
 
     def _start_recording(self) -> None:
         """Start recording."""
-        # Beep: high pitch = start recording
-        self._beep(800, 150)
+        _pipeline_log("RECORD", ">>> _start_recording called")
+
+        # Beep: high pitch = start recording (short, subtle)
+        self._beep(800, 50)
 
         self._session_count += 1
         print(f"\n{'='*50}")
@@ -1003,19 +1276,33 @@ class VoiceTypeApp:
 
         self.state = AppState.RECORDING
         self._emit_state("RECORDING")
+        _pipeline_log(
+            "RECORD", f"Session #{self._session_count}, starting audio capture..."
+        )
         self.audio_capture.start()
+        _pipeline_log("RECORD", "Audio capture started")
 
     def _stop_recording(self) -> None:
         """Stop recording."""
-        # Beep: low pitch = stop recording
-        self._beep(400, 150)
+        _pipeline_log("RECORD", ">>> _stop_recording called")
+
+        # Stop streaming ASR timer first
+        self._stop_interim_timer()
+
+        # Beep: low pitch = stop recording (short, subtle)
+        self._beep(400, 50)
         print("[STOP] Recording stopped")
 
         # Emit TRANSCRIBING state while processing
         self._emit_state("TRANSCRIBING")
 
         # Stop capture and get any remaining audio
+        _pipeline_log("RECORD", "Stopping audio capture...")
         final_audio = self.audio_capture.stop()
+        _pipeline_log(
+            "RECORD",
+            f"Audio captured: {len(final_audio) if final_audio is not None else 0} samples",
+        )
 
         # Minimum duration check: 0.5 seconds = 8000 samples at 16kHz
         # (Just to filter accidental clicks, short phrases are OK)
@@ -1026,15 +1313,18 @@ class VoiceTypeApp:
                 print(
                     f"[WARN] Recording too short ({duration_s:.2f}s < 0.5s) - accidental click?"
                 )
+                _pipeline_log("RECORD", f"Too short ({duration_s:.2f}s), skipping")
                 # Warning beep disabled
                 self.state = AppState.IDLE
                 self._emit_state("IDLE")
                 self._emit_insert_complete()  # Must notify UI to shrink ball!
                 print("[STATE] -> IDLE (skipped)")
                 return
+            _pipeline_log("RECORD", f"Queuing audio for ASR ({duration_s:.2f}s)")
             self._on_speech_end(final_audio)
         else:
             # No audio captured - still need to notify UI
+            _pipeline_log("RECORD", "No audio captured!")
             self.state = AppState.IDLE
             self._emit_state("IDLE")
             self._emit_insert_complete()  # Must notify UI to shrink ball!
@@ -1091,8 +1381,8 @@ class VoiceTypeApp:
                 self.state = AppState.SELECTION_LISTENING
                 self._emit_state("SELECTION_LISTENING")
 
-                # Same beep as normal recording (consistent experience)
-                self._beep(800, 150)
+                # Same beep as normal recording (short, subtle)
+                self._beep(800, 50)
 
                 print(f"[SELECTION] Text selected ({len(self._selected_text)} chars)")
 
@@ -1108,8 +1398,8 @@ class VoiceTypeApp:
 
     def _stop_selection_recording(self) -> None:
         """Stop recording in selection mode and process the command."""
-        # Beep: low pitch = stop recording
-        self._beep(400, 150)
+        # Beep: low pitch = stop recording (short, subtle)
+        self._beep(400, 50)
         print("[SELECTION] Recording stopped, processing command...")
 
         self.state = AppState.SELECTION_PROCESSING
@@ -1130,8 +1420,9 @@ class VoiceTypeApp:
     def _process_selection_audio(self, audio) -> None:
         """Process audio in selection mode - transcribe and execute command."""
         try:
-            # Transcribe command
-            result = self.asr_engine.transcribe(audio)
+            # Transcribe command (with lock for thread safety)
+            with self._asr_lock:
+                result = self.asr_engine.transcribe(audio)
             command_text = result.text.strip()
             print(f"[SELECTION] Command ASR: '{command_text}'")
 
@@ -1163,23 +1454,20 @@ class VoiceTypeApp:
                     print(
                         f"[SELECTION] OK! Replaced with {len(result.output_text)} chars ({result.processing_time_ms:.0f}ms)"
                     )
-
-                    # Subtle success beep (same as normal dictation end)
-                    self._beep(400, 150)
+                    # Success - no beep (silent operation)
                 else:
                     print(f"[SELECTION] Processing failed: {result.error}")
                     self._emit_error(f"Selection processing failed: {result.error}")
-                    # Error beep
-                    self._beep(300, 200)
+                    # Error - no beep (silent operation)
             else:
                 print("[SELECTION] No processor available")
-                self._beep(300, 200)
+                # No processor - no beep (silent operation)
 
         except Exception as e:
             print(f"[SELECTION] Error: {e}")
             logger.error(f"Selection processing error: {e}")
             self._emit_error(str(e))
-            self._beep(300, 200)
+            # Exception - no beep (silent operation)
 
         finally:
             # Always cleanup and return to IDLE
@@ -1188,7 +1476,7 @@ class VoiceTypeApp:
     def _cancel_selection_mode(self) -> None:
         """Cancel selection mode and restore state."""
         print("[SELECTION] Canceled")
-        self._beep(300, 150)  # Low beep for cancel
+        # Cancel - no beep (silent operation)
 
         # Stop recording if active
         if self.audio_capture and self.audio_capture.is_recording:
@@ -1462,10 +1750,16 @@ class VoiceTypeApp:
             mode: "fast" (local Qwen) or "quality" (Gemini API)
         """
         if self.hotword_manager:
-            self.hotword_manager.set_polish_mode(mode)
-            # Update active polisher
-            self.polisher = self.hotword_manager.get_active_polisher()
-            logger.info(f"Polish mode set to: {mode}")
+            try:
+                self.hotword_manager.set_polish_mode(mode)
+                # Update active polisher
+                self.polisher = self.hotword_manager.get_active_polisher()
+                logger.info(
+                    f"Polish mode set to: {mode}, polisher: {type(self.polisher).__name__ if self.polisher else 'None'}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to set polish mode: {e}", exc_info=True)
+                # Keep existing polisher on error
 
     def get_polish_mode(self) -> str:
         """

@@ -135,6 +135,8 @@ class PopupMenu(QWidget):
     settingsRequested = Signal()
     lockToggled = Signal(bool)  # Lock position toggle
     sleepToggled = Signal(bool)  # Sleep/wake toggle
+    streamingToggled = Signal(bool)  # Streaming display toggle
+    translateModeChanged = Signal(str)  # "popup" or "clipboard"
     closed = Signal()
 
     def __init__(self, parent=None):
@@ -178,7 +180,7 @@ class PopupMenu(QWidget):
 
         # --- Enable Toggle Row ---
         enable_row = QHBoxLayout()
-        enable_label = QLabel("VoiceType")
+        enable_label = QLabel("VoiceType-Dev")
         enable_label.setStyleSheet(
             """
             QLabel {
@@ -241,6 +243,74 @@ class PopupMenu(QWidget):
         separator2.setFixedHeight(1)
         separator2.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
         container_layout.addWidget(separator2)
+
+        # --- Translation Output Mode Section ---
+        translate_mode_label = QLabel("翻译输出模式")
+        translate_mode_label.setStyleSheet(
+            """
+            QLabel {
+                color: rgba(255, 255, 255, 0.6);
+                font-size: 11px;
+            }
+        """
+        )
+        container_layout.addWidget(translate_mode_label)
+
+        # Translation mode buttons row
+        translate_mode_row = QHBoxLayout()
+        translate_mode_row.setSpacing(8)
+
+        self.translate_mode_group = QButtonGroup(self)
+        self.translate_mode_group.setExclusive(True)
+
+        mode_btn_style = """
+            QPushButton {
+                background-color: rgba(60, 60, 70, 0.8);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                color: white;
+                font-size: 12px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(80, 80, 95, 0.9);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            QPushButton:checked {
+                background-color: rgba(76, 175, 80, 0.8);
+                border: 1px solid rgba(76, 175, 80, 0.5);
+            }
+        """
+
+        self.translate_popup_btn = QPushButton("弹窗")
+        self.translate_popup_btn.setCursor(Qt.PointingHandCursor)
+        self.translate_popup_btn.setCheckable(True)
+        self.translate_popup_btn.setStyleSheet(mode_btn_style)
+        self.translate_popup_btn.setProperty("mode_id", "popup")
+
+        self.translate_clipboard_btn = QPushButton("剪贴板")
+        self.translate_clipboard_btn.setCursor(Qt.PointingHandCursor)
+        self.translate_clipboard_btn.setCheckable(True)
+        self.translate_clipboard_btn.setStyleSheet(mode_btn_style)
+        self.translate_clipboard_btn.setProperty("mode_id", "clipboard")
+
+        self.translate_mode_group.addButton(self.translate_popup_btn)
+        self.translate_mode_group.addButton(self.translate_clipboard_btn)
+
+        # Default to popup mode
+        self.translate_popup_btn.setChecked(True)
+
+        self.translate_mode_group.buttonClicked.connect(self._on_translate_mode_clicked)
+
+        translate_mode_row.addWidget(self.translate_popup_btn)
+        translate_mode_row.addWidget(self.translate_clipboard_btn)
+        container_layout.addLayout(translate_mode_row)
+
+        # --- Separator ---
+        separator3 = QFrame()
+        separator3.setFixedHeight(1)
+        separator3.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        container_layout.addWidget(separator3)
 
         # --- Settings Button ---
         self.settings_btn = QPushButton("高级设置")
@@ -310,6 +380,26 @@ class PopupMenu(QWidget):
         sleep_row.addWidget(self.sleep_toggle)
         container_layout.addLayout(sleep_row)
 
+        # --- Streaming Display Toggle Row ---
+        streaming_row = QHBoxLayout()
+        streaming_label = QLabel("💬 实时字幕")
+        streaming_label.setStyleSheet(
+            """
+            QLabel {
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 13px;
+            }
+        """
+        )
+        self.streaming_toggle = ToggleSwitch()
+        self.streaming_toggle.setChecked(True)  # Default on
+        self.streaming_toggle.toggled.connect(self._on_streaming_toggled)
+
+        streaming_row.addWidget(streaming_label)
+        streaming_row.addStretch()
+        streaming_row.addWidget(self.streaming_toggle)
+        container_layout.addLayout(streaming_row)
+
         layout.addWidget(self.container)
 
     def _apply_shadow(self):
@@ -337,6 +427,12 @@ class PopupMenu(QWidget):
         self.close()
         self.settingsRequested.emit()
 
+    def _on_translate_mode_clicked(self, button):
+        """Handle translate output mode button click."""
+        mode_id = button.property("mode_id")
+        if mode_id:
+            self.translateModeChanged.emit(mode_id)
+
     def _on_lock_toggled(self, locked):
         """Handle lock toggle."""
         self._is_locked = locked
@@ -346,6 +442,10 @@ class PopupMenu(QWidget):
         """Handle sleep toggle."""
         self._is_sleeping = sleeping
         self.sleepToggled.emit(sleeping)
+
+    def _on_streaming_toggled(self, enabled):
+        """Handle streaming display toggle."""
+        self.streamingToggled.emit(enabled)
 
     def setEnabled(self, enabled):
         """Set the enable state."""
@@ -374,6 +474,17 @@ class PopupMenu(QWidget):
     def set_sleeping_state(self, is_sleeping):
         """Alias for setSleeping - compatibility with snake_case naming."""
         self.setSleeping(is_sleeping)
+
+    def setStreaming(self, enabled):
+        """Set the streaming display state."""
+        self.streaming_toggle.setChecked(enabled)
+
+    def setTranslateMode(self, mode):
+        """Set the translate output mode."""
+        if mode == "clipboard":
+            self.translate_clipboard_btn.setChecked(True)
+        else:
+            self.translate_popup_btn.setChecked(True)
 
     def showAt(self, global_pos: QPoint):
         """Show popup at specified position."""

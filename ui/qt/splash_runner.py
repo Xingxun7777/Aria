@@ -14,18 +14,17 @@ import traceback
 
 # Set up path for imports - must be before any voicetype imports
 # Calculate paths relative to this script's location
-# This script is at: voicetype/ui/qt/splash_runner.py
+# This script is at: voicetype-v1.1-dev/ui/qt/splash_runner.py
 _script_dir = os.path.dirname(os.path.abspath(__file__))
-_voicetype_dir = os.path.dirname(
+_project_dir = os.path.dirname(
     os.path.dirname(_script_dir)
-)  # Go up from ui/qt to voicetype
-_parent_dir = os.path.dirname(
-    _voicetype_dir
-)  # Go up from voicetype to parent (e.g., AIBOX)
+)  # Go up from ui/qt to project root
 
-if _parent_dir not in sys.path:
-    sys.path.insert(0, _parent_dir)
-os.chdir(_voicetype_dir)
+# CRITICAL: Insert project dir FIRST to ensure we import from THIS project,
+# not from a sibling stable version (e.g., /AIBOX/voicetype vs /AIBOX/voicetype-v1.1-dev)
+if _project_dir not in sys.path:
+    sys.path.insert(0, _project_dir)
+os.chdir(_project_dir)
 
 # Log file for splash errors
 SPLASH_LOG = os.path.join(os.path.dirname(__file__), "..", "..", "splash_error.log")
@@ -44,8 +43,13 @@ def log_error(msg):
 try:
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import QTimer
-    from voicetype.ui.qt.splash import SplashWindow
-    from voicetype.progress_ipc import ProgressListener
+
+    # Direct import from current directory to avoid package resolution issues
+    from splash import SplashWindow
+
+    # Import progress_ipc from project root
+    sys.path.insert(0, _project_dir)
+    from progress_ipc import ProgressListener
 except Exception as e:
     log_error(f"Import error: {e}\n{traceback.format_exc()}")
     sys.exit(1)

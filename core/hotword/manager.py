@@ -114,19 +114,31 @@ class HotWordConfig:
             logger.error(f"Invalid JSON in hotword config: {e}")
 
     def save_to_file(self, path: Optional[str] = None) -> None:
-        """Save configuration to JSON file."""
+        """Save configuration to JSON file, preserving unknown fields."""
         save_path = path or self.config_path
         if not save_path:
             raise ValueError("No config path specified for saving")
 
-        data = {
-            "enable_initial_prompt": self.enable_initial_prompt,
-            "hotwords": self.hotwords,  # Primary: user-defined target words
-            "replacements": self.replacements,  # Optional: explicit corrections
-            "domain_context": self.domain_context,
-            "polish_mode": self.polish_mode,
-            # Note: prompt_words is auto-generated from hotwords, not saved
-        }
+        # Load existing config to preserve unknown fields (e.g., "general", "hotword_weights")
+        data = {}
+        if os.path.exists(save_path):
+            try:
+                with open(save_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                data = {}
+
+        # Update only the fields managed by HotWordConfig
+        data.update(
+            {
+                "enable_initial_prompt": self.enable_initial_prompt,
+                "hotwords": self.hotwords,  # Primary: user-defined target words
+                "replacements": self.replacements,  # Optional: explicit corrections
+                "domain_context": self.domain_context,
+                "polish_mode": self.polish_mode,
+                # Note: prompt_words is auto-generated from hotwords, not saved
+            }
+        )
 
         # Save quality mode (API) polish config if present
         if self.polish_config:
@@ -242,9 +254,13 @@ class HotWordManager:
         """Get local polisher instance for fast mode (lazy init)."""
         if self.config.local_polish_config and self.config.local_polish_config.enabled:
             if self._local_polisher is None:
-                self._local_polisher = LocalPolishEngine(
-                    self.config.local_polish_config
-                )
+                try:
+                    self._local_polisher = LocalPolishEngine(
+                        self.config.local_polish_config
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create LocalPolishEngine: {e}")
+                    return None
             return self._local_polisher
         return None
 
@@ -291,7 +307,14 @@ class HotWordManager:
             mode = "fast"
 
         self.config.polish_mode = mode
-        logger.info(f"Polish mode changed to: {mode}")
+
+        # Auto-enable/disable local polish based on mode
+        if self.config.local_polish_config:
+            self.config.local_polish_config.enabled = mode == "fast"
+
+        logger.info(
+            f"Polish mode changed to: {mode} (local_polish.enabled={mode == 'fast'})"
+        )
 
         # Save to config file
         if self.config.config_path:

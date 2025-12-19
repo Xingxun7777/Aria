@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, Slot, QTimer
 from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QApplication
 from . import styles
 
+
 class RecordingOverlay(QWidget):
     """
     Floating capsule overlay that shows recording status.
@@ -19,10 +20,10 @@ class RecordingOverlay(QWidget):
 
         # Window flags for non-activating overlay
         self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.Tool |
-            Qt.WindowStaysOnTopHint |
-            Qt.WindowDoesNotAcceptFocus
+            Qt.FramelessWindowHint
+            | Qt.Tool
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
@@ -83,7 +84,7 @@ class RecordingOverlay(QWidget):
         """Apply Win32 extended styles for non-activation."""
         super().showEvent(event)
 
-        if sys.platform != 'win32':
+        if sys.platform != "win32":
             return
 
         try:
@@ -101,7 +102,11 @@ class RecordingOverlay(QWidget):
             user32.SetWindowLongW(
                 hwnd,
                 GWL_EXSTYLE,
-                style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT
+                style
+                | WS_EX_NOACTIVATE
+                | WS_EX_TOOLWINDOW
+                | WS_EX_TOPMOST
+                | WS_EX_TRANSPARENT,
             )
 
             # Force topmost
@@ -122,8 +127,8 @@ class RecordingOverlay(QWidget):
             self.status_label.setText("🔴")
             self.text_label.setText("Listening...")
             self.capsule.setStyleSheet(
-                styles.STYLESHEET_OVERLAY +
-                "QWidget#capsule { border: 1px solid #EF4444; }"
+                styles.STYLESHEET_OVERLAY
+                + "QWidget#capsule { border: 1px solid #EF4444; }"
             )
             self._move_to_bottom_center()
             self.show()
@@ -131,19 +136,23 @@ class RecordingOverlay(QWidget):
             self.status_label.setText("✨")
             self.text_label.setText("Polishing...")
             self.capsule.setStyleSheet(
-                styles.STYLESHEET_OVERLAY +
-                "QWidget#capsule { border: 1px solid #2563EB; }"
+                styles.STYLESHEET_OVERLAY
+                + "QWidget#capsule { border: 1px solid #2563EB; }"
             )
             self.show()
 
     @Slot(str, bool)
     def on_text_updated(self, text: str, is_final: bool):
-        """Handle text updates from backend."""
+        """Handle text updates from backend (supports streaming interim results)."""
         self.text_label.setText(text)
         if is_final:
+            # Final result: white bold text
             self.text_label.setStyleSheet("color: white; font-weight: bold;")
+            self.status_label.setText("✨")  # Ready to insert
         else:
+            # Interim result: gray italic text with streaming indicator
             self.text_label.setStyleSheet("color: #9CA3AF; font-style: italic;")
+            self.status_label.setText("💭")  # Streaming/thinking
 
     @Slot(float)
     def on_level_changed(self, level: float):
@@ -157,8 +166,7 @@ class RecordingOverlay(QWidget):
         # Show success briefly, then hide
         self.status_label.setText("✓")
         self.capsule.setStyleSheet(
-            styles.STYLESHEET_OVERLAY +
-            "QWidget#capsule { border: 1px solid #10B981; }"
+            styles.STYLESHEET_OVERLAY + "QWidget#capsule { border: 1px solid #10B981; }"
         )
         # Hide after 500ms
         QTimer.singleShot(500, self.hide)

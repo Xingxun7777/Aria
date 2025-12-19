@@ -7,10 +7,24 @@
 import sys
 import math
 from typing import Tuple, Optional
-from PySide6.QtCore import (Qt, QTimer, Signal, QRectF, QPropertyAnimation,
-                            QEasingCurve, QPoint)
-from PySide6.QtGui import (QPainter, QColor, QLinearGradient, QPen,
-                           QFont, QPainterPath, QRadialGradient)
+from PySide6.QtCore import (
+    Qt,
+    QTimer,
+    Signal,
+    QRectF,
+    QPropertyAnimation,
+    QEasingCurve,
+    QPoint,
+)
+from PySide6.QtGui import (
+    QPainter,
+    QColor,
+    QLinearGradient,
+    QPen,
+    QFont,
+    QPainterPath,
+    QRadialGradient,
+)
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -23,16 +37,18 @@ class Config:
     HEIGHT = CONTENT_HEIGHT + SHADOW_PADDING + 10  # Less padding on top
     RADIUS = 16
 
-    # Frosted glass (light)
-    BG = QColor(255, 255, 255, 190)
-    BORDER = QColor(255, 255, 255, 200)
+    # Dark glass (black-orange theme)
+    BG = QColor(25, 25, 30, 230)
+    BORDER = QColor(60, 60, 65, 200)
 
-    # Gradient: indigo → pink
-    ACCENT_1 = QColor("#6366f1")
-    ACCENT_2 = QColor("#ec4899")
+    # Multi-color gradient: warm orange tones with subtle variety
+    # Progress bar uses a richer gradient for visual interest
+    ACCENT_1 = QColor("#ff6b00")  # Deep orange (start)
+    ACCENT_2 = QColor("#ff8c00")  # Bright orange (mid)
+    ACCENT_3 = QColor("#ffaa33")  # Golden orange (end)
 
-    TEXT_DARK = QColor("#1e293b")
-    TEXT_MUTED = QColor("#64748b")
+    TEXT_LIGHT = QColor("#f8f8f8")
+    TEXT_MUTED = QColor("#a0a0a5")
 
     # 4 stages
     STAGES = ["python_env", "funasr_model", "qt_ui", "audio_capture"]
@@ -54,8 +70,9 @@ class SplashWindow(QWidget):
         if screen:
             geo = screen.geometry()
             # Adjust for shadow padding when centering
-            self.move((geo.width() - Config.WIDTH) // 2,
-                      (geo.height() - Config.HEIGHT) // 2)
+            self.move(
+                (geo.width() - Config.WIDTH) // 2, (geo.height() - Config.HEIGHT) // 2
+            )
 
         # State
         self._progress = 0.0
@@ -73,13 +90,16 @@ class SplashWindow(QWidget):
         # Shadow is now drawn manually in paintEvent
 
         # Cache gradients for performance
+        # Wave bars: deep orange to bright orange
         self._wave_grad = QLinearGradient(0, 0, 0, 14)
-        self._wave_grad.setColorAt(0, Config.ACCENT_1)
-        self._wave_grad.setColorAt(1, Config.ACCENT_2)
+        self._wave_grad.setColorAt(0, Config.ACCENT_2)
+        self._wave_grad.setColorAt(1, Config.ACCENT_1)
 
+        # Progress bar: rich multi-color gradient (deep orange → bright → golden)
         self._prog_grad = QLinearGradient(0, 0, Config.CONTENT_WIDTH, 0)
-        self._prog_grad.setColorAt(0, Config.ACCENT_1)
-        self._prog_grad.setColorAt(1, Config.ACCENT_2)
+        self._prog_grad.setColorAt(0.0, Config.ACCENT_1)  # Deep orange
+        self._prog_grad.setColorAt(0.5, Config.ACCENT_2)  # Bright orange
+        self._prog_grad.setColorAt(1.0, Config.ACCENT_3)  # Golden orange
 
         # Animation timer - 30fps is sufficient for smooth UI
         self._timer = QTimer(self)
@@ -126,7 +146,7 @@ class SplashWindow(QWidget):
         except Exception:
             # Fallback: simple white box
             p.fillRect(self.rect(), QColor(255, 255, 255, 220))
-            p.setPen(Config.TEXT_DARK)
+            p.setPen(Config.TEXT_LIGHT)
             p.drawText(self.rect(), Qt.AlignCenter, "Loading...")
         finally:
             p.end()
@@ -144,9 +164,11 @@ class SplashWindow(QWidget):
             (16, QColor(0, 0, 0, 5)),
         ]
         for offset, color in shadow_layers:
-            shadow_rect = QRectF(cx - offset/2, cy + offset/2, cw + offset, ch + offset/2)
+            shadow_rect = QRectF(
+                cx - offset / 2, cy + offset / 2, cw + offset, ch + offset / 2
+            )
             shadow_path = QPainterPath()
-            shadow_path.addRoundedRect(shadow_rect, r + offset/4, r + offset/4)
+            shadow_path.addRoundedRect(shadow_rect, r + offset / 4, r + offset / 4)
             p.setPen(Qt.NoPen)
             p.setBrush(color)
             p.drawPath(shadow_path)
@@ -161,11 +183,11 @@ class SplashWindow(QWidget):
         p.setBrush(Config.BG)
         p.drawPath(shape)
 
-        # Top highlight
+        # Top highlight (subtle for dark theme)
         p.setClipPath(shape)
         highlight = QPainterPath()
         highlight.addRoundedRect(cx, cy, cw, ch * 0.5, r, r)
-        p.setBrush(QColor(255, 255, 255, 80))
+        p.setBrush(QColor(255, 255, 255, 15))
         p.drawPath(highlight)
         p.setClipping(False)
 
@@ -188,7 +210,7 @@ class SplashWindow(QWidget):
         bar_heights = [
             6 + 8 * abs(math.sin(self._phase)),
             6 + 8 * abs(math.sin(self._phase + 1.2)),
-            6 + 8 * abs(math.sin(self._phase + 0.6))
+            6 + 8 * abs(math.sin(self._phase + 0.6)),
         ]
 
         # Update gradient position
@@ -209,7 +231,7 @@ class SplashWindow(QWidget):
         font = QFont("Segoe UI", 12, QFont.Bold)
         font.setLetterSpacing(QFont.AbsoluteSpacing, -0.3)
         p.setFont(font)
-        p.setPen(Config.TEXT_DARK)
+        p.setPen(Config.TEXT_LIGHT)
         p.drawText(int(logo_x), int(cy + margin_top + 13), "VoiceType")
 
         # Status text (centered in content area)
@@ -218,7 +240,9 @@ class SplashWindow(QWidget):
         p.setPen(Config.TEXT_MUTED)
         fm = p.fontMetrics()
         text_w = fm.horizontalAdvance(self._message)
-        p.drawText(int(cx + (cw - text_w) / 2), int(cy + margin_top + 38), self._message)
+        p.drawText(
+            int(cx + (cw - text_w) / 2), int(cy + margin_top + 38), self._message
+        )
 
         # Segmented progress bar
         bar_y = cy + ch - margin_x - 3
@@ -233,11 +257,11 @@ class SplashWindow(QWidget):
         for i in range(seg_count):
             seg_x = cx + margin_x + i * (seg_w + seg_gap)
 
-            # Track
+            # Track (lighter for dark theme)
             track = QPainterPath()
             track.addRoundedRect(seg_x, bar_y, seg_w, bar_h, 1.5, 1.5)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, 15))
+            p.setBrush(QColor(255, 255, 255, 25))
             p.drawPath(track)
 
             # Fill
@@ -342,7 +366,7 @@ if __name__ == "__main__":
         (600, 5, "Checking environment..."),
         (3000, 50, "Loading AI models..."),
         (800, 80, "Connecting engine..."),
-        (500, 100, "Starting UI...")
+        (500, 100, "Starting UI..."),
     ]
     stage_idx = [0]
     start_pct = [0]

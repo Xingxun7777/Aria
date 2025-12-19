@@ -45,8 +45,8 @@ from PySide6.QtGui import QKeySequence
 from . import styles
 
 # Import shared prompt constant from hotword module
-from ...core.hotword import DEFAULT_POLISH_PROMPT
-from ...core.utils.phonetic import get_matcher
+from voicetype.core.hotword import DEFAULT_POLISH_PROMPT
+from voicetype.core.utils.phonetic import get_matcher
 
 
 def get_audio_input_devices() -> list:
@@ -186,7 +186,9 @@ class SettingsWindow(QMainWindow):
         # Hotkey
         hotkey_layout = QHBoxLayout()
         self.hotkey_edit = QKeySequenceEdit()
-        self.hotkey_edit.setKeySequence(QKeySequence("CapsLock"))
+        self.hotkey_edit.setKeySequence(
+            QKeySequence("`")
+        )  # Default: grave/backtick key
         hotkey_layout.addWidget(self.hotkey_edit)
         btn_clear_hotkey = QPushButton("清除")
         btn_clear_hotkey.clicked.connect(lambda: self.hotkey_edit.clear())
@@ -202,12 +204,13 @@ class SettingsWindow(QMainWindow):
         layout.addSpacing(20)
 
         # Startup options
+        self.chk_auto_startup = QCheckBox("开机自动启动")
+        self.chk_auto_startup.setToolTip("在 Windows 启动时自动运行 VoiceType")
+        layout.addWidget(self.chk_auto_startup)
+
         self.chk_start_active = QCheckBox("启动时激活语音（默认开始录音）")
         self.chk_start_active.setToolTip("勾选后，程序启动时自动进入录音待机状态")
         layout.addWidget(self.chk_start_active)
-
-        self.chk_minimize = QCheckBox("启动时最小化到托盘")
-        layout.addWidget(self.chk_minimize)
 
         layout.addSpacing(20)
 
@@ -238,6 +241,23 @@ class SettingsWindow(QMainWindow):
         wakeword_layout.addWidget(example_hint)
 
         layout.addWidget(wakeword_group)
+
+        layout.addSpacing(20)
+
+        # Translation settings
+        translate_group = QGroupBox("翻译设置")
+        translate_layout = QFormLayout(translate_group)
+
+        self.translate_mode = QComboBox()
+        self.translate_mode.addItem("弹窗显示", "popup")
+        self.translate_mode.addItem("复制到剪贴板", "clipboard")
+        translate_layout.addRow("翻译输出方式:", self.translate_mode)
+
+        translate_hint = QLabel('💡 "翻译成英文/中文" 命令的结果输出方式')
+        translate_hint.setStyleSheet("color: #666; font-size: 11px;")
+        translate_layout.addRow("", translate_hint)
+
+        layout.addWidget(translate_group)
 
         layout.addStretch()
 
@@ -754,7 +774,9 @@ class SettingsWindow(QMainWindow):
         # === General tab ===
         general = self.config.get("general", {})
         hotkey = general.get("hotkey", "grave")
-        self.hotkey_edit.setKeySequence(QKeySequence(hotkey))
+        # Convert VoiceType hotkey format to Qt format
+        qt_hotkey = self._hotkey_to_qt(hotkey)
+        self.hotkey_edit.setKeySequence(QKeySequence(qt_hotkey))
 
         # Audio device - find by name
         audio_device_name = general.get("audio_device", "")
@@ -764,10 +786,10 @@ class SettingsWindow(QMainWindow):
                     self.audio_device.setCurrentIndex(i)
                     break
 
+        self.chk_auto_startup.setChecked(self._is_auto_startup_enabled())
         self.chk_start_active.setChecked(
             general.get("start_active", True)
         )  # Default: active
-        self.chk_minimize.setChecked(general.get("minimize_to_tray", False))
 
         # === Hotwords tab ===
         # Note: enable_initial_prompt is always true (no UI control)
@@ -839,6 +861,13 @@ class SettingsWindow(QMainWindow):
         local_polish = self.config.get("local_polish", {})
         self.local_model_path.setText(local_polish.get("model_path", ""))
 
+        # === Translation settings ===
+        translation = self.config.get("translation", {})
+        mode = translation.get("output_mode", "popup")
+        idx = self.translate_mode.findData(mode)
+        if idx >= 0:
+            self.translate_mode.setCurrentIndex(idx)
+
         # Wakeword - load from wakeword.json
         wakeword_path = self.config_path.parent / "wakeword.json"
         if wakeword_path.exists():
@@ -863,10 +892,15 @@ class SettingsWindow(QMainWindow):
         if "general" not in self.config:
             self.config["general"] = {}
         hotkey_seq = self.hotkey_edit.keySequence().toString()
-        self.config["general"]["hotkey"] = hotkey_seq if hotkey_seq else "grave"
+        # Convert Qt format to VoiceType format for storage
+        self.config["general"]["hotkey"] = (
+            self._qt_to_hotkey(hotkey_seq) if hotkey_seq else "grave"
+        )
         self.config["general"]["audio_device"] = self.audio_device.currentText()
         self.config["general"]["start_active"] = self.chk_start_active.isChecked()
-        self.config["general"]["minimize_to_tray"] = self.chk_minimize.isChecked()
+
+        # Handle auto startup (create/remove shortcut)
+        self._set_auto_startup(self.chk_auto_startup.isChecked())
 
         # === Hotwords tab ===
         # Note: enable_initial_prompt is always true (no UI control needed)
@@ -950,6 +984,11 @@ class SettingsWindow(QMainWindow):
         if "local_polish" not in self.config:
             self.config["local_polish"] = {}
         self.config["local_polish"]["model_path"] = self.local_model_path.text()
+        # Auto-enable local polish when fast mode is selected
+        self.config["local_polish"]["enabled"] = self.radio_fast.isChecked()
+
+        # === Translation settings ===
+        self.config["translation"] = {"output_mode": self.translate_mode.currentData()}
 
         # === Wakeword - save to wakeword.json ===
         wakeword_path = self.config_path.parent / "wakeword.json"
@@ -1002,6 +1041,166 @@ class SettingsWindow(QMainWindow):
         devices = get_audio_input_devices()
         for name, device_id in devices:
             self.audio_device.addItem(name, userData=device_id)
+
+    def _get_startup_shortcut_path(self) -> Path:
+        """Get the path to the startup folder shortcut."""
+        import os
+
+        startup_folder = (
+            Path(os.environ["APPDATA"])
+            / "Microsoft"
+            / "Windows"
+            / "Start Menu"
+            / "Programs"
+            / "Startup"
+        )
+        return startup_folder / "VoiceType.lnk"
+
+    def _is_auto_startup_enabled(self) -> bool:
+        """Check if auto startup shortcut exists."""
+        return self._get_startup_shortcut_path().exists()
+
+    def _set_auto_startup(self, enabled: bool) -> None:
+        """Create or remove startup shortcut."""
+        shortcut_path = self._get_startup_shortcut_path()
+
+        if enabled:
+            if shortcut_path.exists():
+                return  # Already enabled
+
+            try:
+                # Find VoiceType.vbs launcher
+                project_dir = Path(__file__).parent.parent.parent
+                launcher = project_dir / "VoiceType.vbs"
+
+                # For portable build, launcher is in dist folder
+                if not launcher.exists():
+                    # Try to find in parent directories
+                    for parent in [project_dir.parent, project_dir.parent.parent]:
+                        candidate = parent / "VoiceType.vbs"
+                        if candidate.exists():
+                            launcher = candidate
+                            break
+
+                if not launcher.exists():
+                    print(f"[AutoStartup] Launcher not found, skipping")
+                    return
+
+                # Create shortcut using PowerShell
+                import subprocess
+
+                ps_script = f"""
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
+$Shortcut.TargetPath = "wscript.exe"
+$Shortcut.Arguments = '"{launcher}"'
+$Shortcut.WorkingDirectory = "{launcher.parent}"
+$Shortcut.Description = "VoiceType - Local AI Voice Dictation"
+$Shortcut.Save()
+"""
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_script],
+                    capture_output=True,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW
+                        if hasattr(subprocess, "CREATE_NO_WINDOW")
+                        else 0
+                    ),
+                )
+                print(f"[AutoStartup] Created shortcut: {shortcut_path}")
+            except Exception as e:
+                print(f"[AutoStartup] Failed to create shortcut: {e}")
+        else:
+            if shortcut_path.exists():
+                try:
+                    shortcut_path.unlink()
+                    print(f"[AutoStartup] Removed shortcut: {shortcut_path}")
+                except Exception as e:
+                    print(f"[AutoStartup] Failed to remove shortcut: {e}")
+
+    def _hotkey_to_qt(self, hotkey: str) -> str:
+        """Convert VoiceType hotkey format to Qt QKeySequence format."""
+        # Mapping from VoiceType format to Qt format
+        key_map = {
+            "grave": "`",
+            "backtick": "`",
+            "tilde": "`",
+            "capslock": "CapsLock",
+            "caps": "CapsLock",
+            "space": "Space",
+            "tab": "Tab",
+            "enter": "Return",
+            "escape": "Escape",
+            "backspace": "Backspace",
+            "delete": "Delete",
+            "insert": "Insert",
+            "home": "Home",
+            "end": "End",
+            "pageup": "PgUp",
+            "pagedown": "PgDown",
+            "numlock": "NumLock",
+            "scrolllock": "ScrollLock",
+            "pause": "Pause",
+            "printscreen": "Print",
+        }
+        # Handle combo keys like "ctrl+shift+space"
+        parts = hotkey.lower().split("+")
+        qt_parts = []
+        for part in parts:
+            if part in key_map:
+                qt_parts.append(key_map[part])
+            elif part == "ctrl":
+                qt_parts.append("Ctrl")
+            elif part == "shift":
+                qt_parts.append("Shift")
+            elif part == "alt":
+                qt_parts.append("Alt")
+            elif part == "win":
+                qt_parts.append("Meta")
+            elif len(part) == 1:
+                qt_parts.append(part.upper())
+            elif part.startswith("f") and part[1:].isdigit():
+                qt_parts.append(part.upper())  # F1-F12
+            else:
+                qt_parts.append(part.capitalize())
+        return "+".join(qt_parts)
+
+    def _qt_to_hotkey(self, qt_hotkey: str) -> str:
+        """Convert Qt QKeySequence format to VoiceType hotkey format."""
+        if not qt_hotkey:
+            return "grave"
+        # Mapping from Qt format to VoiceType format
+        key_map = {
+            "`": "grave",
+            "CapsLock": "capslock",
+            "Space": "space",
+            "Tab": "tab",
+            "Return": "enter",
+            "Escape": "escape",
+            "Backspace": "backspace",
+            "Delete": "delete",
+            "Insert": "insert",
+            "Home": "home",
+            "End": "end",
+            "PgUp": "pageup",
+            "PgDown": "pagedown",
+            "NumLock": "numlock",
+            "ScrollLock": "scrolllock",
+            "Pause": "pause",
+            "Print": "printscreen",
+            "Ctrl": "ctrl",
+            "Shift": "shift",
+            "Alt": "alt",
+            "Meta": "win",
+        }
+        parts = qt_hotkey.split("+")
+        vt_parts = []
+        for part in parts:
+            if part in key_map:
+                vt_parts.append(key_map[part])
+            else:
+                vt_parts.append(part.lower())
+        return "+".join(vt_parts)
 
     def get_selected_device_id(self) -> int:
         """Get the selected audio device ID."""

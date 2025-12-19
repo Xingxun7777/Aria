@@ -24,12 +24,13 @@ logger = get_audio_logger()
 @dataclass
 class AudioConfig:
     """Audio capture configuration."""
-    sample_rate: int = 16000        # 16kHz for ASR
-    channels: int = 1               # Mono
-    dtype: str = 'float32'          # Audio format
-    chunk_duration_ms: int = 32     # Chunk size (matches VAD optimal)
-    device_id: Optional[int] = None # None = default device
-    enable_vad: bool = True         # Enable VAD filtering
+
+    sample_rate: int = 16000  # 16kHz for ASR
+    channels: int = 1  # Mono
+    dtype: str = "float32"  # Audio format
+    chunk_duration_ms: int = 32  # Chunk size (matches VAD optimal)
+    device_id: Optional[int] = None  # None = default device
+    enable_vad: bool = True  # Enable VAD filtering
     vad_config: Optional[VADConfig] = None
 
     @property
@@ -40,6 +41,7 @@ class AudioConfig:
 
 class CaptureState(Enum):
     """Audio capture states."""
+
     IDLE = auto()
     RECORDING = auto()
     PAUSED = auto()
@@ -111,7 +113,7 @@ class AudioCapture:
         on_speech_start: Optional[Callable[[], None]] = None,
         on_speech_end: Optional[Callable[[np.ndarray], None]] = None,
         on_speech_chunk: Optional[Callable[[np.ndarray, float], None]] = None,
-        on_audio_level: Optional[Callable[[float], None]] = None
+        on_audio_level: Optional[Callable[[float], None]] = None,
     ) -> None:
         """Set callback functions for audio events."""
         self._on_speech_start = on_speech_start
@@ -124,7 +126,7 @@ class AudioCapture:
             self._vad.set_callbacks(
                 on_speech_start=on_speech_start,
                 on_speech_end=on_speech_end,
-                on_speech_chunk=on_speech_chunk
+                on_speech_chunk=on_speech_chunk,
             )
 
     def _audio_callback(self, indata, frames, time_info, status):
@@ -202,7 +204,7 @@ class AudioCapture:
                     channels=self.config.channels,
                     dtype=self.config.dtype,
                     blocksize=self.config.chunk_size,
-                    callback=self._audio_callback
+                    callback=self._audio_callback,
                 )
 
                 self._stream.start()
@@ -241,36 +243,49 @@ class AudioCapture:
 
             # Get any remaining speech from VAD (after stream stopped)
             # Check both _speech_buffer and _pre_buffer for short utterances
+            # CRITICAL: Use VAD's _buffer_lock to prevent race condition with
+            # Timer thread calling get_current_speech_buffer() concurrently
             if self._vad:
-                # DEBUG: Log buffer states at stop time
-                logger.info(f"Capture.stop(): _speech_buffer len={len(self._vad._speech_buffer)}, "
-                           f"_pre_buffer len={len(self._vad._pre_buffer)}, "
-                           f"_is_speaking={self._vad._is_speaking}, "
-                           f"_speech_samples={self._vad._speech_samples}")
+                with self._vad._buffer_lock:
+                    # DEBUG: Log buffer states at stop time
+                    logger.info(
+                        f"Capture.stop(): _speech_buffer len={len(self._vad._speech_buffer)}, "
+                        f"_pre_buffer len={len(self._vad._pre_buffer)}, "
+                        f"_is_speaking={self._vad._is_speaking}, "
+                        f"_speech_samples={self._vad._speech_samples}"
+                    )
 
-                buffers_to_concat = []
+                    buffers_to_concat = []
 
-                # Primary buffer (speech already confirmed)
-                if self._vad._speech_buffer:
-                    logger.info(f"Capture: using _speech_buffer ({len(self._vad._speech_buffer)} chunks)")
-                    buffers_to_concat.extend(self._vad._speech_buffer)
-                    self._vad._speech_buffer.clear()
-                # Pre-buffer fallback: use ring buffer unconditionally when primary is empty
-                # This catches short utterances where VAD detected speech but _speech_samples
-                # was reset to 0 by silence before stop() was called (vad.py:220 issue)
-                elif self._vad._pre_buffer:
-                    logger.info(f"Capture: using pre_buffer fallback ({len(self._vad._pre_buffer)} chunks)")
-                    buffers_to_concat.extend(list(self._vad._pre_buffer))
-                else:
-                    logger.warning("Capture: BOTH buffers empty! No audio to return.")
-                
-                self._vad._pre_buffer.clear()
-                self._vad._speech_samples = 0
-                
-                if buffers_to_concat:
-                    final_speech = np.concatenate(buffers_to_concat)
-                    self._vad._is_speaking = False
-                    logger.info(f"Capture: returning buffer with {len(final_speech)} samples")
+                    # Primary buffer (speech already confirmed)
+                    if self._vad._speech_buffer:
+                        logger.info(
+                            f"Capture: using _speech_buffer ({len(self._vad._speech_buffer)} chunks)"
+                        )
+                        buffers_to_concat.extend(self._vad._speech_buffer)
+                        self._vad._speech_buffer.clear()
+                    # Pre-buffer fallback: use ring buffer unconditionally when primary is empty
+                    # This catches short utterances where VAD detected speech but _speech_samples
+                    # was reset to 0 by silence before stop() was called (vad.py:220 issue)
+                    elif self._vad._pre_buffer:
+                        logger.info(
+                            f"Capture: using pre_buffer fallback ({len(self._vad._pre_buffer)} chunks)"
+                        )
+                        buffers_to_concat.extend(list(self._vad._pre_buffer))
+                    else:
+                        logger.warning(
+                            "Capture: BOTH buffers empty! No audio to return."
+                        )
+
+                    self._vad._pre_buffer.clear()
+                    self._vad._speech_samples = 0
+
+                    if buffers_to_concat:
+                        final_speech = np.concatenate(buffers_to_concat)
+                        self._vad._is_speaking = False
+                        logger.info(
+                            f"Capture: returning buffer with {len(final_speech)} samples"
+                        )
 
             # NOTE: We do NOT collect from _speech_queue anymore.
             # Items in the queue already triggered on_speech_end callback,
@@ -287,7 +302,9 @@ class AudioCapture:
             # Log stats
             total_ms = self._total_samples / self.config.sample_rate * 1000
             speech_ms = self._speech_samples / self.config.sample_rate * 1000
-            logger.info(f"Capture stopped. Total: {total_ms:.0f}ms, Speech: {speech_ms:.0f}ms")
+            logger.info(
+                f"Capture stopped. Total: {total_ms:.0f}ms, Speech: {speech_ms:.0f}ms"
+            )
 
         return final_speech
 
@@ -358,13 +375,15 @@ class AudioCapture:
 
         devices = []
         for i, d in enumerate(sd.query_devices()):
-            if d['max_input_channels'] > 0:
-                devices.append({
-                    'id': i,
-                    'name': d['name'],
-                    'channels': d['max_input_channels'],
-                    'sample_rate': d['default_samplerate'],
-                    'is_default': i == sd.default.device[0]
-                })
+            if d["max_input_channels"] > 0:
+                devices.append(
+                    {
+                        "id": i,
+                        "name": d["name"],
+                        "channels": d["max_input_channels"],
+                        "sample_rate": d["default_samplerate"],
+                        "is_default": i == sd.default.device[0],
+                    }
+                )
 
         return devices

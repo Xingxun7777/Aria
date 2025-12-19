@@ -9,5 +9,5 @@ Core modules:
 - ui: Tray, overlay, settings
 """
 
-__version__ = "0.1.0"
+__version__ = "1.1.0-dev"
 __author__ = "VoiceType Team"

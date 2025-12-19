@@ -9,14 +9,34 @@ import argparse
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon, QMenu
-from PySide6.QtGui import QIcon, QAction
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon, QAction, QClipboard
+from PySide6.QtCore import Qt, QTimer, QThreadPool
 
 from .bridge import QtBridge
 from .floating_ball import FloatingBall
 from .settings import SettingsWindow
 from .sound import play_sound
 from .history import HistoryWindow
+from .translation_popup import TranslationPopup
+from .ai_chat_window import AIChatWindow
+from .workers import TranslationWorker, LLMWorker
+
+# Debug log for main.py
+_DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+
+
+def _log(msg: str):
+    """Write debug message to shared log file."""
+    import datetime
+
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] {msg}\n"
+    print(line.strip())
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 def main():
@@ -31,32 +51,55 @@ def main():
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # Keep running with floating ball
-    app.setApplicationName("VoiceType")
+    app.setApplicationName("VoiceType-Dev")
 
     # Create UI components
     bridge = QtBridge()
     ball = FloatingBall(size=48)
     settings = SettingsWindow()
     history = HistoryWindow()
+    translation_popup = TranslationPopup()
+    ai_chat_window = AIChatWindow()
+
+    # Thread pool for background workers
+    thread_pool = QThreadPool.globalInstance()
 
     # Create minimal system tray for unlock and quit
     tray = QSystemTrayIcon()
-    # Use fallback icon on Windows (fromTheme doesn't work reliably)
-    icon = QIcon.fromTheme("audio-input-microphone")
-    if icon.isNull():
-        # Fallback: create a simple colored icon
-        from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor
+    # Custom tray icon (don't rely on fromTheme - unreliable on Windows)
+    from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor, QPen, QLinearGradient
 
+    def create_tray_icon():
+        """Create a black-orange VoiceType tray icon."""
         pixmap = QPixmap(32, 32)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QBrush(QColor(100, 100, 255)))  # Blue circle
+
+        # Dark circle background
+        painter.setBrush(QBrush(QColor(30, 30, 35, 240)))
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(2, 2, 28, 28)
+
+        # Orange border
+        painter.setPen(QPen(QColor("#ff8c00"), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(3, 3, 26, 26)
+
+        # Orange sound wave bars (3 bars)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor("#ff8c00")))
+        # Left bar
+        painter.drawRoundedRect(9, 12, 3, 8, 1, 1)
+        # Center bar (taller)
+        painter.drawRoundedRect(14, 9, 3, 14, 1, 1)
+        # Right bar
+        painter.drawRoundedRect(19, 12, 3, 8, 1, 1)
+
         painter.end()
-        icon = QIcon(pixmap)
-    tray.setIcon(icon)
+        return QIcon(pixmap)
+
+    tray.setIcon(create_tray_icon())
     tray_menu = QMenu()
 
     action_unlock = QAction("解锁悬浮球", None)
@@ -84,7 +127,7 @@ def main():
     tray_menu.addAction(action_quit)
 
     tray.setContextMenu(tray_menu)
-    tray.setToolTip("VoiceType - 单击显示历史，双击打开热词设置")
+    tray.setToolTip("VoiceType-Dev - 单击显示历史，双击打开热词设置")
     tray.show()
 
     # Tray icon click handlers
@@ -161,26 +204,66 @@ def main():
         # Real backend
         try:
             from voicetype.app import VoiceTypeApp
-
-            backend = VoiceTypeApp(hotkey=args.hotkey)
-            backend.set_bridge(bridge)
-            backend.start()
-            print(f"VoiceType Qt Frontend Started (Hotkey: {args.hotkey})")
-
-            # Check start_active setting - if False, disable hotkey listening
             import json
             from voicetype.core.utils import get_config_path
 
+            # Read hotkey from config (before creating backend)
             config_path = get_config_path("hotwords.json")
+            actual_hotkey = args.hotkey  # fallback to command line arg
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
+                config_hotkey = config.get("general", {}).get("hotkey", "")
+                if config_hotkey:
+                    actual_hotkey = config_hotkey.lower()
+                    print(f"[VoiceType] Using hotkey from config: {actual_hotkey}")
+            except Exception as e:
+                print(f"[VoiceType] Could not read hotkey from config: {e}")
+
+            backend = VoiceTypeApp(hotkey=actual_hotkey)
+            backend.set_bridge(bridge)
+            backend.start()
+            print(f"VoiceType Qt Frontend Started (Hotkey: {actual_hotkey})")
+
+            # Check start_active setting - if False, disable hotkey listening
+            # (reuse config already loaded above)
+            try:
                 start_active = config.get("general", {}).get("start_active", True)
                 if not start_active:
-                    backend.set_enabled(False)
-                    print("[VoiceType] Started in disabled mode (start_active=False)")
+                    # Enter sleeping mode (UI shows dimmed, wakeword still works)
+                    backend.set_sleeping(True)
+                    print("[VoiceType] Started in sleeping mode (start_active=False)")
+                else:
+                    # CRITICAL FIX: Explicitly ensure system is fully active
+                    # Issue: PopupMenu emits enableToggled(True) during __init__,
+                    # but main.py connects the handler AFTER ball is created.
+                    # This means backend.set_enabled(True) is never called!
+                    # Fix: Explicitly enable and sync all states after event loop starts.
+                    def _ensure_active_state():
+                        # 1. Ensure backend hotkey is enabled
+                        if hasattr(backend, "set_enabled"):
+                            backend.set_enabled(True)
+                        # 2. Ensure not sleeping
+                        if hasattr(backend, "set_sleeping"):
+                            backend.set_sleeping(False)
+                        # 3. Sync UI state
+                        bridge.emit_state("IDLE")
+                        ball.set_sleeping_state(False)
+                        # 4. Sync UI toggle state (don't trigger signal, just update visual)
+                        #    NOTE: Do NOT toggle False→True as it calls stop() which
+                        #    unregisters hotkeys that start() won't re-register!
+                        if ball._popup_menu and hasattr(ball._popup_menu, "toggle"):
+                            ball._popup_menu.toggle.blockSignals(True)
+                            ball._popup_menu.toggle.setChecked(True)
+                            ball._popup_menu.toggle.blockSignals(False)
+                        print("[VoiceType] System fully activated (start_active=True)")
+
+                    QTimer.singleShot(100, _ensure_active_state)
+                    print("[VoiceType] Started in active mode (start_active=True)")
             except Exception as e:
                 print(f"[VoiceType] Could not read start_active setting: {e}")
+                # Default: emit IDLE state after event loop starts
+                QTimer.singleShot(100, lambda: bridge.emit_state("IDLE"))
         except Exception as e:
             # Clean up any partially started resources
             if backend is not None and hasattr(backend, "stop"):
@@ -200,6 +283,248 @@ def main():
 
     # Connect ball actions
     ball.toggleRequested.connect(backend.toggle_recording)
+
+    # =========================================================================
+    # v1.1: Action-driven UI handling (Translation Popup, AI Chat)
+    # =========================================================================
+
+    def on_action_triggered(action):
+        """Handle UI actions from backend."""
+        # CRITICAL: Must use voicetype.core.action (not core.action) to match
+        # the module identity used by executor.py. Otherwise enum comparison fails.
+        from voicetype.core.action import (
+            ActionType,
+            TranslationAction,
+            ChatAction,
+            ClipboardTranslationAction,
+        )
+
+        _log(f"[MAIN] on_action_triggered: {action.type}, id={action.request_id}")
+        _log(
+            f"[MAIN] action.type value: {action.type.value if hasattr(action.type, 'value') else action.type}"
+        )
+        _log(f"[MAIN] ActionType.SHOW_TRANSLATION: {ActionType.SHOW_TRANSLATION}")
+        _log(f"[MAIN] Type match check: {action.type == ActionType.SHOW_TRANSLATION}")
+        _log(
+            f"[MAIN] Type name check: {action.type.name if hasattr(action.type, 'name') else 'N/A'}"
+        )
+        print(f"[UI] Action triggered: {action.type}, id={action.request_id}")
+
+        if action.type == ActionType.SHOW_TRANSLATION:
+            try:
+                # Show translation popup with loading state
+                _log(
+                    f"[MAIN] Calling show_loading with {len(action.source_text)} chars"
+                )
+                translation_popup.show_loading(action.source_text, action.request_id)
+                _log("[MAIN] show_loading called OK")
+
+                # Get API config from backend's polisher (reuse existing config)
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if hasattr(backend, "polisher") and backend.polisher:
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+                    _log(f"[MAIN] Got API config: url={api_url[:30]}..., model={model}")
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured")
+                    translation_popup.show_error("API 未配置", action.request_id)
+                    return
+
+                # Create and start translation worker
+                _log("[MAIN] Creating TranslationWorker...")
+                worker = TranslationWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    source_lang=action.source_lang,
+                    target_lang=action.target_lang,
+                )
+                worker.signals.finished.connect(on_translation_finished)
+                worker.signals.error.connect(on_translation_error)
+                thread_pool.start(worker)
+                _log("[MAIN] TranslationWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in SHOW_TRANSLATION: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+        elif action.type == ActionType.OPEN_CHAT:
+            # Show AI chat window with context
+            ai_chat_window.show_with_context(
+                context_text=action.context_text,
+                request_id=action.request_id,
+                initial_question=action.initial_question,
+            )
+            print(
+                f"[UI] ChatAction: opened chat window with {len(action.context_text)} chars"
+            )
+
+        elif action.type == ActionType.CLIPBOARD_TRANSLATION:
+            # Clipboard translation: translate and copy to clipboard, show notification
+            try:
+                _log(
+                    f"[MAIN] ClipboardTranslation: {len(action.source_text)} chars -> {action.target_lang}"
+                )
+
+                # Get API config from backend's polisher
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if hasattr(backend, "polisher") and backend.polisher:
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured for clipboard translation")
+                    tray.showMessage(
+                        "VoiceType", "API 未配置", QSystemTrayIcon.Warning, 2000
+                    )
+                    return
+
+                # Create and start translation worker
+                worker = TranslationWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    source_lang="auto",
+                    target_lang=action.target_lang,
+                )
+                worker.signals.finished.connect(on_clipboard_translation_finished)
+                worker.signals.error.connect(on_clipboard_translation_error)
+                thread_pool.start(worker)
+                _log("[MAIN] Clipboard TranslationWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in CLIPBOARD_TRANSLATION: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+    def on_clipboard_translation_finished(request_id: str, translated_text: str):
+        """Handle clipboard translation completion."""
+        try:
+            # Use Qt's clipboard (always available) instead of pyperclip
+            clipboard = QApplication.clipboard()
+            clipboard.setText(translated_text)
+            print(
+                f"[UI] Clipboard translation finished: {len(translated_text)} chars copied"
+            )
+            tray.showMessage(
+                "VoiceType", "已复制到剪切板", QSystemTrayIcon.Information, 2000
+            )
+        except Exception as e:
+            print(f"[UI] Failed to copy to clipboard: {e}")
+            tray.showMessage(
+                "VoiceType", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000
+            )
+
+    def on_clipboard_translation_error(request_id: str, error_msg: str):
+        """Handle clipboard translation error."""
+        print(f"[UI] Clipboard translation error: {error_msg}")
+        tray.showMessage(
+            "VoiceType", f"翻译失败: {error_msg}", QSystemTrayIcon.Warning, 3000
+        )
+
+    def on_translation_finished(request_id: str, translated_text: str):
+        """Handle translation completion."""
+        print(f"[UI] Translation finished: {request_id}")
+        translation_popup.show_result(translated_text, request_id)
+
+    def on_translation_error(request_id: str, error_msg: str):
+        """Handle translation error."""
+        print(f"[UI] Translation error: {request_id} - {error_msg}")
+        translation_popup.show_error(error_msg, request_id)
+
+    def on_copy_translation(text: str):
+        """Handle copy request from translation popup."""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        print(f"[UI] Translation copied to clipboard: {text[:50]}...")
+
+    # =========================================================================
+    # AI Chat LLM handling
+    # =========================================================================
+
+    def on_chat_send_message():
+        """Handle send button click in chat window - start LLM worker."""
+        # Get API config from backend's polisher
+        api_url = ""
+        api_key = ""
+        model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+        if hasattr(backend, "polisher") and backend.polisher:
+            api_url = backend.polisher.config.api_url
+            api_key = backend.polisher.config.api_key
+            model = backend.polisher.config.model
+
+        if not api_url or not api_key:
+            ai_chat_window.show_error("API 未配置")
+            return
+
+        # Get conversation and context from chat window
+        messages = ai_chat_window.get_conversation()
+        context = ai_chat_window.get_context()
+        request_id = ai_chat_window._request_id or "chat"
+
+        # Create and start LLM worker
+        worker = LLMWorker(
+            request_id=request_id,
+            messages=messages,
+            context_text=context,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            stream=True,
+        )
+        worker.signals.streamUpdate.connect(on_chat_stream_update)
+        worker.signals.finished.connect(on_chat_finished)
+        worker.signals.error.connect(on_chat_error)
+        thread_pool.start(worker)
+
+    def on_chat_stream_update(request_id: str, partial_content: str):
+        """Handle streaming update from LLM."""
+        ai_chat_window.update_response(partial_content, is_final=False)
+
+    def on_chat_finished(request_id: str, final_content: str):
+        """Handle LLM completion."""
+        print(f"[UI] Chat finished: {len(final_content)} chars")
+        ai_chat_window.update_response(final_content, is_final=True)
+
+    def on_chat_error(request_id: str, error_msg: str):
+        """Handle LLM error."""
+        print(f"[UI] Chat error: {error_msg}")
+        ai_chat_window.show_error(error_msg)
+
+    def on_chat_insert_requested(text: str):
+        """Handle insert request from chat window."""
+        if hasattr(backend, "output_injector"):
+            backend.output_injector.insert_text(text)
+            print(f"[UI] Chat response inserted: {text[:50]}...")
+
+    # Connect chat window signals
+    def on_chat_send_wrapper():
+        """Wrapper to handle send: add bubble then start LLM."""
+        ai_chat_window._on_send_clicked()  # Original handler (adds message bubble)
+        on_chat_send_message()  # Start LLM worker
+
+    ai_chat_window._send_btn.clicked.disconnect()  # Disconnect default
+    ai_chat_window._send_btn.clicked.connect(on_chat_send_wrapper)
+    ai_chat_window.insertRequested.connect(on_chat_insert_requested)
+
+    # Connect action signals
+    bridge.actionTriggered.connect(on_action_triggered)
+    translation_popup.copyRequested.connect(on_copy_translation)
 
     # Connect mute action to backend
     def on_mute_toggled():
@@ -257,6 +582,51 @@ def main():
 
     if ball._popup_menu:
         ball._popup_menu.sleepToggled.connect(on_sleep_toggled)
+
+        # Handle translate output mode change from popup menu
+        def on_translate_mode_changed(mode):
+            """Handle translation output mode change from popup menu."""
+            print(f"[VoiceType] Translate output mode changed: {mode}")
+            try:
+                import json
+                from voicetype.core.utils import get_config_path
+
+                config_path = get_config_path("hotwords.json")
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+
+                # Update translation config
+                if "translation" not in config:
+                    config["translation"] = {}
+                config["translation"]["output_mode"] = mode
+
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+
+                print(f"[VoiceType] Translate output mode saved: {mode}")
+                tray.showMessage(
+                    "VoiceType",
+                    f"翻译输出模式: {'弹窗显示' if mode == 'popup' else '复制到剪贴板'}",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    1500,
+                )
+            except Exception as e:
+                print(f"[VoiceType] Failed to save translate mode: {e}")
+
+        ball._popup_menu.translateModeChanged.connect(on_translate_mode_changed)
+
+        # Load and sync initial translate mode
+        try:
+            import json
+            from voicetype.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            translate_mode = config.get("translation", {}).get("output_mode", "popup")
+            ball._popup_menu.setTranslateMode(translate_mode)
+        except Exception:
+            pass  # Default to popup mode
 
     # Sync initial mode from backend to popup menu
     if hasattr(backend, "get_polish_mode"):

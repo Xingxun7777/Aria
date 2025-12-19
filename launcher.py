@@ -12,15 +12,79 @@ import subprocess
 # Fix OpenMP conflict between PyTorch and faster-whisper (MUST be before any imports)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# === Singleton Check ===
-# Prevent multiple instances from running simultaneously
-LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype.lock")
+# === Singleton Check with Stale Lock Detection ===
+# Prevent multiple instances, but auto-cleanup stale locks from crashed processes
+LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-dev.lock")
 _lock_handle = None
+
+
+def is_process_alive(pid: int) -> bool:
+    """Check if a process with given PID is still running."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def check_and_cleanup_stale_lock() -> bool:
+    """
+    Check if lock file exists and if the owning process is still alive.
+    Returns True if lock was stale and cleaned up, False otherwise.
+    """
+    if not os.path.exists(LOCK_FILE):
+        return False
+
+    try:
+        with open(LOCK_FILE, "r") as f:
+            content = f.read().strip()
+            if not content:
+                # Empty lock file - stale
+                os.remove(LOCK_FILE)
+                print("[LOCK] Removed empty stale lock file")
+                return True
+
+            old_pid = int(content)
+
+            if not is_process_alive(old_pid):
+                # Process is dead - stale lock
+                os.remove(LOCK_FILE)
+                print(f"[LOCK] Removed stale lock (PID {old_pid} not running)")
+                return True
+            else:
+                print(f"[LOCK] VoiceType is running (PID {old_pid})")
+                return False
+    except (ValueError, IOError, OSError) as e:
+        # Corrupted lock file - try to remove
+        try:
+            os.remove(LOCK_FILE)
+            print(f"[LOCK] Removed corrupted lock file: {e}")
+            return True
+        except Exception:
+            return False
 
 
 def acquire_lock():
     """Try to acquire singleton lock. Returns True if successful."""
     global _lock_handle
+
+    # First, check for stale locks
+    check_and_cleanup_stale_lock()
+
     try:
         # On Windows, opening with exclusive access acts as a lock
         if sys.platform == "win32":
@@ -64,12 +128,25 @@ def release_lock():
 
 # Check singleton before doing anything expensive
 if not acquire_lock():
-    print("VoiceType is already running! Only one instance allowed.")
-    print("Check system tray or use Task Manager to close existing instance.")
+    print("=" * 50)
+    print("VoiceType is already running!")
+    print("=" * 50)
+    print(f"Lock file: {LOCK_FILE}")
+    print("If VoiceType is not visible, check system tray.")
+    print("If stuck, delete the lock file manually or restart computer.")
     sys.exit(1)
 
 # Register cleanup
 atexit.register(release_lock)
+
+# Set process title for easier identification (Windows)
+if sys.platform == "win32":
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleTitleW("VoiceType-Dev")
+    except Exception:
+        pass
 
 # Patch subprocess to hide console windows on Windows (for ffmpeg calls from whisper)
 if sys.platform == "win32":
@@ -178,9 +255,13 @@ try:
     project_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(project_dir)
     os.chdir(parent_dir)
+    # CRITICAL: Insert project_dir FIRST so local voicetype/ package takes precedence
+    # over stable version at parent_dir/voicetype/
+    if project_dir not in sys.path:
+        sys.path.insert(0, project_dir)
     if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
-    log(f"Path set OK: {parent_dir}")
+        sys.path.insert(1, parent_dir)  # After project_dir
+    log(f"Path set OK: project={project_dir}, parent={parent_dir}")
 
     # === Start Splash Screen ===
     splash_proc, reporter = start_splash()
@@ -209,6 +290,7 @@ try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         asr_engine = config.get("asr_engine", "whisper")
+        log(f"ASR engine from config: '{asr_engine}'")
         if asr_engine == "funasr":
             log("Pre-loading FunASR (before Qt imports)...")
             emit_progress("funasr_model", "加载语音模型中...", 20)
@@ -266,15 +348,38 @@ try:
             log("FireRedASR pre-loaded successfully")
             emit_progress("funasr_model", "模型加载完成", 50)
             print("FireRedASR model pre-loaded!")
+        elif asr_engine == "whisper":
+            log("Pre-loading Whisper model (before Qt imports)...")
+            emit_progress("funasr_model", "加载语音模型中...", 20)
+            print("Pre-loading Whisper model (before Qt)...")
+            from voicetype.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+
+            whisper_cfg = config.get("whisper", {})
+            pre_config = WhisperConfig(
+                model_name=whisper_cfg.get("model_name", "large-v3-turbo"),
+                device=whisper_cfg.get("device", "cuda"),
+                language=whisper_cfg.get("language", "zh"),
+                compute_type=whisper_cfg.get("compute_type", "float16"),
+            )
+            _preloaded_asr = WhisperEngine(pre_config)
+            _preloaded_asr.load()
+            import voicetype
+
+            voicetype._preloaded_asr_engine = _preloaded_asr
+            log("Whisper model pre-loaded successfully")
+            emit_progress("funasr_model", "模型加载完成", 50)
+            print("Whisper model pre-loaded!")
         else:
-            # Whisper or other engines - still show progress
+            # Other engines - just show progress
             emit_progress("funasr_model", "准备语音引擎...", 50)
     except Exception as e:
         log(f"FunASR pre-load failed: {e}, will fallback in app")
         emit_progress("funasr_model", "模型加载失败，使用备用引擎", 50)
 
-    # Set default hotkey to grave (`)
-    sys.argv = [sys.argv[0], "--hotkey", "grave"]
+    # Set hotkey from config (default: grave)
+    hotkey = config.get("general", {}).get("hotkey", "grave")
+    sys.argv = [sys.argv[0], "--hotkey", hotkey]
+    log(f"Using hotkey: {hotkey}")
 
     emit_progress("qt_ui")  # 80%
 

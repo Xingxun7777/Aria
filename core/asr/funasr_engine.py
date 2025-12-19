@@ -18,14 +18,30 @@ Models:
 import os
 import numpy as np
 import time
+import datetime
 from dataclasses import dataclass, field
 from typing import Optional, List
+from pathlib import Path
 import threading
 
 from .base import ASREngine, ASRResult, TranscriptType
 from ..logging import get_system_logger
 
 logger = get_system_logger()
+
+# File-based debug logging (works with pythonw.exe)
+_FUNASR_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "funasr_debug.log"
+
+
+def _funasr_log(msg: str):
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    try:
+        _FUNASR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_FUNASR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
 
 # Lazy import - FunASR is heavy, only import when actually used
 AutoModel = None
@@ -268,7 +284,39 @@ class FunASREngine(ASREngine):
                     f"[ASR DEBUG] Audio stats: shape={audio_float.shape}, abs_max={audio_stats['abs_max']:.4f}, non_zero={audio_stats['non_zero']}"
                 )
 
-                result = self._model.generate(**gen_kwargs)
+                _funasr_log(
+                    f">>> generate() starting - audio shape={audio_float.shape}, abs_max={audio_stats['abs_max']:.4f}"
+                )
+                _funasr_log(f"gen_kwargs keys: {list(gen_kwargs.keys())}")
+
+                try:
+                    # FunASR tries to write to stdout which is None in pythonw.exe
+                    # Temporarily redirect stdout/stderr to devnull
+                    import sys
+                    import io
+
+                    old_stdout = sys.stdout
+                    old_stderr = sys.stderr
+
+                    # Create dummy streams if None (pythonw.exe)
+                    if sys.stdout is None:
+                        sys.stdout = io.StringIO()
+                    if sys.stderr is None:
+                        sys.stderr = io.StringIO()
+
+                    try:
+                        result = self._model.generate(**gen_kwargs)
+                    finally:
+                        # Restore original streams
+                        sys.stdout = old_stdout
+                        sys.stderr = old_stderr
+
+                    _funasr_log(
+                        f"generate() completed - result type: {type(result)}, len: {len(result) if result else 0}"
+                    )
+                except Exception as gen_error:
+                    _funasr_log(f"!!! generate() EXCEPTION: {gen_error}")
+                    raise
 
                 logger.info(f"FunASR generate() returned: {result}")
                 print(f"[ASR DEBUG] FunASR result: {result}")

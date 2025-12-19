@@ -9,6 +9,7 @@ Key benefits (from 2025 market report):
 - Enable "streaming chunks" mode for real-time feedback
 """
 
+import threading
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Callable
@@ -22,19 +23,26 @@ logger = get_audio_logger()
 @dataclass
 class VADConfig:
     """VAD configuration parameters."""
+
     # Detection thresholds
-    threshold: float = 0.3          # Speech probability threshold (0-1), lowered for better detection
-    min_speech_ms: int = 64         # Minimum speech duration to trigger (lowered for short utterances)
-    min_silence_ms: int = 800       # Minimum silence to end speech segment (increased for natural pauses)
+    threshold: float = (
+        0.3  # Speech probability threshold (0-1), lowered for better detection
+    )
+    min_speech_ms: int = (
+        64  # Minimum speech duration to trigger (lowered for short utterances)
+    )
+    min_silence_ms: int = (
+        800  # Minimum silence to end speech segment (increased for natural pauses)
+    )
 
     # Audio parameters
-    sample_rate: int = 16000        # Must be 16000 for Silero-VAD
+    sample_rate: int = 16000  # Must be 16000 for Silero-VAD
 
     # Chunk processing
-    chunk_size_ms: int = 32         # Process in 32ms chunks (Silero optimal)
+    chunk_size_ms: int = 32  # Process in 32ms chunks (Silero optimal)
 
     # Padding
-    speech_pad_ms: int = 30         # Pad speech start/end
+    speech_pad_ms: int = 30  # Pad speech start/end
 
     @property
     def chunk_size_samples(self) -> int:
@@ -73,11 +81,15 @@ class VADProcessor:
         self.config = config or VADConfig()
         self._model = None
         self._is_speaking = False
+        self._use_fallback = False  # True if silero_vad/torch failed to load
 
         # State tracking
         self._speech_samples = 0
         self._silence_samples = 0
         self._speech_buffer: List[np.ndarray] = []
+        self._buffer_lock = (
+            threading.Lock()
+        )  # Protect buffer access from multiple threads
 
         # Ring buffer for recent audio (for padding)
         # Need enough chunks to cover min_speech_ms + padding
@@ -89,30 +101,48 @@ class VADProcessor:
         self._on_speech_end: Optional[Callable[[np.ndarray], None]] = None
         self._on_speech_chunk: Optional[Callable[[np.ndarray, float], None]] = None
 
-        # Load model lazily
+        # Load model (with fallback if torch fails)
         self._ensure_model()
 
     def _ensure_model(self) -> None:
         """Load Silero-VAD model if not already loaded."""
-        if self._model is not None:
+        if self._model is not None or self._use_fallback:
             return
 
         try:
             from silero_vad import load_silero_vad
+
             self._model = load_silero_vad()
             logger.info("Silero-VAD model loaded")
         except ImportError:
-            raise ImportError(
-                "Silero-VAD not installed. Run: pip install silero-vad"
+            logger.warning("Silero-VAD not installed. Using energy-based fallback VAD.")
+            self._use_fallback = True
+        except OSError as e:
+            # torch DLL loading failure (e.g., CUDA version mismatch)
+            logger.warning(
+                f"Silero-VAD failed to load (torch error): {e}. "
+                "Using energy-based fallback VAD."
             )
+            self._use_fallback = True
+        except Exception as e:
+            logger.warning(
+                f"Silero-VAD failed to load: {e}. Using energy-based fallback VAD."
+            )
+            self._use_fallback = True
 
     def reset(self) -> None:
-        """Reset VAD state (call between recordings)."""
+        """Reset VAD state (call between recordings).
+
+        Thread Safety:
+            Uses _buffer_lock to protect buffer operations.
+        """
         self._is_speaking = False
         self._speech_samples = 0
         self._silence_samples = 0
-        self._speech_buffer.clear()
-        self._pre_buffer.clear()
+
+        with self._buffer_lock:
+            self._speech_buffer.clear()
+            self._pre_buffer.clear()
 
         # Reset model state
         if self._model is not None:
@@ -128,8 +158,6 @@ class VADProcessor:
         Returns:
             (is_speech, probability) tuple
         """
-        import torch
-
         self._ensure_model()
 
         # Ensure correct format
@@ -140,7 +168,19 @@ class VADProcessor:
         if np.max(np.abs(audio)) > 1.0:
             audio = audio / 32768.0
 
-        # Get speech probability
+        if self._use_fallback:
+            # Energy-based fallback VAD (no torch needed)
+            # RMS energy normalized to [0, 1] range
+            rms = np.sqrt(np.mean(audio**2))
+            # Map RMS to probability-like value (tuned for speech detection)
+            # Typical speech RMS is 0.02-0.2, silence is <0.01
+            prob = min(1.0, rms / 0.1)  # Scale so 0.1 RMS = 1.0 prob
+            is_speech = prob >= self.config.threshold
+            return is_speech, prob
+
+        # Silero-VAD model
+        import torch
+
         tensor = torch.from_numpy(audio)
         prob = self._model(tensor, self.config.sample_rate).item()
 
@@ -148,7 +188,9 @@ class VADProcessor:
 
         return is_speech, prob
 
-    def process_chunk_with_state(self, audio: np.ndarray) -> Tuple[str, Optional[np.ndarray]]:
+    def process_chunk_with_state(
+        self, audio: np.ndarray
+    ) -> Tuple[str, Optional[np.ndarray]]:
         """
         Process chunk with state machine for speech segment detection.
 
@@ -158,11 +200,17 @@ class VADProcessor:
             - "speech_continue": Speech continuing
             - "speech_end": Speech just ended, audio_data contains full segment
             - "silence": No speech detected
+
+        Thread Safety:
+            Uses _buffer_lock to protect buffer operations, synchronized with
+            get_current_speech_buffer() and AudioCapture.stop().
         """
         is_speech, prob = self.process_chunk(audio)
 
         # Store in pre-buffer (for capturing speech start)
-        self._pre_buffer.append(audio.copy())
+        # Use lock to synchronize with readers (Timer thread, main thread)
+        with self._buffer_lock:
+            self._pre_buffer.append(audio.copy())
 
         if is_speech:
             self._silence_samples = 0
@@ -175,8 +223,9 @@ class VADProcessor:
                     self._is_speaking = True
 
                     # Include pre-buffer for natural start
-                    for pre_chunk in self._pre_buffer:
-                        self._speech_buffer.append(pre_chunk)
+                    with self._buffer_lock:
+                        for pre_chunk in self._pre_buffer:
+                            self._speech_buffer.append(pre_chunk)
 
                     if self._on_speech_start:
                         self._on_speech_start()
@@ -190,7 +239,8 @@ class VADProcessor:
             else:
                 # Speech continuing
                 self._speech_samples += len(audio)
-                self._speech_buffer.append(audio.copy())
+                with self._buffer_lock:
+                    self._speech_buffer.append(audio.copy())
 
                 if self._on_speech_chunk:
                     self._on_speech_chunk(audio, prob)
@@ -200,15 +250,17 @@ class VADProcessor:
             # Silence detected
             if self._is_speaking:
                 self._silence_samples += len(audio)
-                self._speech_buffer.append(audio.copy())  # Include trailing silence
+                with self._buffer_lock:
+                    self._speech_buffer.append(audio.copy())  # Include trailing silence
 
                 if self._silence_samples >= self.config.min_silence_samples:
                     # Speech ended
                     self._is_speaking = False
 
                     # Concatenate all speech audio
-                    full_audio = np.concatenate(self._speech_buffer)
-                    self._speech_buffer.clear()
+                    with self._buffer_lock:
+                        full_audio = np.concatenate(self._speech_buffer)
+                        self._speech_buffer.clear()
 
                     if self._on_speech_end:
                         self._on_speech_end(full_audio)
@@ -224,7 +276,7 @@ class VADProcessor:
         self,
         on_speech_start: Optional[Callable[[], None]] = None,
         on_speech_end: Optional[Callable[[np.ndarray], None]] = None,
-        on_speech_chunk: Optional[Callable[[np.ndarray, float], None]] = None
+        on_speech_chunk: Optional[Callable[[np.ndarray, float], None]] = None,
     ) -> None:
         """Set callback functions for speech events."""
         self._on_speech_start = on_speech_start
@@ -236,10 +288,36 @@ class VADProcessor:
         """Check if currently detecting speech."""
         return self._is_speaking
 
+    def get_current_speech_buffer(self) -> Optional[np.ndarray]:
+        """
+        获取当前已累积的语音缓冲（用于流式识别）。
+        线程安全：返回缓冲区的快照副本。
+
+        Returns:
+            累积的语音音频数据，如果没有则返回 None
+        """
+        with self._buffer_lock:
+            if not self._speech_buffer:
+                return None
+            # Return a copy to avoid race conditions
+            return np.concatenate(self._speech_buffer)
+
+    def get_speech_duration_ms(self) -> float:
+        """
+        获取当前语音段的持续时间（毫秒）。
+        线程安全。
+
+        Returns:
+            语音持续时间（毫秒）
+        """
+        with self._buffer_lock:
+            if not self._speech_buffer:
+                return 0.0
+            total_samples = sum(len(chunk) for chunk in self._speech_buffer)
+            return total_samples / self.config.sample_rate * 1000
+
     def get_speech_timestamps(
-        self,
-        audio: np.ndarray,
-        return_seconds: bool = True
+        self, audio: np.ndarray, return_seconds: bool = True
     ) -> List[dict]:
         """
         Get speech timestamps from a complete audio buffer.
@@ -270,7 +348,7 @@ class VADProcessor:
             threshold=self.config.threshold,
             min_speech_duration_ms=self.config.min_speech_ms,
             min_silence_duration_ms=self.config.min_silence_ms,
-            return_seconds=return_seconds
+            return_seconds=return_seconds,
         )
 
         return timestamps

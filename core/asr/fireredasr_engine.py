@@ -32,21 +32,34 @@ from ..logging import get_system_logger
 
 logger = get_system_logger()
 
-# Add FireRedASR to path if available
+# Lazy import - FireRedASR is heavy (imports torch), only import when actually used
 FIREREDASR_PATH = r"G:\AIBOX\FireRedASR"
-if os.path.exists(FIREREDASR_PATH) and FIREREDASR_PATH not in sys.path:
-    sys.path.insert(0, FIREREDASR_PATH)
+FireRedAsr = None
+FIREREDASR_AVAILABLE = None  # Will be set on first check
 
-# Check if FireRedASR is available
-try:
-    from fireredasr.models.fireredasr import FireRedAsr
-    FIREREDASR_AVAILABLE = True
-except ImportError:
-    FIREREDASR_AVAILABLE = False
-    logger.warning(
-        "FireRedASR not installed. "
-        "Clone https://github.com/FireRedTeam/FireRedASR to G:\\AIBOX\\FireRedASR"
-    )
+
+def check_fireredasr_installation() -> bool:
+    """Check if FireRedASR is available (lazy check)."""
+    global FireRedAsr, FIREREDASR_AVAILABLE
+    if FIREREDASR_AVAILABLE is not None:
+        return FIREREDASR_AVAILABLE
+
+    # Add FireRedASR to path if available
+    if os.path.exists(FIREREDASR_PATH) and FIREREDASR_PATH not in sys.path:
+        sys.path.insert(0, FIREREDASR_PATH)
+
+    try:
+        from fireredasr.models.fireredasr import FireRedAsr as _FireRedAsr
+
+        FireRedAsr = _FireRedAsr
+        FIREREDASR_AVAILABLE = True
+    except ImportError:
+        FIREREDASR_AVAILABLE = False
+        logger.warning(
+            "FireRedASR not installed. "
+            "Clone https://github.com/FireRedTeam/FireRedASR to G:\\AIBOX\\FireRedASR"
+        )
+    return FIREREDASR_AVAILABLE
 
 
 @dataclass
@@ -150,7 +163,9 @@ class FireRedASREngine(ASREngine):
             logger.info("FireRedASR model already loaded")
             return
 
-        logger.info(f"Loading FireRedASR model: {self.config.model_type} from {self.config.model_path}")
+        logger.info(
+            f"Loading FireRedASR model: {self.config.model_type} from {self.config.model_path}"
+        )
         start_time = time.time()
 
         try:
@@ -165,6 +180,7 @@ class FireRedASREngine(ASREngine):
             # FireRedASR models use argparse.Namespace which isn't allowed by default
             import torch
             import argparse
+
             try:
                 torch.serialization.add_safe_globals([argparse.Namespace])
             except AttributeError:
@@ -172,8 +188,7 @@ class FireRedASREngine(ASREngine):
                 pass
 
             self._model = FireRedAsr.from_pretrained(
-                self.config.model_type,
-                self.config.model_path
+                self.config.model_type, self.config.model_path
             )
 
             load_time = time.time() - start_time
@@ -198,7 +213,7 @@ class FireRedASREngine(ASREngine):
         """Remove any remaining temporary WAV files."""
         try:
             for filename in os.listdir(self._temp_dir):
-                if filename.startswith(self._temp_prefix) and filename.endswith('.wav'):
+                if filename.startswith(self._temp_prefix) and filename.endswith(".wav"):
                     filepath = os.path.join(self._temp_dir, filename)
                     try:
                         os.unlink(filepath)
@@ -234,7 +249,7 @@ class FireRedASREngine(ASREngine):
             audio_int16 = (audio_clipped * 32767).astype(np.int16)
 
         # Write WAV file
-        with wave.open(temp_path, 'wb') as wf:
+        with wave.open(temp_path, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)  # int16 = 2 bytes
             wf.setframerate(16000)
@@ -252,18 +267,22 @@ class FireRedASREngine(ASREngine):
         }
 
         if self.config.model_type == "aed":
-            params.update({
-                "softmax_smoothing": self.config.softmax_smoothing,
-                "aed_length_penalty": self.config.aed_length_penalty,
-                "eos_penalty": self.config.eos_penalty,
-            })
+            params.update(
+                {
+                    "softmax_smoothing": self.config.softmax_smoothing,
+                    "aed_length_penalty": self.config.aed_length_penalty,
+                    "eos_penalty": self.config.eos_penalty,
+                }
+            )
         elif self.config.model_type == "llm":
-            params.update({
-                "decode_min_len": 0,
-                "repetition_penalty": self.config.repetition_penalty,
-                "llm_length_penalty": self.config.llm_length_penalty,
-                "temperature": self.config.temperature,
-            })
+            params.update(
+                {
+                    "decode_min_len": 0,
+                    "repetition_penalty": self.config.repetition_penalty,
+                    "llm_length_penalty": self.config.llm_length_penalty,
+                    "temperature": self.config.temperature,
+                }
+            )
 
         return params
 
@@ -308,11 +327,15 @@ class FireRedASREngine(ASREngine):
                 decode_params = self._get_decode_params()
 
                 # Log for debugging
-                logger.debug(f"FireRedASR transcribing: {uttid}, duration={duration_s:.2f}s")
+                logger.debug(
+                    f"FireRedASR transcribing: {uttid}, duration={duration_s:.2f}s"
+                )
 
                 # Run inference
                 start_time = time.time()
-                results = self._model.transcribe(batch_uttid, batch_wav_path, decode_params)
+                results = self._model.transcribe(
+                    batch_uttid, batch_wav_path, decode_params
+                )
                 transcribe_time = (time.time() - start_time) * 1000
 
                 # Parse result
@@ -334,7 +357,9 @@ class FireRedASREngine(ASREngine):
                 # Clean up text
                 text = text.strip()
 
-                logger.info(f"FireRedASR transcribed in {transcribe_time:.0f}ms: {text[:50]}...")
+                logger.info(
+                    f"FireRedASR transcribed in {transcribe_time:.0f}ms: {text[:50]}..."
+                )
                 print(f"[FireRedASR] {transcribe_time:.0f}ms: {text[:80]}")
 
                 return ASRResult(
@@ -343,31 +368,32 @@ class FireRedASREngine(ASREngine):
                     language="zh",  # FireRedASR auto-detects zh/en
                     confidence=1.0,  # FireRedASR doesn't provide confidence
                     start_time=0.0,
-                    end_time=duration_s
+                    end_time=duration_s,
                 )
 
             except Exception as e:
                 logger.error(f"FireRedASR transcription error: {e}")
                 import traceback
+
                 traceback.print_exc()
                 return ASRResult(
-                    text="",
-                    type=TranscriptType.FINAL,
-                    language="zh",
-                    confidence=0.0
+                    text="", type=TranscriptType.FINAL, language="zh", confidence=0.0
                 )
 
             finally:
                 # Cleanup temp file
-                if self.config.cleanup_temp_files and wav_path and os.path.exists(wav_path):
+                if (
+                    self.config.cleanup_temp_files
+                    and wav_path
+                    and os.path.exists(wav_path)
+                ):
                     try:
                         os.unlink(wav_path)
                     except Exception:
                         pass
 
     def transcribe_stream(
-        self,
-        audio_generator: Generator[np.ndarray, None, None]
+        self, audio_generator: Generator[np.ndarray, None, None]
     ) -> Generator[ASRResult, None, None]:
         """
         Streaming transcription - NOT natively supported by FireRedASR.

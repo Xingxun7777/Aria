@@ -10,22 +10,50 @@ from typing import Callable, Dict, Any, Optional, TYPE_CHECKING
 
 # Debug log file for wakeword executor
 _DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
-_DEBUG_LOG.parent.mkdir(exist_ok=True)
+_DEBUG_LOG_INITIALIZED = False
 
 
 def _debug(msg: str):
     """Write debug message to file."""
+    global _DEBUG_LOG_INITIALIZED
     import datetime
 
     ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
     line = f"[{ts}] {msg}\n"
     print(line.strip())
-    with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
-        f.write(line)
+
+    # Lazy initialization of debug log directory (with error handling)
+    if not _DEBUG_LOG_INITIALIZED:
+        try:
+            _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+            _DEBUG_LOG_INITIALIZED = True
+        except (OSError, PermissionError) as e:
+            # Can't create log directory, just skip file logging
+            print(f"[WAKEWORD] Cannot create debug log dir: {e}")
+            return
+
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except (OSError, PermissionError):
+        # Can't write to log file, skip silently
+        pass
 
 
 if TYPE_CHECKING:
     from ui.qt.bridge import QtBridge
+
+
+# Selection command type mapping
+SELECTION_COMMAND_MAP = {
+    "polish": "POLISH",
+    "translate_en": "TRANSLATE_EN",
+    "translate_zh": "TRANSLATE_ZH",
+    "translate_ja": "TRANSLATE_JA",
+    "expand": "EXPAND",
+    "summarize": "SUMMARIZE",
+    "rewrite": "REWRITE",
+}
 
 
 class WakewordExecutor:
@@ -34,6 +62,7 @@ class WakewordExecutor:
 
     Unlike CommandExecutor (sends keystrokes), this executor:
     - Calls application methods directly (set_auto_send, etc)
+    - Handles selection processing (润色, 翻译, etc.)
     - Notifies UI via bridge signals
     - Supports cooldown mechanism
     """
@@ -62,6 +91,9 @@ class WakewordExecutor:
         self._action_map: Dict[str, Callable[[Any], bool]] = {
             "set_auto_send": self._set_auto_send,
             "set_sleeping": self._set_sleeping,
+            "selection_process": self._selection_process,
+            "translate_popup": self._translate_popup,
+            "ask_ai": self._ask_ai,
         }
 
     def execute(self, cmd_id: str, action: str, value: Any, response: str = "") -> bool:
@@ -113,7 +145,12 @@ class WakewordExecutor:
             return success
 
         except Exception as e:
-            print(f"[WAKEWORD] Error executing {cmd_id}: {e}")
+            import traceback
+
+            error_msg = f"[WAKEWORD] Error executing {cmd_id}: {e}"
+            print(error_msg)
+            _debug(error_msg)
+            _debug(traceback.format_exc())
             # Emit failure signal
             if self.bridge and hasattr(self.bridge, "emit_command"):
                 self.bridge.emit_command(cmd_id, False)
@@ -145,6 +182,369 @@ class WakewordExecutor:
             _debug(f"_set_sleeping({sleeping}) completed")
             return True
         return False
+
+    def _selection_process(self, command_type: str) -> bool:
+        """
+        Process selected text with the specified command.
+
+        This is the ONLY way to trigger selection processing - via wakeword.
+        Normal dictation will NEVER trigger selection detection.
+
+        Args:
+            command_type: One of "polish", "translate_en", "translate_zh",
+                         "expand", "summarize", "rewrite"
+
+        Returns:
+            True if processing succeeded, False otherwise
+        """
+        _debug(f"_selection_process({command_type}) called")
+
+        # Import here to avoid circular imports
+        from ..selection import SelectionCommand, CommandType
+
+        # Validate command type
+        cmd_type_str = SELECTION_COMMAND_MAP.get(command_type)
+        if not cmd_type_str:
+            _debug(f"Unknown selection command type: {command_type}")
+            return False
+
+        # Get CommandType enum
+        try:
+            cmd_type = CommandType[cmd_type_str]
+        except KeyError:
+            _debug(f"Invalid CommandType: {cmd_type_str}")
+            return False
+
+        # Check if app has required components
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("No selection_detector available")
+            return False
+        if (
+            not hasattr(self.app, "selection_processor")
+            or not self.app.selection_processor
+        ):
+            _debug("No selection_processor available")
+            return False
+
+        # Step 1: Detect selected text (sends Ctrl+C)
+        _debug("Detecting selection...")
+        detection = self.app.selection_detector.detect()
+
+        if not detection.has_selection or not detection.selected_text:
+            _debug("No text selected, cannot process")
+            print("[SELECTION] 未检测到选中文本")
+            # Notify UI
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("未检测到选中文本，请先选中要处理的文字")
+            return False
+
+        _debug(f"Found selected text: {len(detection.selected_text)} chars")
+        print(f"[SELECTION] 检测到选中文本: {len(detection.selected_text)} 字符")
+
+        # === Translation commands: check output mode setting ===
+        if command_type in ("translate_en", "translate_zh", "translate_ja"):
+            translation_config = self._get_translation_config()
+            output_mode = translation_config.get("output_mode", "popup")
+            target_lang_map = {
+                "translate_en": "en",
+                "translate_zh": "zh",
+                "translate_ja": "ja",
+            }
+            target_lang = target_lang_map.get(command_type, "en")
+
+            _debug(f"Translation output mode: {output_mode}, target: {target_lang}")
+
+            # Restore clipboard before UI action
+            if detection.original_clipboard is not None:
+                self.app.selection_detector.restore_clipboard(
+                    detection.original_clipboard
+                )
+
+            if output_mode == "clipboard":
+                # Clipboard mode: translate and copy to clipboard
+                return self._translate_to_clipboard(
+                    detection.selected_text.strip(), target_lang
+                )
+            else:
+                # Popup mode: show translation in popup
+                return self._translate_popup_with_target(
+                    detection.selected_text.strip(), target_lang
+                )
+
+        # Step 2: Create SelectionCommand
+        selection_cmd = SelectionCommand(
+            command_type=cmd_type,
+            raw_text=command_type,
+        )
+
+        # Step 3: Process with LLM
+        _debug(f"Processing with command type: {cmd_type.name}")
+        result = self.app.selection_processor.process(
+            detection.selected_text, selection_cmd
+        )
+
+        if result.success and result.output_text:
+            # Step 4: Replace selected text with result
+            self.app.output_injector.insert_text(result.output_text)
+            _debug(
+                f"Selection processed OK: {len(result.output_text)} chars, {result.processing_time_ms:.0f}ms"
+            )
+            print(f"[SELECTION] 处理完成 ({result.processing_time_ms:.0f}ms)")
+
+            # Restore original clipboard
+            if detection.original_clipboard is not None:
+                self.app.selection_detector.restore_clipboard(
+                    detection.original_clipboard
+                )
+
+            return True
+        else:
+            _debug(f"Selection processing failed: {result.error}")
+            print(f"[SELECTION] 处理失败: {result.error}")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error(f"处理失败: {result.error}")
+            return False
+
+    def _translate_popup(self, _value) -> bool:
+        """
+        Show translation popup for selected text (v1.1 feature).
+
+        Unlike selection_process which replaces text, this:
+        1. Detects selected text
+        2. Immediately restores clipboard
+        3. Emits TranslationAction to UI (non-blocking)
+        4. UI worker handles actual translation
+
+        Returns:
+            True if action emitted successfully
+        """
+        _debug("_translate_popup() called")
+
+        # Check if app has selection detector
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("No selection_detector available")
+            return False
+
+        # Detect selected text
+        _debug("Detecting selection for translation popup...")
+        detection = self.app.selection_detector.detect()
+
+        # Immediately restore clipboard (before any processing)
+        try:
+            if not detection.has_selection or not detection.selected_text:
+                _debug("No text selected for translation popup")
+                print("[TRANSLATE_POPUP] 未检测到选中文本")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("未检测到选中文本，请先选中要翻译的文字")
+                return False
+
+            selected_text = detection.selected_text.strip()
+            text_len = len(selected_text)
+            _debug(f"Found text for translation: {text_len} chars")
+
+            # Text length validation
+            MAX_TRANSLATE_LEN = 500
+            MIN_TRANSLATE_LEN = 2
+
+            if text_len < MIN_TRANSLATE_LEN:
+                _debug(f"Text too short: {text_len} chars")
+                print(f"[TRANSLATE_POPUP] 选中文本过短 ({text_len} 字符)")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("选中文本过短，请选择更多内容")
+                return False
+
+            if text_len > MAX_TRANSLATE_LEN:
+                _debug(f"Text too long: {text_len} > {MAX_TRANSLATE_LEN}, truncating")
+                print(f"[TRANSLATE_POPUP] 文本过长，已截断至 {MAX_TRANSLATE_LEN} 字符")
+                selected_text = selected_text[:MAX_TRANSLATE_LEN]
+
+            # Log preview of source text for debugging
+            preview = selected_text[:50].replace(chr(10), " ").replace(chr(13), "")
+            print(f"[TRANSLATE_POPUP] 源文本: {preview}...")
+
+        finally:
+            # Always restore clipboard
+            if detection.original_clipboard is not None:
+                self.app.selection_detector.restore_clipboard(
+                    detection.original_clipboard
+                )
+                _debug("Clipboard restored")
+            _debug("Finally block completed")
+
+        _debug("=== AFTER FINALLY BLOCK ===")
+        _debug(f"selected_text defined: {'selected_text' in dir()}")
+
+        # Emit TranslationAction to UI (non-blocking)
+        _debug("About to import TranslationAction...")
+        try:
+            from ..action import TranslationAction
+
+            _debug(f"Creating TranslationAction with {len(selected_text)} chars...")
+            action = TranslationAction(source_text=selected_text)
+            _debug(f"TranslationAction created: {action.request_id}")
+
+            if self.bridge and hasattr(self.bridge, "emit_action"):
+                _debug("Calling bridge.emit_action...")
+                self.bridge.emit_action(action)
+                _debug(f"TranslationAction emitted: {action.request_id}")
+                print(f"[TRANSLATE_POPUP] 已发送翻译请求 ({len(selected_text)} 字符)")
+                return True
+            else:
+                _debug("No bridge.emit_action available")
+                return False
+        except Exception as e:
+            _debug(f"ERROR in translate_popup emit: {e}")
+            import traceback
+
+            _debug(traceback.format_exc())
+            return False
+
+    def _ask_ai(self, _value) -> bool:
+        """
+        Open AI chat dialog with selected text as context (v1.1 feature).
+
+        Unlike selection_process which replaces text, this:
+        1. Detects selected text
+        2. Immediately restores clipboard
+        3. Emits ChatAction to UI (non-blocking)
+        4. UI opens chat window with context
+
+        Returns:
+            True if action emitted successfully
+        """
+        _debug("_ask_ai() called")
+
+        # Check if app has selection detector
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("No selection_detector available")
+            return False
+
+        # Detect selected text
+        _debug("Detecting selection for AI chat...")
+        detection = self.app.selection_detector.detect()
+
+        # Immediately restore clipboard (before any processing)
+        try:
+            if not detection.has_selection or not detection.selected_text:
+                _debug("No text selected for AI chat")
+                print("[ASK_AI] 未检测到选中文本")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("未检测到选中文本，请先选中要询问的内容")
+                return False
+
+            selected_text = detection.selected_text
+            _debug(f"Found text for AI chat: {len(selected_text)} chars")
+
+        finally:
+            # Always restore clipboard
+            if detection.original_clipboard is not None:
+                self.app.selection_detector.restore_clipboard(
+                    detection.original_clipboard
+                )
+                _debug("Clipboard restored")
+
+        # Emit ChatAction to UI (non-blocking)
+        from ..action import ChatAction
+
+        action = ChatAction(context_text=selected_text)
+        if self.bridge and hasattr(self.bridge, "emit_action"):
+            self.bridge.emit_action(action)
+            _debug(f"ChatAction emitted: {action.request_id}")
+            print(f"[ASK_AI] 已发送AI对话请求 ({len(selected_text)} 字符)")
+            return True
+        else:
+            _debug("No bridge.emit_action available")
+            return False
+
+    def _get_translation_config(self) -> Dict[str, Any]:
+        """Get translation configuration from hotwords.json."""
+        try:
+            import json
+
+            config_path = (
+                Path(__file__).parent.parent.parent / "config" / "hotwords.json"
+            )
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            return config.get("translation", {})
+        except Exception as e:
+            _debug(f"Failed to load translation config: {e}")
+            return {}
+
+    def _translate_popup_with_target(self, source_text: str, target_lang: str) -> bool:
+        """
+        Show translation popup with specified target language.
+
+        Args:
+            source_text: Text to translate
+            target_lang: Target language ("en" or "zh")
+
+        Returns:
+            True if action emitted successfully
+        """
+        _debug(f"_translate_popup_with_target({len(source_text)} chars, {target_lang})")
+
+        try:
+            from ..action import TranslationAction
+
+            action = TranslationAction(source_text=source_text, target_lang=target_lang)
+
+            if self.bridge and hasattr(self.bridge, "emit_action"):
+                self.bridge.emit_action(action)
+                _debug(f"TranslationAction emitted: {action.request_id}")
+                print(
+                    f"[TRANSLATE] 已发送翻译请求 ({len(source_text)} 字符) -> {target_lang}"
+                )
+                return True
+            else:
+                _debug("No bridge.emit_action available")
+                return False
+        except Exception as e:
+            _debug(f"ERROR in _translate_popup_with_target: {e}")
+            return False
+
+    def _translate_to_clipboard(self, source_text: str, target_lang: str) -> bool:
+        """
+        Translate and copy result to clipboard.
+
+        Args:
+            source_text: Text to translate
+            target_lang: Target language ("en" or "zh")
+
+        Returns:
+            True if action emitted successfully
+        """
+        _debug(f"_translate_to_clipboard({len(source_text)} chars, {target_lang})")
+
+        try:
+            from ..action import ClipboardTranslationAction
+
+            action = ClipboardTranslationAction(
+                source_text=source_text, target_lang=target_lang
+            )
+
+            if self.bridge and hasattr(self.bridge, "emit_action"):
+                self.bridge.emit_action(action)
+                _debug(f"ClipboardTranslationAction emitted: {action.request_id}")
+                print(
+                    f"[TRANSLATE] 已发送剪贴板翻译请求 ({len(source_text)} 字符) -> {target_lang}"
+                )
+                return True
+            else:
+                _debug("No bridge.emit_action available")
+                return False
+        except Exception as e:
+            _debug(f"ERROR in _translate_to_clipboard: {e}")
+            return False
 
     def get_stats(self) -> Dict[str, Any]:
         """Get executor statistics."""

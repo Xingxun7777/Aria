@@ -1,9 +1,16 @@
 # bridge.py
 # Thread-safe signal bridge between backend and Qt UI
 # Based on F3 spec section 4.1 with Codex-recommended thread safety
+# v1.1: Added action-driven architecture support
 
 from pathlib import Path
+from typing import TYPE_CHECKING
+from queue import Queue
+
 from PySide6.QtCore import QObject, Signal, Slot, QMetaObject, Qt, Q_ARG
+
+if TYPE_CHECKING:
+    from core.action import UIAction
 
 # Debug log for bridge signals
 _BRIDGE_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
@@ -57,8 +64,15 @@ class QtBridge(QObject):
     # For UI sync when backend changes settings (e.g., via wakeword)
     settingChanged = Signal(str, bool)
 
+    # v1.1: Action-driven UI updates
+    # Emits UIAction objects (TranslationAction, ChatAction, etc.)
+    actionTriggered = Signal(object)
+
     def __init__(self):
         super().__init__()
+        # Thread-safe queue for passing UIAction objects
+        # (Q_ARG doesn't support arbitrary Python objects in PySide6)
+        self._action_queue: Queue = Queue()
 
     # --- Thread-safe emitters (call from any thread) ---
 
@@ -123,6 +137,21 @@ class QtBridge(QObject):
             Q_ARG(bool, value),
         )
 
+    def emit_action(self, action: "UIAction"):
+        """
+        Thread-safe action emission for v1.1 action-driven architecture.
+
+        Args:
+            action: UIAction subclass (TranslationAction, ChatAction, etc.)
+        """
+        # Put action in queue (thread-safe), then trigger slot on main thread
+        self._action_queue.put(action)
+        QMetaObject.invokeMethod(
+            self,
+            "_do_emit_action",
+            Qt.QueuedConnection,
+        )
+
     # --- Internal slots (must be called on main thread) ---
 
     @Slot(str)
@@ -160,3 +189,14 @@ class QtBridge(QObject):
         _blog(f"_do_emit_setting_changed: '{setting}' = {value}")
         self.settingChanged.emit(setting, value)
         _blog(f"settingChanged.emit('{setting}', {value}) done")
+
+    @Slot()
+    def _do_emit_action(self):
+        """Process action from queue and emit signal."""
+        try:
+            action = self._action_queue.get_nowait()
+            _blog(f"_do_emit_action: type={action.type}, id={action.request_id}")
+            self.actionTriggered.emit(action)
+            _blog(f"actionTriggered.emit({action.type}) done")
+        except Exception as e:
+            _blog(f"_do_emit_action error: {e}")

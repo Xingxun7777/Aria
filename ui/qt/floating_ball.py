@@ -6,8 +6,18 @@
 import sys
 import ctypes
 import math
-from PySide6.QtCore import Qt, Signal, QPoint, QPointF, QTimer, Slot
-from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtCore import (
+    Qt,
+    Signal,
+    QPoint,
+    QPointF,
+    QTimer,
+    Slot,
+    QPropertyAnimation,
+    QEasingCurve,
+    QParallelAnimationGroup,
+)
+from PySide6.QtWidgets import QWidget, QApplication, QLabel, QGraphicsOpacityEffect
 from PySide6.QtGui import (
     QPainter,
     QColor,
@@ -180,8 +190,157 @@ class FloatingBall(QWidget):
         self._move_to_default_position()
 
     def _init_ui(self):
-        """Initialize the ball appearance (custom painting in paintEvent)."""
-        pass
+        """Initialize the ball appearance and streaming text label."""
+        # Floating text label for streaming ASR results
+        # Design: "Phantom HUD" - elegant, warm, premium feel
+        self._streaming_label = QLabel()
+        self._streaming_label.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.Tool
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        self._streaming_label.setAttribute(Qt.WA_TranslucentBackground)
+        self._streaming_label.setAttribute(Qt.WA_ShowWithoutActivating)
+        self._streaming_label.setStyleSheet(
+            """
+            QLabel {
+                background-color: rgba(20, 20, 25, 160);
+                color: rgba(255, 254, 250, 210);
+                font-family: "Segoe UI", "Microsoft YaHei";
+                font-size: 13px;
+                font-weight: 400;
+                padding: 10px 16px;
+                border-radius: 10px;
+                border: 1px solid rgba(255, 255, 255, 8);
+            }
+            """
+        )
+        self._streaming_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._streaming_label.setMaximumWidth(320)
+        self._streaming_label.setMaximumHeight(100)
+        self._streaming_label.setWordWrap(True)
+        self._streaming_label.hide()
+
+        # Opacity effect for fade animation
+        self._streaming_opacity = QGraphicsOpacityEffect(self._streaming_label)
+        self._streaming_opacity.setOpacity(0.0)
+        self._streaming_label.setGraphicsEffect(self._streaming_opacity)
+
+        # Fade animation (opacity)
+        self._streaming_fade_anim = QPropertyAnimation(
+            self._streaming_opacity, b"opacity"
+        )
+        self._streaming_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Position animation (slide effect)
+        self._streaming_pos_anim = QPropertyAnimation(self._streaming_label, b"pos")
+        self._streaming_pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Combined animation group
+        self._streaming_anim_group = QParallelAnimationGroup()
+        self._streaming_anim_group.addAnimation(self._streaming_fade_anim)
+        self._streaming_anim_group.addAnimation(self._streaming_pos_anim)
+
+        # Store base position for animations
+        self._streaming_base_pos = QPoint(0, 0)
+
+        # Timer to auto-hide streaming label after inactivity
+        self._streaming_hide_timer = QTimer(self)
+        self._streaming_hide_timer.setSingleShot(True)
+        self._streaming_hide_timer.timeout.connect(self._fade_out_streaming_label)
+
+        # Streaming display enabled flag
+        self._streaming_display_enabled = True
+
+    def _fade_out_streaming_label(self):
+        """Fade out and hide the streaming label with slide-down animation."""
+        if not self._streaming_label.isVisible():
+            return
+
+        # Stop any running animation
+        self._streaming_anim_group.stop()
+
+        # Current position
+        current_pos = self._streaming_label.pos()
+        end_pos = QPoint(current_pos.x(), current_pos.y() + 12)  # Slide down 12px
+
+        # Configure fade out (opacity)
+        self._streaming_fade_anim.setDuration(280)
+        self._streaming_fade_anim.setStartValue(self._streaming_opacity.opacity())
+        self._streaming_fade_anim.setEndValue(0.0)
+        self._streaming_fade_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        # Configure slide down (position)
+        self._streaming_pos_anim.setDuration(280)
+        self._streaming_pos_anim.setStartValue(current_pos)
+        self._streaming_pos_anim.setEndValue(end_pos)
+        self._streaming_pos_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        # Hide widget when animation finishes
+        self._streaming_anim_group.finished.connect(self._on_fade_out_finished)
+        self._streaming_anim_group.start()
+
+    def _on_fade_out_finished(self):
+        """Called when fade-out animation completes."""
+        self._streaming_label.hide()
+        # Disconnect to avoid multiple connections
+        try:
+            self._streaming_anim_group.finished.disconnect(self._on_fade_out_finished)
+        except RuntimeError:
+            pass  # Already disconnected
+
+    def _fade_in_streaming_label(self):
+        """Fade in the streaming label with slide-up animation."""
+        # Stop any running animation
+        self._streaming_anim_group.stop()
+
+        # Calculate positions
+        self._update_streaming_label_position()
+        target_pos = self._streaming_label.pos()
+        start_pos = QPoint(target_pos.x(), target_pos.y() + 10)  # Start 10px below
+
+        # Ensure visible before animation
+        if not self._streaming_label.isVisible():
+            self._streaming_opacity.setOpacity(0.0)
+            self._streaming_label.move(start_pos)
+            self._streaming_label.show()
+
+        # Configure fade in (opacity)
+        self._streaming_fade_anim.setDuration(180)
+        self._streaming_fade_anim.setStartValue(0.0)
+        self._streaming_fade_anim.setEndValue(1.0)
+        self._streaming_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Configure slide up (position)
+        self._streaming_pos_anim.setDuration(180)
+        self._streaming_pos_anim.setStartValue(start_pos)
+        self._streaming_pos_anim.setEndValue(target_pos)
+        self._streaming_pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Store base position
+        self._streaming_base_pos = target_pos
+
+        self._streaming_anim_group.start()
+
+    def _update_streaming_label_position(self):
+        """Position the streaming label above the ball."""
+        ball_pos = self.pos()
+        ball_size = self.size()
+        label_size = self._streaming_label.sizeHint()
+
+        # Position above the ball, centered
+        x = ball_pos.x() + (ball_size.width() - label_size.width()) // 2
+        y = ball_pos.y() - label_size.height() - 10
+
+        # Keep on screen
+        screen = self.screen()
+        if screen:
+            screen_geo = screen.geometry()
+            x = max(10, min(x, screen_geo.width() - label_size.width() - 10))
+            y = max(10, y)
+
+        self._streaming_label.move(x, y)
 
     def _init_popup_menu(self):
         """Initialize the popup menu."""
@@ -190,6 +349,7 @@ class FloatingBall(QWidget):
         self._popup_menu.modeChanged.connect(self._on_menu_mode_changed)
         self._popup_menu.settingsRequested.connect(self._on_menu_settings)
         self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
+        self._popup_menu.streamingToggled.connect(self._on_menu_streaming_toggled)
 
     def _on_menu_enable_toggled(self, enabled):
         """Handle enable toggle from popup menu."""
@@ -202,6 +362,10 @@ class FloatingBall(QWidget):
     def _on_menu_settings(self):
         """Handle settings request from popup menu."""
         self.detailsRequested.emit()
+
+    def _on_menu_streaming_toggled(self, enabled):
+        """Handle streaming display toggle from popup menu."""
+        self.set_streaming_display(enabled)
 
     def _on_menu_lock_toggled(self, locked):
         """Handle lock toggle from popup menu."""
@@ -232,6 +396,10 @@ class FloatingBall(QWidget):
         if self._popup_menu:
             # Sync current state before showing
             self._popup_menu.setLocked(self._is_locked)
+            self._popup_menu.setStreaming(self._streaming_display_enabled)
+            # Sync sleeping state based on current ball state
+            is_sleeping = self._state == self.STATE_SLEEPING
+            self._popup_menu.setSleeping(is_sleeping)
             # Position above the ball
             ball_center = self.mapToGlobal(self.rect().center())
             self._popup_menu.showAt(ball_center)
@@ -1085,10 +1253,29 @@ class FloatingBall(QWidget):
 
     @Slot(str, bool)
     def on_text_updated(self, text: str, is_final: bool):
-        """Handle text updates (for tooltip or status)."""
-        if is_final and text:
-            self.setToolTip(f"Last: {text[:50]}...")
-        elif text:
+        """Handle text updates - show streaming results in floating label with fade animation."""
+        if is_final:
+            # Final result - fade out streaming label
+            self._streaming_hide_timer.stop()
+            self._fade_out_streaming_label()
+            if text:
+                self.setToolTip(f"Last: {text[:50]}...")
+        elif text and self._streaming_display_enabled:
+            # Interim result - show in floating label with fade-in
+            # Only show the last ~60 chars for readability
+            display_text = text if len(text) <= 60 else "..." + text[-57:]
+            self._streaming_label.setText(display_text)
+            self._streaming_label.adjustSize()
+            self._update_streaming_label_position()
+
+            # Fade in if not already visible
+            if not self._streaming_label.isVisible():
+                self._fade_in_streaming_label()
+
+            # Auto-hide after 2 seconds of no updates
+            self._streaming_hide_timer.stop()
+            self._streaming_hide_timer.start(2000)
+
             self.setToolTip(f"Listening: {text[:30]}...")
 
     @Slot()
@@ -1199,3 +1386,21 @@ class FloatingBall(QWidget):
                 f"[FloatingBall] AUTO_SEND state changed to: {enabled}, calling update()"
             )
             self.update()
+
+    def set_streaming_display(self, enabled: bool) -> None:
+        """
+        Enable or disable streaming text display.
+
+        Args:
+            enabled: True to show streaming text, False to hide
+        """
+        self._streaming_display_enabled = enabled
+        if not enabled:
+            # Hide immediately if disabling
+            self._streaming_hide_timer.stop()
+            self._fade_out_streaming_label()
+        self._log(f"STREAMING_DISPLAY: {enabled}")
+
+    def is_streaming_display_enabled(self) -> bool:
+        """Return whether streaming display is enabled."""
+        return self._streaming_display_enabled

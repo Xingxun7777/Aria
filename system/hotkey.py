@@ -19,7 +19,40 @@ from ..core.logging import get_system_logger
 logger = get_system_logger()
 
 # Windows API - use WinDLL with use_last_error for proper error handling
-user32 = ctypes.WinDLL('user32', use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+# Define proper function signatures for Win32 API
+# RegisterHotKey(HWND hWnd, int id, UINT fsModifiers, UINT vk) -> BOOL
+user32.RegisterHotKey.argtypes = [
+    wintypes.HWND,
+    ctypes.c_int,
+    wintypes.UINT,
+    wintypes.UINT,
+]
+user32.RegisterHotKey.restype = wintypes.BOOL
+
+# UnregisterHotKey(HWND hWnd, int id) -> BOOL
+user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.UnregisterHotKey.restype = wintypes.BOOL
+
+# PeekMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg) -> BOOL
+user32.PeekMessageW.argtypes = [
+    ctypes.POINTER(wintypes.MSG),
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.UINT,
+]
+user32.PeekMessageW.restype = wintypes.BOOL
+
+# TranslateMessage(const MSG *lpMsg) -> BOOL
+user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.TranslateMessage.restype = wintypes.BOOL
+
+# DispatchMessageW(const MSG *lpMsg) -> LRESULT
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+user32.DispatchMessageW.restype = wintypes.LPARAM
+
 
 # Modifier keys
 class Modifiers(IntFlag):
@@ -29,46 +62,82 @@ class Modifiers(IntFlag):
     WIN = 0x0008
     NOREPEAT = 0x4000  # Prevent repeated events when held
 
+
 # Common virtual key codes
 VK_CODES = {
-    'space': 0x20,
-    'tab': 0x09,
-    'enter': 0x0D,
-    'escape': 0x1B,
-    'backspace': 0x08,
-    'delete': 0x2E,
-    'insert': 0x2D,
-    'home': 0x24,
-    'end': 0x23,
-    'pageup': 0x21,
-    'pagedown': 0x22,
+    "space": 0x20,
+    "tab": 0x09,
+    "enter": 0x0D,
+    "escape": 0x1B,
+    "backspace": 0x08,
+    "delete": 0x2E,
+    "insert": 0x2D,
+    "home": 0x24,
+    "end": 0x23,
+    "pageup": 0x21,
+    "pagedown": 0x22,
     # Special keys
-    'capslock': 0x14,
-    'caps': 0x14,  # Alias
-    'numlock': 0x90,
-    'scrolllock': 0x91,
-    'pause': 0x13,
-    'printscreen': 0x2C,
+    "capslock": 0x14,
+    "caps": 0x14,  # Alias
+    "numlock": 0x90,
+    "scrolllock": 0x91,
+    "pause": 0x13,
+    "printscreen": 0x2C,
     # OEM keys (below ESC)
-    'grave': 0xC0,      # ` ~ key
-    'backtick': 0xC0,   # Alias
-    'tilde': 0xC0,      # Alias
+    "grave": 0xC0,  # ` ~ key
+    "backtick": 0xC0,  # Alias
+    "tilde": 0xC0,  # Alias
     # Function keys
-    'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
-    'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
-    'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+    "f1": 0x70,
+    "f2": 0x71,
+    "f3": 0x72,
+    "f4": 0x73,
+    "f5": 0x74,
+    "f6": 0x75,
+    "f7": 0x76,
+    "f8": 0x77,
+    "f9": 0x78,
+    "f10": 0x79,
+    "f11": 0x7A,
+    "f12": 0x7B,
     # Letters
-    'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44,
-    'e': 0x45, 'f': 0x46, 'g': 0x47, 'h': 0x48,
-    'i': 0x49, 'j': 0x4A, 'k': 0x4B, 'l': 0x4C,
-    'm': 0x4D, 'n': 0x4E, 'o': 0x4F, 'p': 0x50,
-    'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
-    'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58,
-    'y': 0x59, 'z': 0x5A,
+    "a": 0x41,
+    "b": 0x42,
+    "c": 0x43,
+    "d": 0x44,
+    "e": 0x45,
+    "f": 0x46,
+    "g": 0x47,
+    "h": 0x48,
+    "i": 0x49,
+    "j": 0x4A,
+    "k": 0x4B,
+    "l": 0x4C,
+    "m": 0x4D,
+    "n": 0x4E,
+    "o": 0x4F,
+    "p": 0x50,
+    "q": 0x51,
+    "r": 0x52,
+    "s": 0x53,
+    "t": 0x54,
+    "u": 0x55,
+    "v": 0x56,
+    "w": 0x57,
+    "x": 0x58,
+    "y": 0x59,
+    "z": 0x5A,
     # Numbers
-    '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33,
-    '4': 0x34, '5': 0x35, '6': 0x36, '7': 0x37,
-    '8': 0x38, '9': 0x39,
+    "0": 0x30,
+    "1": 0x31,
+    "2": 0x32,
+    "3": 0x33,
+    "4": 0x34,
+    "5": 0x35,
+    "6": 0x36,
+    "7": 0x37,
+    "8": 0x38,
+    "9": 0x39,
 }
 
 WM_HOTKEY = 0x0312
@@ -77,6 +146,7 @@ WM_HOTKEY = 0x0312
 @dataclass
 class HotkeyBinding:
     """A registered hotkey binding."""
+
     id: int
     modifiers: int
     vk_code: int
@@ -114,18 +184,18 @@ class HotkeyManager:
             "ctrl+shift+space" -> (CTRL|SHIFT, VK_SPACE)
             "alt+f9" -> (ALT, VK_F9)
         """
-        parts = hotkey_str.lower().replace(' ', '').split('+')
+        parts = hotkey_str.lower().replace(" ", "").split("+")
         modifiers = 0
         vk_code = 0
 
         for part in parts:
-            if part == 'ctrl':
+            if part == "ctrl":
                 modifiers |= Modifiers.CTRL
-            elif part == 'shift':
+            elif part == "shift":
                 modifiers |= Modifiers.SHIFT
-            elif part == 'alt':
+            elif part == "alt":
                 modifiers |= Modifiers.ALT
-            elif part == 'win':
+            elif part == "win":
                 modifiers |= Modifiers.WIN
             elif part in VK_CODES:
                 vk_code = VK_CODES[part]
@@ -138,10 +208,7 @@ class HotkeyManager:
         return modifiers, vk_code
 
     def register(
-        self,
-        hotkey_str: str,
-        callback: Callable[[], None],
-        description: str = ""
+        self, hotkey_str: str, callback: Callable[[], None], description: str = ""
     ) -> int:
         """
         Register a global hotkey.
@@ -160,16 +227,43 @@ class HotkeyManager:
         """
         modifiers, vk_code = self.parse_hotkey(hotkey_str)
 
+        # Debug logging helper
+        import datetime
+        from pathlib import Path
+
+        debug_log = Path(__file__).parent.parent / "DebugLog" / "hotkey_debug.log"
+
+        def _log(msg: str):
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            try:
+                with open(debug_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {msg}\n")
+            except Exception:
+                pass
+
+        _log(
+            f"register() called: hotkey='{hotkey_str}', mods={modifiers}, vk={vk_code:#x}"
+        )
+
         def _register_on_thread() -> int:
+            _log(f"_register_on_thread() executing on thread {threading.get_ident()}")
             with self._lock:
                 hotkey_id = self._next_id
                 self._next_id += 1
 
+            _log(
+                f"Calling RegisterHotKey(None, {hotkey_id}, {modifiers}, {vk_code:#x})"
+            )
             result = user32.RegisterHotKey(None, hotkey_id, modifiers, vk_code)
+            _log(f"RegisterHotKey returned: {result}")
+
             if not result:
                 error = ctypes.get_last_error()
+                _log(f"RegisterHotKey FAILED! error={error}")
                 if error == 1409:
-                    raise RuntimeError(f"Hotkey '{hotkey_str}' already in use by another application")
+                    raise RuntimeError(
+                        f"Hotkey '{hotkey_str}' already in use by another application"
+                    )
                 raise RuntimeError(f"Failed to register hotkey: error {error}")
 
             binding = HotkeyBinding(
@@ -177,10 +271,11 @@ class HotkeyManager:
                 modifiers=modifiers,
                 vk_code=vk_code,
                 callback=callback,
-                description=description
+                description=description,
             )
             with self._lock:
                 self._bindings[hotkey_id] = binding
+            _log(f"Hotkey registered successfully: ID={hotkey_id}")
             logger.info(f"Registered hotkey: {hotkey_str} (ID={hotkey_id})")
             return hotkey_id
 
@@ -189,6 +284,7 @@ class HotkeyManager:
 
     def unregister(self, hotkey_id: int) -> bool:
         """Unregister a hotkey by ID."""
+
         def _unregister_on_thread() -> bool:
             with self._lock:
                 if hotkey_id not in self._bindings:
@@ -207,19 +303,44 @@ class HotkeyManager:
 
     def _message_loop(self) -> None:
         """Windows message loop to receive hotkey events."""
+        import datetime
+        from pathlib import Path
+
+        # Debug log file (works with pythonw.exe where stdout is suppressed)
+        debug_log = Path(__file__).parent.parent / "DebugLog" / "hotkey_debug.log"
+
+        def _log(msg: str):
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            try:
+                with open(debug_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {msg}\n")
+            except Exception:
+                pass  # Silent fail for logging
+
         msg = wintypes.MSG()
 
         self._thread_id = threading.get_ident()
         self._thread_ready.set()
 
         logger.info("Hotkey message loop started")
+        _log(f"Message loop started (thread_id={self._thread_id})")
+        _log(f"Registered bindings: {list(self._bindings.keys())}")
 
+        msg_count = 0
         while self._running:
             self._process_actions()
             # PeekMessage with PM_REMOVE (1)
             if user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                msg_count += 1
+                # Log every message for debugging (first 10 only to avoid spam)
+                if msg_count <= 10:
+                    _log(
+                        f"Message received: msg={msg.message}, wParam={msg.wParam}, lParam={msg.lParam}"
+                    )
+
                 if msg.message == WM_HOTKEY:
                     hotkey_id = msg.wParam
+                    _log(f">>> WM_HOTKEY detected! ID={hotkey_id}")
 
                     with self._lock:
                         binding = self._bindings.get(hotkey_id)
@@ -227,9 +348,14 @@ class HotkeyManager:
                     if binding:
                         try:
                             logger.debug(f"Hotkey {hotkey_id} triggered")
+                            _log(f"Calling callback for hotkey {hotkey_id}")
                             binding.callback()
+                            _log(f"Callback completed successfully")
                         except Exception as e:
                             logger.error(f"Hotkey callback error: {e}")
+                            _log(f"Callback error: {e}")
+                    else:
+                        _log(f"No binding found for hotkey ID={hotkey_id}")
 
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
@@ -240,6 +366,7 @@ class HotkeyManager:
         # Process any remaining actions (e.g., unregister) before exit
         self._process_actions()
         logger.info("Hotkey message loop stopped")
+        _log(f"Message loop stopped (total messages: {msg_count})")
 
     def start(self) -> None:
         """Start the hotkey listener in a background thread."""
@@ -279,7 +406,7 @@ class HotkeyManager:
         """Check if the hotkey listener is running."""
         return self._running
 
-    def __enter__(self) -> 'HotkeyManager':
+    def __enter__(self) -> "HotkeyManager":
         self.start()
         return self
 
@@ -288,13 +415,36 @@ class HotkeyManager:
 
     def _process_actions(self) -> None:
         """Process any pending cross-thread actions."""
+        import datetime
+        from pathlib import Path
+
+        debug_log = Path(__file__).parent.parent / "DebugLog" / "hotkey_debug.log"
+
+        def _log(msg: str):
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            try:
+                with open(debug_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {msg}\n")
+            except Exception:
+                pass
+
+        processed = 0
         while True:
             try:
                 action = self._action_queue.get_nowait()
             except queue.Empty:
+                if processed > 0:
+                    _log(
+                        f"Processed {processed} actions, bindings now: {list(self._bindings.keys())}"
+                    )
                 return
             try:
+                _log(f"Processing action: {action}")
                 action()
+                processed += 1
+            except Exception as e:
+                _log(f"Action error: {e}")
+                raise
             finally:
                 self._action_queue.task_done()
 
@@ -330,9 +480,30 @@ class HotkeyManager:
 
     def _unregister_all_internal(self) -> None:
         """Internal helper to unregister hotkeys on the hotkey thread."""
+        import datetime
+        import traceback
+        from pathlib import Path
+
+        debug_log = Path(__file__).parent.parent / "DebugLog" / "hotkey_debug.log"
+
+        def _log(msg: str):
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            try:
+                with open(debug_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {msg}\n")
+            except Exception:
+                pass
+
+        # Log who called this with stack trace
+        stack = "".join(traceback.format_stack()[:-1])
+        _log(f">>> _unregister_all_internal() called!")
+        _log(f"Stack trace:\n{stack}")
+
         with self._lock:
             ids = list(self._bindings.keys())
             self._bindings.clear()
+
+        _log(f"Unregistering hotkeys: {ids}")
 
         for hotkey_id in ids:
             user32.UnregisterHotKey(None, hotkey_id)

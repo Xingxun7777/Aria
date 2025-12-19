@@ -52,6 +52,7 @@ SIMPLE_POLISH_PROMPT = """你是语音转文字润色助手。任务：
 @dataclass
 class PolishConfig:
     """AI polish configuration."""
+
     enabled: bool = False
     api_url: str = "http://localhost:3000"
     api_key: str = ""
@@ -78,14 +79,16 @@ class PolishConfig:
             return False
         try:
             parsed = urlparse(self.api_url)
-            if parsed.scheme not in ('http', 'https'):
+            if parsed.scheme not in ("http", "https"):
                 from ..logging import get_system_logger
+
                 get_system_logger().warning(
                     f"Invalid api_url scheme: {parsed.scheme!r}. Expected http or https."
                 )
                 return False
             if not parsed.netloc:
                 from ..logging import get_system_logger
+
                 get_system_logger().warning(
                     f"Invalid api_url: missing host in {self.api_url!r}"
                 )
@@ -98,26 +101,28 @@ class PolishConfig:
 class AIPolisher:
     """
     AI-powered text polisher using LLM.
-    
+
     Uses OpenAI-compatible API to polish ASR output.
     """
-    
+
     def __init__(self, config: PolishConfig):
         self.config = config
         self._client: Optional[httpx.Client] = None
-    
+
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
         if self._client is None:
             self._client = httpx.Client(timeout=self.config.timeout)
         return self._client
-    
+
     def _build_prompt(self, text: str) -> str:
         """Build the full prompt with hotwords and domain context."""
         template = self.config.prompt_template
 
         # Format hotwords (limit to 30 for prompt length)
-        hotwords_str = ", ".join(self.config.hotwords[:30]) if self.config.hotwords else "无"
+        hotwords_str = (
+            ", ".join(self.config.hotwords[:30]) if self.config.hotwords else "无"
+        )
 
         # Format domain context
         domain_context = self.config.domain_context or "通用"
@@ -125,9 +130,7 @@ class AIPolisher:
         # Replace placeholders (format() ignores extra keys, but catch unknown placeholders)
         try:
             return template.format(
-                text=text,
-                hotwords=hotwords_str,
-                domain_context=domain_context
+                text=text, hotwords=hotwords_str, domain_context=domain_context
             )
         except KeyError as e:
             logger.warning(f"Template has unknown placeholder {e}, using simple format")
@@ -154,57 +157,82 @@ class AIPolisher:
 
             # Build request with hotwords context
             prompt = self._build_prompt(text)
-            
+
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.config.api_key}"
+                "Authorization": f"Bearer {self.config.api_key}",
             }
-            
+
+            # System message for JSON output mode
+            system_msg = '你是文本修正工具。返回JSON格式：{"text": "修正后的文本"}'
+
+            # Request JSON output to prevent explanations
+            json_prompt = f'{prompt}\n\n输出JSON：{{"text": "修正后的文本"}}'
+
             payload = {
                 "model": self.config.model,
                 "messages": [
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": json_prompt},
                 ],
-                "max_tokens": 500,
-                "temperature": 0.1
+                "max_tokens": 1000,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
             }
-            
+
             # Build full API URL - handle both /api and /api/v1 base URLs
-            base_url = self.config.api_url.rstrip('/')
-            if base_url.endswith('/v1'):
+            base_url = self.config.api_url.rstrip("/")
+            if base_url.endswith("/v1"):
                 full_url = f"{base_url}/chat/completions"
             else:
                 full_url = f"{base_url}/v1/chat/completions"
 
             # Call API
-            response = client.post(
-                full_url,
-                headers=headers,
-                json=payload
-            )
-            
+            response = client.post(full_url, headers=headers, json=payload)
+
             if response.status_code != 200:
                 logger.warning(f"Polish API error: {response.status_code}")
                 return text
-            
+
             result = response.json()
-            polished = result["choices"][0]["message"]["content"].strip()
-            
+            content = result["choices"][0]["message"]["content"].strip()
+
+            # Parse JSON response to extract text field
+            try:
+                import json
+
+                parsed = json.loads(content)
+                polished = parsed.get("text", content)
+            except json.JSONDecodeError:
+                # Fallback: use raw content if not valid JSON
+                polished = content
+
             # Basic validation - polished text shouldn't be empty or too different
             if not polished or len(polished) < 1:
                 logger.warning("Polish returned empty result")
                 return text
-            
+
+            # LENGTH PROTECTION: Reject if too much content removed
+            # This is a mechanical safety net - prompts can fail, code doesn't
+            original_len = len(text)
+            polished_len = len(polished)
+            if polished_len < original_len * 0.8:
+                logger.warning(
+                    f"Polish rejected: removed {100 - polished_len * 100 // original_len}% content "
+                    f"({original_len} -> {polished_len} chars)"
+                )
+                return text
+
             logger.debug(f"Polished: '{text}' -> '{polished}'")
             return polished
-            
+
         except httpx.TimeoutException:
             logger.warning("Polish API timeout")
             return text
         except Exception as e:
             logger.error(f"Polish error: {e}")
             return text
-    
+
     def polish_with_debug(self, text: str) -> Dict[str, Any]:
         """
         Polish text and return full debug information.
@@ -225,7 +253,7 @@ class AIPolisher:
             "changed": False,
             "api_time_ms": 0.0,
             "error": "",
-            "http_status": 0
+            "http_status": 0,
         }
 
         if not self.config.enabled:
@@ -245,21 +273,29 @@ class AIPolisher:
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.config.api_key}"
+                "Authorization": f"Bearer {self.config.api_key}",
             }
+
+            # System message for JSON output mode
+            system_msg = '你是文本修正工具。返回JSON格式：{"text": "修正后的文本"}'
+
+            # Request JSON output to prevent explanations
+            json_prompt = f'{prompt}\n\n输出JSON：{{"text": "修正后的文本"}}'
 
             payload = {
                 "model": self.config.model,
                 "messages": [
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": json_prompt},
                 ],
-                "max_tokens": 500,
-                "temperature": 0.1
+                "max_tokens": 1000,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
             }
 
             # Build full API URL - handle both /api and /api/v1 base URLs
-            base_url = self.config.api_url.rstrip('/')
-            if base_url.endswith('/v1'):
+            base_url = self.config.api_url.rstrip("/")
+            if base_url.endswith("/v1"):
                 full_url = f"{base_url}/chat/completions"
             else:
                 full_url = f"{base_url}/v1/chat/completions"
@@ -267,30 +303,49 @@ class AIPolisher:
 
             # Call API with timing
             start_time = time.time()
-            response = client.post(
-                full_url,
-                headers=headers,
-                json=payload
-            )
+            response = client.post(full_url, headers=headers, json=payload)
             api_time = (time.time() - start_time) * 1000
             debug_info["api_time_ms"] = api_time
             debug_info["http_status"] = response.status_code
 
             if response.status_code != 200:
-                debug_info["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
+                debug_info["error"] = (
+                    f"HTTP {response.status_code}: {response.text[:200]}"
+                )
                 logger.warning(f"Polish API error: {response.status_code}")
                 return debug_info
 
             result = response.json()
-            polished = result["choices"][0]["message"]["content"].strip()
+            content = result["choices"][0]["message"]["content"].strip()
+
+            # Parse JSON response to extract text field
+            try:
+                import json
+
+                parsed = json.loads(content)
+                polished = parsed.get("text", content)
+            except json.JSONDecodeError:
+                # Fallback: use raw content if not valid JSON
+                polished = content
 
             if not polished or len(polished) < 1:
                 debug_info["error"] = "Empty response from API"
                 logger.warning("Polish returned empty result")
                 return debug_info
 
+            # LENGTH PROTECTION: Reject if too much content removed
+            original_len = len(text)
+            polished_len = len(polished)
+            if polished_len < original_len * 0.8:
+                debug_info["error"] = f"Removed {100 - polished_len * 100 // original_len}% content"
+                logger.warning(
+                    f"Polish rejected: removed too much content "
+                    f"({original_len} -> {polished_len} chars)"
+                )
+                return debug_info
+
             debug_info["output_text"] = polished
-            debug_info["changed"] = (polished != text)
+            debug_info["changed"] = polished != text
 
             logger.debug(f"Polished: '{text}' -> '{polished}'")
             return debug_info

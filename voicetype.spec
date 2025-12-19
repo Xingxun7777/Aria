@@ -242,7 +242,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='VoiceType',
+    name='VoiceType-Dev',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -264,7 +264,7 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='VoiceType',
+    name='VoiceType-Dev',
 )
 
 # Post-build fix: Ensure base_library.zip is copied to dist
