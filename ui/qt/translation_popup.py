@@ -165,6 +165,7 @@ class TranslationPopup(QWidget):
             }
         """
         )
+        self._scroll_area.setMinimumHeight(150)  # Ensure readable area
         self._scroll_area.setMaximumHeight(380)  # Leave room for other elements
 
         # Translation result label (inside scroll area)
@@ -301,7 +302,7 @@ class TranslationPopup(QWidget):
         # Update title with character count
         text_len = len(source_text)
         self._title_label.setText(f"翻译 ({text_len}字)")
-        
+
         # Truncate long source text for display
         display_source = source_text.strip().replace(chr(10), " ").replace(chr(13), "")
         if len(display_source) > 80:
@@ -349,7 +350,7 @@ class TranslationPopup(QWidget):
 
         self._is_loading = False
         self._translated_text = translated_text
-        
+
         # Update title to show completion
         self._title_label.setText("译文")
 
