@@ -240,15 +240,19 @@ def main():
                     # This means backend.set_enabled(True) is never called!
                     # Fix: Explicitly enable and sync all states after event loop starts.
                     def _ensure_active_state():
+                        _log("[STARTUP] _ensure_active_state() running...")
                         # 1. Ensure backend hotkey is enabled
                         if hasattr(backend, "set_enabled"):
                             backend.set_enabled(True)
+                            _log("[STARTUP] backend.set_enabled(True) called")
                         # 2. Ensure not sleeping
                         if hasattr(backend, "set_sleeping"):
                             backend.set_sleeping(False)
+                            _log("[STARTUP] backend.set_sleeping(False) called")
                         # 3. Sync UI state
                         bridge.emit_state("IDLE")
                         ball.set_sleeping_state(False)
+                        _log("[STARTUP] UI state synced to IDLE")
                         # 4. Sync UI toggle state (don't trigger signal, just update visual)
                         #    NOTE: Do NOT toggle False→True as it calls stop() which
                         #    unregisters hotkeys that start() won't re-register!
@@ -256,9 +260,23 @@ def main():
                             ball._popup_menu.toggle.blockSignals(True)
                             ball._popup_menu.toggle.setChecked(True)
                             ball._popup_menu.toggle.blockSignals(False)
+                            _log("[STARTUP] Toggle switch synced to ON")
                         print("[VoiceType] System fully activated (start_active=True)")
+                        _log("[STARTUP] System fully activated!")
 
-                    QTimer.singleShot(100, _ensure_active_state)
+                    def _auto_start_recording():
+                        """Auto-start recording after system is ready."""
+                        _log("[STARTUP] Auto-starting recording...")
+                        if hasattr(backend, "toggle_recording"):
+                            backend.toggle_recording()
+                            _log("[STARTUP] Recording started automatically!")
+                            print("[VoiceType] Recording started automatically")
+
+                    # Use 500ms delay to ensure all components are ready
+                    # (100ms was sometimes too short on slower machines)
+                    QTimer.singleShot(500, _ensure_active_state)
+                    # Auto-start recording 200ms after activation
+                    QTimer.singleShot(700, _auto_start_recording)
                     print("[VoiceType] Started in active mode (start_active=True)")
             except Exception as e:
                 print(f"[VoiceType] Could not read start_active setting: {e}")
