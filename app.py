@@ -28,6 +28,24 @@ if sys.platform == "win32" and sys.stdout is not None:
 if sys.platform == "win32" and sys.stderr is not None:
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+# === Safe print for pythonw.exe (sys.stdout/stderr can be None) ===
+import builtins
+
+_original_print = builtins.print
+
+
+def _safe_print(*args, **kwargs):
+    """Safe print that handles pythonw.exe environment where stdout is None."""
+    if sys.stdout is None:
+        return  # Silent fail when no console
+    try:
+        _original_print(*args, **kwargs)
+    except OSError:
+        pass  # Ignore [Errno 22] Invalid argument
+
+
+builtins.print = _safe_print
+
 # === Centralized Debug Logging (works with pythonw.exe) ===
 import datetime
 
