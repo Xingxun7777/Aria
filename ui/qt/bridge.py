@@ -17,12 +17,15 @@ _BRIDGE_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug
 
 
 def _blog(msg: str):
-    """Write bridge debug message to file."""
+    """Write bridge debug message to file (pythonw.exe safe)."""
     import datetime
+    import sys
 
     ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
     line = f"[{ts}] [BRIDGE] {msg}\n"
-    print(line.strip())
+    # Guard for pythonw.exe (sys.stdout is None)
+    if sys.stdout is not None:
+        print(line.strip())
     try:
         with open(_BRIDGE_LOG, "a", encoding="utf-8") as f:
             f.write(line)
@@ -67,6 +70,9 @@ class QtBridge(QObject):
     # v1.1: Action-driven UI updates
     # Emits UIAction objects (TranslationAction, ChatAction, etc.)
     actionTriggered = Signal(object)
+
+    # Highlight saved: (text_preview, tags)
+    highlightSaved = Signal(str, list)
 
     def __init__(self):
         super().__init__()
@@ -152,6 +158,16 @@ class QtBridge(QObject):
             Qt.QueuedConnection,
         )
 
+    def emit_highlight_saved(self, text_preview: str, tags: list):
+        """Thread-safe highlight saved emission for gold flash UI feedback."""
+        # Use action queue pattern since Q_ARG doesn't support list
+        self._action_queue.put(("highlight", text_preview, tags))
+        QMetaObject.invokeMethod(
+            self,
+            "_do_emit_highlight_saved",
+            Qt.QueuedConnection,
+        )
+
     # --- Internal slots (must be called on main thread) ---
 
     @Slot(str)
@@ -200,3 +216,16 @@ class QtBridge(QObject):
             _blog(f"actionTriggered.emit({action.type}) done")
         except Exception as e:
             _blog(f"_do_emit_action error: {e}")
+
+    @Slot()
+    def _do_emit_highlight_saved(self):
+        """Process highlight from queue and emit signal."""
+        try:
+            data = self._action_queue.get_nowait()
+            if isinstance(data, tuple) and len(data) == 3 and data[0] == "highlight":
+                _, text_preview, tags = data
+                _blog(f"_do_emit_highlight_saved: '{text_preview}', tags={tags}")
+                self.highlightSaved.emit(text_preview, tags)
+                _blog(f"highlightSaved.emit done")
+        except Exception as e:
+            _blog(f"_do_emit_highlight_saved error: {e}")

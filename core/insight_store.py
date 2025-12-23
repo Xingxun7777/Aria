@@ -62,8 +62,14 @@ class InsightStore:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def add(
-        self, text: str, timestamp: str, duration_s: float = 0.0, session_id: int = 0
-    ) -> None:
+        self,
+        text: str,
+        timestamp: str,
+        duration_s: float = 0.0,
+        session_id: int = 0,
+        entry_type: str = "transcription",
+        attributes: dict = None,
+    ) -> bool:
         """
         Add a new insight entry.
 
@@ -72,9 +78,14 @@ class InsightStore:
             timestamp: ISO format timestamp
             duration_s: Audio duration in seconds
             session_id: Reference to DebugLog session
+            entry_type: Type of entry ("transcription", "highlight", etc.)
+            attributes: Optional additional attributes (tags, importance, etc.)
+
+        Returns:
+            True if successfully added
         """
         if not text or not text.strip():
-            return
+            return False
 
         # Parse timestamp to get year/month
         try:
@@ -94,10 +105,16 @@ class InsightStore:
                 "text": text.strip(),
                 "duration_s": round(duration_s, 2),
                 "session_id": session_id,
+                "type": entry_type,
             }
+
+            # Add optional attributes
+            if attributes:
+                entry["attributes"] = attributes
 
             data["entries"].append(entry)
             self._save_month(dt.year, dt.month, data)
+            return True
 
     def get_month(self, year: int, month: int) -> List[Dict]:
         """

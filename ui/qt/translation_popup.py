@@ -16,6 +16,33 @@ UI Spec (from Gemini consultation):
 import sys
 import ctypes
 from typing import Optional
+from pathlib import Path
+
+# Debug logging for pythonw.exe compatibility
+_DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+
+
+def _tlog(msg: str):
+    """Write translation popup debug message (pythonw.exe safe)."""
+    # RAW DEBUG: Write immediately on function entry
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[RAW] _tlog entered with: {msg[:50]}...\n")
+    except Exception:
+        pass
+
+    import datetime
+
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] [TPOPUP] {msg}\n"
+    if sys.stdout is not None:
+        print(line.strip())
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
 
 from PySide6.QtCore import (
     Qt,
@@ -31,6 +58,8 @@ from PySide6.QtWidgets import (
     QWidget,
     QLabel,
     QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
     QApplication,
     QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect,
@@ -98,6 +127,11 @@ class TranslationPopup(QWidget):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
 
+        # Header row: title + close button
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
         # Title label
         self._title_label = QLabel("译文")
         self._title_label.setStyleSheet(
@@ -111,7 +145,34 @@ class TranslationPopup(QWidget):
             }}
         """
         )
-        layout.addWidget(self._title_label)
+        header_layout.addWidget(self._title_label)
+        header_layout.addStretch()
+
+        # Close button
+        self._close_btn = QPushButton("✕")
+        self._close_btn.setFixedSize(20, 20)
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #9CA3AF;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 0;
+            }
+            QPushButton:hover {
+                color: #E5E5E5;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 4px;
+            }
+        """
+        )
+        self._close_btn.clicked.connect(self._on_close_clicked)
+        header_layout.addWidget(self._close_btn)
+
+        layout.addLayout(header_layout)
 
         # Source text label (smaller, gray)
         self._source_label = QLabel()
@@ -249,43 +310,58 @@ class TranslationPopup(QWidget):
 
     def showEvent(self, event):
         """Apply Win32 extended styles and start animation."""
+        _tlog("showEvent: ENTERED")
         super().showEvent(event)
+        _tlog("showEvent: super().showEvent done")
         self._apply_win32_styles()
+        _tlog("showEvent: _apply_win32_styles done")
         self._fade_in.start()
+        _tlog("showEvent: _fade_in.start done")
 
     def _apply_win32_styles(self):
         """Apply Win32 extended window styles for non-activation."""
+        _tlog("_apply_win32_styles: ENTERED")
         if sys.platform != "win32":
+            _tlog("_apply_win32_styles: not win32, returning")
             return
 
         try:
+            _tlog("_apply_win32_styles: getting winId")
             hwnd = int(self.winId())
+            _tlog(f"_apply_win32_styles: hwnd={hwnd}")
 
             GWL_EXSTYLE = -20
             WS_EX_NOACTIVATE = 0x08000000
             WS_EX_TOOLWINDOW = 0x00000080
             WS_EX_TOPMOST = 0x00000008
 
+            _tlog("_apply_win32_styles: getting user32")
             user32 = ctypes.windll.user32
+            _tlog("_apply_win32_styles: calling GetWindowLongW")
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            _tlog(f"_apply_win32_styles: style={style}")
 
+            _tlog("_apply_win32_styles: calling SetWindowLongW")
             user32.SetWindowLongW(
                 hwnd,
                 GWL_EXSTYLE,
                 style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             )
+            _tlog("_apply_win32_styles: SetWindowLongW done")
 
             # Force topmost
             HWND_TOPMOST = -1
             SWP_NOMOVE = 0x0002
             SWP_NOSIZE = 0x0001
             SWP_NOACTIVATE = 0x0010
+            _tlog("_apply_win32_styles: calling SetWindowPos")
             user32.SetWindowPos(
                 hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
             )
+            _tlog("_apply_win32_styles: SetWindowPos done - COMPLETE")
 
         except Exception as e:
-            print(f"[TranslationPopup] Win32 API Error: {e}")
+            _tlog(f"_apply_win32_styles: EXCEPTION: {e}")
 
     def show_loading(self, source_text: str, request_id: str):
         """
@@ -295,43 +371,69 @@ class TranslationPopup(QWidget):
             source_text: Original text being translated
             request_id: Unique request ID to match with result
         """
-        self._current_request_id = request_id
-        self._is_loading = True
-        self._translated_text = ""
+        # RAW DEBUG: Write BEFORE anything else
+        try:
+            with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+                f.write(f"[RAW] show_loading ENTERED: req={request_id}\n")
+        except Exception:
+            pass
 
-        # Update title with character count
-        text_len = len(source_text)
-        self._title_label.setText(f"翻译 ({text_len}字)")
-
-        # Truncate long source text for display
-        display_source = source_text.strip().replace(chr(10), " ").replace(chr(13), "")
-        if len(display_source) > 80:
-            display_source = display_source[:77] + "..."
-        self._source_label.setText(f"原文: {display_source}")
-
-        # Show loading state
-        self._result_label.setText("正在翻译...")
-        self._result_label.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {self.LOADING_COLOR.name()};
-                font-size: 14px;
-                font-style: italic;
-                padding: 0;
-                background: transparent;
-            }}
-        """
+        _tlog(
+            f"show_loading START: request_id={request_id}, text_len={len(source_text)}"
         )
-        self._hint_label.hide()
+        try:
+            self._current_request_id = request_id
+            self._is_loading = True
+            self._translated_text = ""
+            _tlog("show_loading: state vars set")
 
-        # Stop any running fade-out animation
-        self._fade_out.stop()
-        self._opacity_effect.setOpacity(1.0)
+            # Update title with character count
+            text_len = len(source_text)
+            self._title_label.setText(f"翻译 ({text_len}字)")
+            _tlog("show_loading: title set")
 
-        # Position and show (adjustSize FIRST, then position)
-        self.adjustSize()
-        self._position_near_cursor()
-        self.show()
+            # Truncate long source text for display
+            display_source = (
+                source_text.strip().replace(chr(10), " ").replace(chr(13), "")
+            )
+            if len(display_source) > 80:
+                display_source = display_source[:77] + "..."
+            self._source_label.setText(f"原文: {display_source}")
+            _tlog("show_loading: source label set")
+
+            # Show loading state
+            self._result_label.setText("正在翻译...")
+            _tlog("show_loading: result label text set")
+            self._result_label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {self.LOADING_COLOR.name()};
+                    font-size: 14px;
+                    font-style: italic;
+                    padding: 0;
+                    background: transparent;
+                }}
+            """
+            )
+            _tlog("show_loading: result label style set")
+            self._hint_label.hide()
+            _tlog("show_loading: hint label hidden")
+
+            # Stop any running fade-out animation
+            self._fade_out.stop()
+            _tlog("show_loading: fade_out stopped")
+            self._opacity_effect.setOpacity(1.0)
+            _tlog("show_loading: opacity set to 1.0")
+
+            # Position and show (adjustSize FIRST, then position)
+            self.adjustSize()
+            _tlog("show_loading: adjustSize done")
+            self._position_near_cursor()
+            _tlog("show_loading: position done")
+            self.show()
+            _tlog("show_loading: show() called - COMPLETE")
+        except Exception as e:
+            _tlog(f"show_loading ERROR: {e}")
 
     def show_result(self, translated_text: str, request_id: str):
         """
@@ -343,9 +445,13 @@ class TranslationPopup(QWidget):
         """
         # Ignore stale responses
         if request_id != self._current_request_id:
-            print(
-                f"[TranslationPopup] Ignoring stale response: {request_id} != {self._current_request_id}"
-            )
+            # Guard for pythonw.exe (sys.stdout is None)
+            import sys
+
+            if sys.stdout is not None:
+                print(
+                    f"[TranslationPopup] Ignoring stale response: {request_id} != {self._current_request_id}"
+                )
             return
 
         self._is_loading = False
@@ -441,9 +547,34 @@ class TranslationPopup(QWidget):
     def mousePressEvent(self, event):
         """Handle click to copy and close."""
         if event.button() == Qt.LeftButton:
-            if self._translated_text:
+            _tlog(
+                f"mousePressEvent: LeftButton clicked, has_text={bool(self._translated_text)}"
+            )
+            # Only copy if there's actual content (not just whitespace)
+            if self._translated_text and self._translated_text.strip():
+                # Copy directly here for reliability (in addition to signal)
+                # This ensures copy works even if signal/slot has issues
+                try:
+                    clipboard = QApplication.clipboard()
+                    clipboard.setText(self._translated_text)
+                    _tlog(
+                        f"mousePressEvent: Direct clipboard copy done, len={len(self._translated_text)}"
+                    )
+                except Exception as e:
+                    _tlog(f"mousePressEvent: Clipboard error: {e}")
+                    # Retry once
+                    try:
+                        QApplication.clipboard().setText(self._translated_text)
+                        _tlog("mousePressEvent: Clipboard retry succeeded")
+                    except Exception as retry_e:
+                        _tlog(f"mousePressEvent: Clipboard retry failed: {retry_e}")
+
+                # Also emit signal for any additional handlers
                 self.copyRequested.emit(self._translated_text)
             self.dismiss()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def enterEvent(self, event):
         """Cancel auto-dismiss when mouse enters."""
@@ -473,6 +604,10 @@ class TranslationPopup(QWidget):
         self.hide()
         self._opacity_effect.setOpacity(1.0)  # Reset for next show
         self.closed.emit()
+
+    def _on_close_clicked(self):
+        """Handle close button click."""
+        self.dismiss()
 
     def _on_dismiss_timeout(self):
         """Auto-dismiss after timeout."""

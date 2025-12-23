@@ -14,22 +14,24 @@ _DEBUG_LOG_INITIALIZED = False
 
 
 def _debug(msg: str):
-    """Write debug message to file."""
+    """Write debug message to file (pythonw.exe safe)."""
     global _DEBUG_LOG_INITIALIZED
     import datetime
+    import sys
 
     ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
     line = f"[{ts}] {msg}\n"
-    print(line.strip())
+    # Guard for pythonw.exe (sys.stdout is None)
+    if sys.stdout is not None:
+        print(line.strip())
 
     # Lazy initialization of debug log directory (with error handling)
     if not _DEBUG_LOG_INITIALIZED:
         try:
             _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
             _DEBUG_LOG_INITIALIZED = True
-        except (OSError, PermissionError) as e:
+        except (OSError, PermissionError):
             # Can't create log directory, just skip file logging
-            print(f"[WAKEWORD] Cannot create debug log dir: {e}")
             return
 
     try:
@@ -86,6 +88,7 @@ class WakewordExecutor:
         self.cooldown_ms = cooldown_ms
         self._last_exec_time = 0.0
         self._exec_count = 0
+        self._pending_following_text: Optional[str] = None
 
         # Action -> Method mapping
         self._action_map: Dict[str, Callable[[Any], bool]] = {
@@ -94,9 +97,17 @@ class WakewordExecutor:
             "selection_process": self._selection_process,
             "translate_popup": self._translate_popup,
             "ask_ai": self._ask_ai,
+            "save_highlight": self._save_highlight,
         }
 
-    def execute(self, cmd_id: str, action: str, value: Any, response: str = "") -> bool:
+    def execute(
+        self,
+        cmd_id: str,
+        action: str,
+        value: Any,
+        response: str = "",
+        following_text: Optional[str] = None,
+    ) -> bool:
         """
         Execute a wakeword command.
 
@@ -105,6 +116,7 @@ class WakewordExecutor:
             action: Method name to call (e.g., "set_auto_send")
             value: Value to pass to method
             response: Optional response message
+            following_text: Text following the trigger (for capture_following commands)
 
         Returns:
             True if executed successfully
@@ -126,6 +138,9 @@ class WakewordExecutor:
         if not handler:
             print(f"[WAKEWORD] Unknown action: {action}")
             return False
+
+        # Store following_text for handlers that need it
+        self._pending_following_text = following_text
 
         try:
             success = handler(value)
@@ -155,6 +170,8 @@ class WakewordExecutor:
             if self.bridge and hasattr(self.bridge, "emit_command"):
                 self.bridge.emit_command(cmd_id, False)
             return False
+        finally:
+            self._pending_following_text = None
 
     def _set_auto_send(self, enabled: bool) -> bool:
         """Set auto-send mode and notify UI."""
@@ -180,6 +197,45 @@ class WakewordExecutor:
         if hasattr(self.app, "set_sleeping"):
             self.app.set_sleeping(sleeping, force_emit=True)
             _debug(f"_set_sleeping({sleeping}) completed")
+            return True
+        return False
+
+    def _save_highlight(self, config: Dict[str, Any]) -> bool:
+        """Save highlight with following text to InsightStore."""
+        from datetime import datetime
+
+        following_text = self._pending_following_text
+        if not following_text or not following_text.strip():
+            _debug("[HIGHLIGHT] No content to save")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("未检测到要记录的内容")
+            return False
+
+        if not hasattr(self.app, "insight_store") or not self.app.insight_store:
+            _debug("[HIGHLIGHT] InsightStore not available")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("存储服务不可用")
+            return False
+
+        attributes = {
+            "importance": config.get("importance", "high"),
+            "tags": config.get("tags", []),
+        }
+
+        timestamp = datetime.now().isoformat()
+        success = self.app.insight_store.add(
+            text=following_text.strip(),
+            timestamp=timestamp,
+            entry_type="highlight",
+            attributes=attributes,
+        )
+
+        if success:
+            _debug(f"[HIGHLIGHT] Saved: {following_text[:50]}...")
+            if self.bridge and hasattr(self.bridge, "emit_highlight_saved"):
+                self.bridge.emit_highlight_saved(
+                    following_text[:50], attributes["tags"]
+                )
             return True
         return False
 

@@ -120,6 +120,18 @@ class FloatingBall(QWidget):
         self._bounce_amplitude = 8.0  # Max pixels to move
         self._bounce_duration_frames = 12  # ~400ms at 33ms/frame
 
+        # Press physics animation (Gemini design: "Alive Micro-Interactions")
+        self._press_scale = 1.0  # 1.0 = normal, 0.9 = pressed
+        self._press_scale_target = 1.0
+        self._PRESS_SCALE_DOWN = 0.9  # Scale when "pressed"
+        self._PRESS_SCALE_NORMAL = 1.0  # Normal scale
+
+        # Corner radius for squircle effect (lock mode visual distinction)
+        self._corner_radius = 28  # Full round (ball_size/2 ≈ 24)
+        self._corner_radius_target = 28
+        self._CORNER_CIRCLE = 28  # Fully round
+        self._CORNER_SQUIRCLE = 10  # Rounded square for locked state
+
         # Auto-send state indicator (persistent color tint)
         self._auto_send_enabled = False
 
@@ -148,7 +160,11 @@ class FloatingBall(QWidget):
                 with open(self._debug_log_path, "w", encoding="utf-8") as f:
                     f.write(f"=== FloatingBall Debug Log ===\n")
         except Exception as e:
-            print(f"[FloatingBall] Failed to init debug log: {e}")
+            # Guard for pythonw.exe (sys.stdout is None)
+            import sys
+
+            if sys.stdout is not None:
+                print(f"[FloatingBall] Failed to init debug log: {e}")
 
         # Start animation timer immediately (needed for smooth transitions)
         self._pulse_timer.start(50)
@@ -157,14 +173,17 @@ class FloatingBall(QWidget):
         )
 
     def _log(self, msg: str):
-        """Write to debug log file (only if debug_logging enabled in config)."""
+        """Write to debug log file (only if debug_logging enabled in config, pythonw.exe safe)."""
         if not self._debug_logging_enabled:
             return
         import datetime
+        import sys
 
         timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = f"[{timestamp}] {msg}"
-        print(f"[FloatingBall] {msg}")
+        # Guard for pythonw.exe (sys.stdout is None)
+        if sys.stdout is not None:
+            print(f"[FloatingBall] {msg}")
         if self._debug_log_path:
             try:
                 with open(self._debug_log_path, "a", encoding="utf-8") as f:
@@ -375,6 +394,8 @@ class FloatingBall(QWidget):
         if locked:
             self._window_scale_target = self._SCALE_IDLE
             self._icon_scale_target = 0.0
+            # Squircle animation: circle -> rounded square
+            self._corner_radius_target = self._CORNER_SQUIRCLE
         else:
             # Restore based on current state
             if (
@@ -387,6 +408,8 @@ class FloatingBall(QWidget):
             else:
                 self._window_scale_target = self._SCALE_IDLE
                 self._icon_scale_target = 0.0
+            # Squircle animation: rounded square -> circle
+            self._corner_radius_target = self._CORNER_CIRCLE
 
         self.lockToggled.emit(locked)
         self.update()
@@ -424,7 +447,10 @@ class FloatingBall(QWidget):
         # Apply window scale transform (centered)
         center = self.rect().center()
         painter.translate(center)
-        painter.scale(self._window_scale, self._window_scale)
+
+        # Combined scale: window_scale * press_scale (for press physics effect)
+        combined_scale = self._window_scale * self._press_scale
+        painter.scale(combined_scale, combined_scale)
 
         # Apply bounce offset (command execution feedback)
         if self._bounce_active or self._bounce_phase > 0:
@@ -437,6 +463,9 @@ class FloatingBall(QWidget):
         painter.translate(-center)
 
         radius = self.ball_size // 2
+
+        # Use corner_radius to determine shape (circle vs squircle)
+        use_squircle = self._corner_radius < self._CORNER_CIRCLE - 2
 
         # Debug: Log state during paint (to diagnose gray ball issue)
         if (
@@ -483,10 +512,15 @@ class FloatingBall(QWidget):
             gradient.setColorAt(0.85, QColor(35, 35, 40, base_alpha))
             gradient.setColorAt(1.0, QColor(30, 30, 35, int(base_alpha * 0.7)))
 
-        # Draw ball body
+        # Draw ball body (circle or squircle based on lock state)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(gradient))
-        painter.drawEllipse(center, radius, radius)
+        if use_squircle:
+            # Squircle: rounded rectangle for locked state
+            rect = self.rect().adjusted(5, 5, -5, -5)
+            painter.drawRoundedRect(rect, self._corner_radius, self._corner_radius)
+        else:
+            painter.drawEllipse(center, radius, radius)
 
         # Inner highlight (top-left, simulating light source)
         highlight_center = QPoint(center.x() - radius // 3, center.y() - radius // 3)
@@ -495,7 +529,11 @@ class FloatingBall(QWidget):
         highlight.setColorAt(0.5, QColor(255, 255, 255, highlight_alpha // 3))
         highlight.setColorAt(1, QColor(255, 255, 255, 0))
         painter.setBrush(QBrush(highlight))
-        painter.drawEllipse(center, radius, radius)
+        if use_squircle:
+            rect = self.rect().adjusted(5, 5, -5, -5)
+            painter.drawRoundedRect(rect, self._corner_radius, self._corner_radius)
+        else:
+            painter.drawEllipse(center, radius, radius)
 
         # Draw border - pulsing cyan when recording, subtle white otherwise
         if self._state == self.STATE_RECORDING:
@@ -521,10 +559,16 @@ class FloatingBall(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._is_locked:
-            # Very subtle border when locked (more transparent)
-            painter.setPen(QPen(QColor(255, 255, 255, 10), 1))
+            # Squircle border when locked (thicker, more visible)
+            painter.setPen(QPen(QColor(255, 255, 255, 60), 2.5))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(center, radius - 1, radius - 1)
+            if use_squircle:
+                rect = self.rect().adjusted(6, 6, -6, -6)
+                painter.drawRoundedRect(
+                    rect, self._corner_radius - 1, self._corner_radius - 1
+                )
+            else:
+                painter.drawEllipse(center, radius - 1, radius - 1)
         else:
             # Subtle white border when idle
             painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
@@ -920,6 +964,33 @@ class FloatingBall(QWidget):
                 self._bounce_active = False
             animations_active = True
 
+        # Press scale animation (elastic spring back effect)
+        if self._press_scale != self._press_scale_target:
+            diff = self._press_scale_target - self._press_scale
+            # Use different easing for press down vs spring back
+            if self._press_scale_target < 1.0:
+                # Press down: fast
+                self._press_scale += diff * 0.3
+            else:
+                # Spring back: elastic overshoot using EaseOutBack-like curve
+                self._press_scale += diff * 0.15
+                # Add slight overshoot when approaching 1.0
+                if self._press_scale > 1.0 and self._press_scale < 1.05:
+                    self._press_scale = min(1.02, self._press_scale + 0.01)
+            if abs(diff) < 0.005:
+                self._press_scale = self._press_scale_target
+            else:
+                animations_active = True
+
+        # Corner radius animation (circle <-> squircle morph)
+        if self._corner_radius != self._corner_radius_target:
+            diff = self._corner_radius_target - self._corner_radius
+            self._corner_radius += diff * 0.15
+            if abs(diff) < 0.5:
+                self._corner_radius = self._corner_radius_target
+            else:
+                animations_active = True
+
         # Adaptive frame rate: slow down when truly idle to save CPU
         is_truly_idle = (
             self._state == self.STATE_IDLE
@@ -996,6 +1067,8 @@ class FloatingBall(QWidget):
         if self._is_locked:
             self._window_scale_target = self._SCALE_IDLE  # Shrink to idle size
             self._icon_scale_target = 0.0  # Hide active icon
+            # Squircle animation: circle -> rounded square
+            self._corner_radius_target = self._CORNER_SQUIRCLE
         else:
             # Restore based on current state and processing flag
             if (
@@ -1012,6 +1085,8 @@ class FloatingBall(QWidget):
             else:
                 self._window_scale_target = self._SCALE_IDLE
                 self._icon_scale_target = 0.0
+            # Squircle animation: rounded square -> circle
+            self._corner_radius_target = self._CORNER_CIRCLE
 
         self.lockToggled.emit(self._is_locked)
         self.update()
@@ -1100,23 +1175,11 @@ class FloatingBall(QWidget):
     def on_state_changed(self, state: str):
         """Handle state changes from backend."""
 
-        # Debug logging to file
-        def _flog(msg):
-            from pathlib import Path
-            import datetime
-
-            log_path = (
-                Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
-            )
-            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{ts}] [BALL] {msg}\n")
-
         # Normalize state string to handle whitespace/case mismatches
         state = (state or "").strip().upper()
 
         old_state = self._state
-        _flog(f"on_state_changed: '{old_state}' -> '{state}'")
+        self._log(f"on_state_changed: '{old_state}' -> '{state}'")
         # Always print state changes to console for debugging
         print(
             f"[FloatingBall] STATE CHANGE: '{old_state}' -> '{state}' (STATE_SLEEPING='{self.STATE_SLEEPING}')"
@@ -1130,7 +1193,7 @@ class FloatingBall(QWidget):
             # Also check if we were in a dim/sleeping-like visual state
             # (scale target is smaller than idle, indicating sleeping appearance)
             was_visually_sleeping = self._window_scale_target < self._SCALE_IDLE
-            _flog(
+            self._log(
                 f"IDLE check: was_sleeping={was_sleeping}, was_visually={was_visually_sleeping}, old='{old_state}', target={self._window_scale_target:.2f}"
             )
             print(
@@ -1145,7 +1208,7 @@ class FloatingBall(QWidget):
                 self._is_processing = False  # Ensure clean state
                 self._icon_scale_target = 0.0
                 self._window_scale_target = self._SCALE_IDLE
-                _flog(f"WAKE UP! Restoring scale to {self._SCALE_IDLE}")
+                self._log(f"WAKE UP! Restoring scale to {self._SCALE_IDLE}")
                 print(
                     f"[FloatingBall] WAKE UP! old={old_state}, new={self._state}, was_visually_sleeping={was_visually_sleeping}, forcing repaint"
                 )
@@ -1179,7 +1242,11 @@ class FloatingBall(QWidget):
             # Recording indicator on, but window stays small until voice detected
             self._icon_scale_target = 1.0
             self._window_scale_target = self._SCALE_IDLE
-            self._log(f"RECORDING: scale={self._SCALE_IDLE}")
+            # Press physics: brief "press down" effect then spring back
+            self._press_scale_target = self._PRESS_SCALE_DOWN
+            # Schedule spring back after brief press
+            QTimer.singleShot(80, self._spring_back_press)
+            self._log(f"RECORDING: scale={self._SCALE_IDLE}, press animation")
         elif state == "TRANSCRIBING":
             self._state = self.STATE_TRANSCRIBING
             self._is_speaking = False
@@ -1315,10 +1382,31 @@ class FloatingBall(QWidget):
             self._bounce_phase = 0.0
             self.update()
 
+    @Slot(str, list)
+    def on_highlight_saved(self, text_preview: str, tags: list):
+        """Handle highlight saved - gold flash + bounce animation."""
+        self._log(f"HIGHLIGHT_SAVED: '{text_preview}', tags={tags}")
+
+        # Gold flash for highlight save success
+        self._command_flash_color = QColor(255, 200, 50, 220)  # Gold color
+        self._command_flash_active = True
+        self._bounce_active = True
+        self._bounce_phase = 0.0
+        self.update()
+
+        # Clear flash after 400ms
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(400, self._clear_command_flash)
+
     def _clear_command_flash(self):
         """Clear command execution flash."""
         self._command_flash_active = False
         self.update()
+
+    def _spring_back_press(self):
+        """Spring back from press-down to normal scale (elastic effect)."""
+        self._press_scale_target = self._PRESS_SCALE_NORMAL
 
     def _force_shrink(self):
         """Fallback: Force shrink if on_insert_complete didn't arrive in time."""

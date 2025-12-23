@@ -190,6 +190,27 @@
         "帮我解释"
       ],
       "response": "正在连接AI..."
+    },
+    "save_highlight_idea": {
+      "action": "save_highlight",
+      "value": {
+        "type": "highlight",
+        "tags": [
+          "想法"
+        ],
+        "importance": "high"
+      },
+      "triggers": [
+        "记录一下我的想法",
+        "记录一下想法",
+        "记录我的想法",
+        "记录想法",
+        "记一下想法",
+        "记下我的想法",
+        "记一下"
+      ],
+      "response": "已记录想法",
+      "capture_following": true
     }
   }
 }

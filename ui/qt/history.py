@@ -2,31 +2,52 @@
 # History popup window for VoiceType
 # Shows recent transcriptions with copy functionality
 
+import sys
 import json
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal, QTimer
+
+
+def _hlog(msg: str):
+    """History debug logging (pythonw.exe safe)."""
+    if sys.stdout is not None:
+        print(msg)
+
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QFrame, QApplication,
-    QGraphicsDropShadowEffect
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QFrame,
+    QApplication,
+    QGraphicsDropShadowEffect,
 )
 from PySide6.QtGui import QColor, QKeySequence, QCursor, QShortcut
 
 
 class HistoryItem(QFrame):
-    """Single history item with text and copy button."""
+    """Single history item - click anywhere to copy."""
 
     copyClicked = Signal(str)
+    deleteClicked = Signal(int)  # Emits index for deletion
 
-    def __init__(self, text: str, timestamp: str, index: int, parent=None):
+    def __init__(
+        self, text: str, timestamp: str, index: int, filename: str = "", parent=None
+    ):
         super().__init__(parent)
         self.text = text
         self.index = index
+        self.filename = filename  # Store filename for deletion
+        self._delete_pending = False  # Flag to prevent copy when delete is clicked
 
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             HistoryItem {
                 background-color: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.1);
@@ -37,62 +58,105 @@ class HistoryItem(QFrame):
                 background-color: rgba(255, 255, 255, 0.1);
                 border-color: rgba(100, 180, 255, 0.3);
             }
-        """)
+        """
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(4)
 
-        # Header row: timestamp + shortcut hint
+        # Header row: timestamp + copy hint + delete button
         header = QHBoxLayout()
 
         time_label = QLabel(timestamp)
-        time_label.setStyleSheet("""
+        time_label.setStyleSheet(
+            """
             QLabel {
                 color: rgba(255, 255, 255, 0.5);
                 font-size: 11px;
             }
-        """)
+        """
+        )
+        time_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Pass clicks through
         header.addWidget(time_label)
 
         header.addStretch()
 
-        # Show keyboard shortcut hint (Ctrl+1 through Ctrl+9)
-        if index < 9:
-            shortcut_label = QLabel(f"Ctrl+{index + 1}")
-            shortcut_label.setStyleSheet("""
-                QLabel {
-                    color: rgba(100, 180, 255, 0.7);
-                    font-size: 10px;
-                    background-color: rgba(100, 180, 255, 0.15);
-                    padding: 2px 6px;
-                    border-radius: 3px;
-                }
-            """)
-            header.addWidget(shortcut_label)
+        # Copy hint (shows on hover via CSS)
+        self._copy_hint = QLabel("点击复制")
+        self._copy_hint.setStyleSheet(
+            """
+            QLabel {
+                color: rgba(100, 180, 255, 0.6);
+                font-size: 10px;
+            }
+        """
+        )
+        self._copy_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
+        header.addWidget(self._copy_hint)
+
+        # Delete button
+        delete_btn = QPushButton("×")
+        delete_btn.setFixedSize(20, 20)
+        delete_btn.setCursor(Qt.PointingHandCursor)
+        delete_btn.setStyleSheet(
+            """
+            QPushButton {
+                color: rgba(255, 255, 255, 0.4);
+                background: transparent;
+                border: none;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                color: rgba(255, 100, 100, 0.9);
+                background: rgba(255, 100, 100, 0.15);
+                border-radius: 4px;
+            }
+        """
+        )
+        delete_btn.clicked.connect(self._on_delete_clicked)
+        header.addWidget(delete_btn)
 
         layout.addLayout(header)
 
-        # Text content
-        text_label = QLabel(text)
-        text_label.setWordWrap(True)
-        text_label.setStyleSheet("""
+        # Text content - NO text selection, entire area is clickable
+        self._text_label = QLabel(text)
+        self._text_label.setWordWrap(True)
+        self._text_label.setStyleSheet(
+            """
             QLabel {
                 color: rgba(255, 255, 255, 0.9);
                 font-size: 13px;
                 line-height: 1.4;
             }
-        """)
-        text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(text_label)
+        """
+        )
+        # Make text label pass mouse events to parent for click-to-copy
+        self._text_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(self._text_label)
 
-        # Copy button (click anywhere also copies)
+        # Entire item is clickable
         self.setCursor(Qt.PointingHandCursor)
 
+    def _on_delete_clicked(self):
+        """Handle delete button click - stop propagation."""
+        self._delete_pending = True  # Flag to prevent copy on this click
+        self.deleteClicked.emit(self.index)
+
     def mousePressEvent(self, event):
+        """Click anywhere to copy."""
+        # Skip if delete was just clicked (button click propagates to parent)
+        if self._delete_pending:
+            self._delete_pending = False
+            event.accept()  # Mark event as handled
+            return
+
         if event.button() == Qt.LeftButton:
             self.copyClicked.emit(self.text)
-        super().mousePressEvent(event)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
 
 class HistoryWindow(QWidget):
@@ -111,7 +175,9 @@ class HistoryWindow(QWidget):
     def __init__(self, debug_log_dir: Optional[Path] = None, parent=None):
         super().__init__(parent)
 
-        self.debug_log_dir = debug_log_dir or Path(__file__).parent.parent.parent / "DebugLog"
+        self.debug_log_dir = (
+            debug_log_dir or Path(__file__).parent.parent.parent / "DebugLog"
+        )
         self.history_items: List[dict] = []
 
         self._init_window()
@@ -122,9 +188,7 @@ class HistoryWindow(QWidget):
     def _init_window(self):
         """Setup window flags for popup."""
         self.setWindowFlags(
-            Qt.Popup |
-            Qt.FramelessWindowHint |
-            Qt.NoDropShadowWindowHint
+            Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedWidth(400)
@@ -138,44 +202,78 @@ class HistoryWindow(QWidget):
 
         # Container with background
         self.container = QFrame()
-        self.container.setStyleSheet("""
+        self.container.setStyleSheet(
+            """
             QFrame {
                 background-color: rgba(35, 35, 40, 0.95);
                 border-radius: 12px;
                 border: 1px solid rgba(255, 255, 255, 0.1);
             }
-        """)
+        """
+        )
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(12, 12, 12, 12)
         container_layout.setSpacing(8)
 
-        # Title
+        # Title row with clear button
+        title_row = QHBoxLayout()
+
         title = QLabel("历史记录 (原始ASR)")
-        title.setStyleSheet("""
+        title.setStyleSheet(
+            """
             QLabel {
                 color: white;
                 font-size: 14px;
                 font-weight: bold;
-                padding-bottom: 4px;
             }
-        """)
-        container_layout.addWidget(title)
+        """
+        )
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        # Clear all button
+        self._clear_btn = QPushButton("清空")
+        self._clear_btn.setCursor(Qt.PointingHandCursor)
+        self._clear_btn.setStyleSheet(
+            """
+            QPushButton {
+                color: rgba(255, 150, 150, 0.8);
+                background: transparent;
+                border: 1px solid rgba(255, 150, 150, 0.3);
+                border-radius: 4px;
+                padding: 3px 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                color: rgba(255, 100, 100, 1.0);
+                background: rgba(255, 100, 100, 0.15);
+                border-color: rgba(255, 100, 100, 0.5);
+            }
+        """
+        )
+        self._clear_btn.clicked.connect(self._clear_all)
+        title_row.addWidget(self._clear_btn)
+
+        container_layout.addLayout(title_row)
 
         # Hint
         hint = QLabel("显示未润色文本，点击复制")
-        hint.setStyleSheet("""
+        hint.setStyleSheet(
+            """
             QLabel {
                 color: rgba(255, 255, 255, 0.5);
                 font-size: 11px;
                 padding-bottom: 8px;
             }
-        """)
+        """
+        )
         container_layout.addWidget(hint)
 
         # Scroll area for history items
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
+        scroll.setStyleSheet(
+            """
             QScrollArea {
                 border: none;
                 background: transparent;
@@ -196,7 +294,8 @@ class HistoryWindow(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
             }
-        """)
+        """
+        )
 
         self.items_widget = QWidget()
         self.items_layout = QVBoxLayout(self.items_widget)
@@ -209,13 +308,15 @@ class HistoryWindow(QWidget):
 
         # Empty state label
         self.empty_label = QLabel("暂无历史记录")
-        self.empty_label.setStyleSheet("""
+        self.empty_label.setStyleSheet(
+            """
             QLabel {
                 color: rgba(255, 255, 255, 0.4);
                 font-size: 12px;
                 padding: 20px;
             }
-        """)
+        """
+        )
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.hide()
         container_layout.addWidget(self.empty_label)
@@ -261,7 +362,7 @@ class HistoryWindow(QWidget):
                 break
 
             try:
-                with open(session_file, 'r', encoding='utf-8') as f:
+                with open(session_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
                 # Get raw ASR text (before polish) for display
@@ -283,22 +384,27 @@ class HistoryWindow(QWidget):
                 except Exception:
                     timestamp = ""
 
-                self.history_items.append({
-                    "text": display_text,  # Raw ASR text for copy
-                    "polished": final_text,  # Keep polished for reference
-                    "timestamp": timestamp,
-                    "file": session_file.name
-                })
+                self.history_items.append(
+                    {
+                        "text": display_text,  # Raw ASR text for copy
+                        "polished": final_text,  # Keep polished for reference
+                        "timestamp": timestamp,
+                        "file": session_file.name,
+                    }
+                )
 
                 # Create UI item showing raw ASR text
-                item = HistoryItem(display_text, timestamp, loaded)
+                item = HistoryItem(
+                    display_text, timestamp, loaded, filename=session_file.name
+                )
                 item.copyClicked.connect(self._on_copy)
+                item.deleteClicked.connect(self._delete_item)
                 self.items_layout.insertWidget(loaded, item)
 
                 loaded += 1
 
             except Exception as e:
-                print(f"Failed to load {session_file}: {e}")
+                _hlog(f"[History] Failed to load {session_file}: {e}")
                 continue
 
         if loaded == 0:
@@ -314,11 +420,68 @@ class HistoryWindow(QWidget):
 
     def _on_copy(self, text: str):
         """Handle copy action."""
-        clipboard = QApplication.clipboard()
-        clipboard.setText(text)
+        # Guard against None or empty text
+        if not text:
+            _hlog("[History] No text to copy, closing")
+            self.close()
+            return
+
+        try:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(text)
+            _hlog(f"[History] Copied to clipboard: {text[:50]}...")
+        except Exception as e:
+            _hlog(f"[History] Clipboard error: {e}")
+            # Retry once
+            try:
+                QApplication.clipboard().setText(text)
+                _hlog("[History] Clipboard retry succeeded")
+            except Exception as retry_e:
+                _hlog(f"[History] Clipboard retry also failed: {retry_e}")
 
         # Brief visual feedback then close
         QTimer.singleShot(100, self.close)
+
+    def _delete_item(self, index: int):
+        """Delete a single history item by index."""
+        if 0 <= index < len(self.history_items):
+            item_data = self.history_items[index]
+            filename = item_data.get("file", "")
+
+            # Delete the session file with path validation
+            if filename:
+                file_path = (self.debug_log_dir / filename).resolve()
+                # Security: ensure file is within expected directory
+                if file_path.parent == self.debug_log_dir.resolve():
+                    try:
+                        if file_path.exists():
+                            file_path.unlink()
+                    except Exception as e:
+                        _hlog(f"[History] Failed to delete {filename}: {e}")
+
+            # Reload the history to refresh UI
+            self.load_history()
+
+    def _clear_all(self):
+        """Clear all history items."""
+        if not self.history_items:
+            return
+
+        # Delete all session files with path validation
+        for item_data in self.history_items:
+            filename = item_data.get("file", "")
+            if filename:
+                file_path = (self.debug_log_dir / filename).resolve()
+                # Security: ensure file is within expected directory
+                if file_path.parent == self.debug_log_dir.resolve():
+                    try:
+                        if file_path.exists():
+                            file_path.unlink()
+                    except Exception as e:
+                        _hlog(f"[History] Failed to delete {filename}: {e}")
+
+        # Reload (will show empty state)
+        self.load_history()
 
     def showAt(self, global_pos):
         """Show popup at specified position."""

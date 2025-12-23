@@ -65,7 +65,7 @@ class WakewordDetector:
         except Exception as e:
             print(f"[WAKEWORD] Failed to load config: {e}")
 
-    def detect(self, text: str) -> Optional[Tuple[str, str, Any, str]]:
+    def detect(self, text: str) -> Optional[Tuple[str, str, Any, str, Optional[str]]]:
         """
         Detect wakeword and parse command from text using pinyin matching.
 
@@ -73,8 +73,9 @@ class WakewordDetector:
             text: Transcribed text to check
 
         Returns:
-            Tuple of (command_id, action, value, response) if detected, None otherwise
-            Example: ("auto_send_on", "set_auto_send", True, "已开启自动发送")
+            Tuple of (command_id, action, value, response, following_text) if detected, None otherwise
+            Example: ("auto_send_on", "set_auto_send", True, "已开启自动发送", None)
+            For capture_following commands: ("save_highlight_idea", "save_highlight", {...}, "已记录想法", "要记录的内容")
         """
         if not self.enabled or not text:
             return None
@@ -148,15 +149,62 @@ class WakewordDetector:
             action = cmd_config.get("action")
             value = cmd_config.get("value")
             response = cmd_config.get("response", "")
+            capture_following = cmd_config.get("capture_following", False)
 
-            print(
+            # Extract following text if capture_following is enabled
+            following_text = None
+            if capture_following:
+                following_text = self._extract_following_text(
+                    command_text, matched_trigger
+                )
+
+            log_msg = (
                 f"[WAKEWORD] Detected: '{wakeword_found}' + '{command_text}' "
                 f"-> {cmd_id} ({action}={value}) [trigger: '{matched_trigger}']"
             )
-            return (cmd_id, action, value, response)
+            if following_text:
+                preview = (
+                    following_text[:30] + "..."
+                    if len(following_text) > 30
+                    else following_text
+                )
+                log_msg += f", following='{preview}'"
+            print(log_msg)
+
+            return (cmd_id, action, value, response, following_text)
 
         print(f"[WAKEWORD] Unknown command: '{command_text}'")
         return None
+
+    def _extract_following_text(self, command_text: str, trigger: str) -> Optional[str]:
+        """Extract text that follows the trigger phrase.
+
+        For capture_following commands like "记录想法 明天开会",
+        this extracts "明天开会" as the content to save.
+        """
+        trigger_normalized = trigger.replace(" ", "")
+        command_normalized = re.sub(r"[\s，,。.、：:；;！!？?]", "", command_text)
+
+        idx = command_normalized.find(trigger_normalized)
+        if idx == -1:
+            return None
+
+        trigger_end = idx + len(trigger_normalized)
+
+        # Map back to original text position
+        char_count = 0
+        original_pos = len(command_text)
+        for i, c in enumerate(command_text):
+            if not re.match(r"[\s，,。.、：:；;！!？?]", c):
+                if char_count == trigger_end:
+                    original_pos = i
+                    break
+                char_count += 1
+
+        following = command_text[original_pos:].strip()
+        # Remove leading punctuation
+        following = re.sub(r"^[\s，,。.、：:；;！!？?]+", "", following)
+        return following if following else None
 
     def get_command_info(self, cmd_id: str) -> Optional[Dict[str, Any]]:
         """Get command configuration by ID."""

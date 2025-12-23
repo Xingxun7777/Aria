@@ -1037,9 +1037,11 @@ class VoiceTypeApp:
                 if text and self.wakeword_detector and self.wakeword_executor:
                     wakeword_result = self.wakeword_detector.detect(text)
                     if wakeword_result:
-                        cmd_id, action, value, response = wakeword_result
+                        cmd_id, action, value, response, following_text = (
+                            wakeword_result
+                        )
                         success = self.wakeword_executor.execute(
-                            cmd_id, action, value, response
+                            cmd_id, action, value, response, following_text
                         )
                         status = "OK" if success else "FAIL"
                         print(f"[WAKEWORD] {status}: {cmd_id} (raw ASR: '{text}')")

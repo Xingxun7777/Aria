@@ -120,6 +120,10 @@ class MessageBubble(QFrame):
     def _markdown_to_html(self, text: str) -> str:
         """Convert simple markdown to HTML."""
         import re
+        from html import escape
+
+        # First escape HTML to prevent XSS
+        text = escape(text)
 
         # Code blocks (```code```)
         text = re.sub(
@@ -233,6 +237,52 @@ class AIChatWindow(QWidget):
         title.setStyleSheet("color: #E5E7EB; font-size: 13px; font-weight: bold;")
         header_layout.addWidget(title)
         header_layout.addStretch()
+
+        # New chat button
+        new_chat_btn = QPushButton("新对话")
+        new_chat_btn.setFixedHeight(22)
+        new_chat_btn.setCursor(Qt.PointingHandCursor)
+        new_chat_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                color: #9CA3AF;
+                font-size: 11px;
+                border: 1px solid #4B5563;
+                border-radius: 4px;
+                padding: 0 8px;
+            }
+            QPushButton:hover {
+                background: #374151;
+                color: #E5E7EB;
+            }
+        """
+        )
+        new_chat_btn.clicked.connect(self._new_chat)
+        header_layout.addWidget(new_chat_btn)
+
+        # Save chat button
+        save_btn = QPushButton("保存")
+        save_btn.setFixedHeight(22)
+        save_btn.setCursor(Qt.PointingHandCursor)
+        save_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: transparent;
+                color: #9CA3AF;
+                font-size: 11px;
+                border: 1px solid #4B5563;
+                border-radius: 4px;
+                padding: 0 8px;
+            }
+            QPushButton:hover {
+                background: #374151;
+                color: #E5E7EB;
+            }
+        """
+        )
+        save_btn.clicked.connect(self._save_chat)
+        header_layout.addWidget(save_btn)
 
         close_btn = QPushButton("×")
         close_btn.setFixedSize(24, 24)
@@ -628,6 +678,62 @@ class AIChatWindow(QWidget):
                 self._input_edit.setPlainText(msg.content)
                 self._on_send_clicked()
                 break
+
+    def _new_chat(self):
+        """Start a new chat conversation."""
+        self._messages.clear()
+        self._clear_messages_ui()
+        self._context_text = ""
+        self._quote_label.setText("")
+        self._quote_frame.hide()
+        self._input_edit.clear()
+        self._is_generating = False
+        self._update_action_buttons()
+        print("[AIChatWindow] Started new chat")
+
+    def _save_chat(self):
+        """Save the current conversation to a Markdown file."""
+        from PySide6.QtWidgets import QFileDialog
+        from datetime import datetime
+
+        if not self._messages:
+            return  # Nothing to save
+
+        # Generate default filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"chat_{timestamp}.md"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存对话",
+            default_name,
+            "Markdown (*.md);;Text (*.txt)",
+        )
+
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# AI 对话记录\n\n")
+                f.write(f"**时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+                if self._context_text:
+                    context_preview = self._context_text[:200]
+                    if len(self._context_text) > 200:
+                        context_preview += "..."
+                    f.write(f"**上下文**: {context_preview}\n\n")
+                    f.write("---\n\n")
+
+                for msg in self._messages:
+                    if msg.role == "user":
+                        f.write(f"## 👤 用户\n\n{msg.content}\n\n")
+                    else:
+                        f.write(f"## 🤖 AI\n\n{msg.content}\n\n")
+
+            print(f"[AIChatWindow] Saved chat to {path}")
+        except Exception as e:
+            print(f"[AIChatWindow] Failed to save chat: {e}")
 
     def closeEvent(self, event):
         self.closed.emit()

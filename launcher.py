@@ -12,10 +12,81 @@ import subprocess
 # Fix OpenMP conflict between PyTorch and faster-whisper (MUST be before any imports)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# === Singleton Check with Stale Lock Detection ===
-# Prevent multiple instances, but auto-cleanup stale locks from crashed processes
+# === Singleton Check with Named Mutex (Windows) + File Lock (fallback) ===
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-dev.lock")
+MUTEX_NAME = "VoiceType-Dev-Singleton-Mutex"
 _lock_handle = None
+_mutex_handle = None
+
+
+def find_and_kill_voicetype_processes() -> int:
+    """
+    Find and kill any existing VoiceType processes.
+    Returns number of processes killed.
+
+    IMPORTANT: Only kills processes running launcher.py or main.py directly,
+    not any process that happens to have 'voicetype' in the path.
+    """
+    if sys.platform != "win32":
+        return 0
+
+    killed = 0
+    current_pid = os.getpid()
+
+    try:
+        # Use wmic to find python processes with voicetype in command line
+        result = subprocess.run(
+            [
+                "wmic",
+                "process",
+                "where",
+                "name like '%python%'",
+                "get",
+                "processid,commandline",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+        for line in result.stdout.split("\n"):
+            line_lower = line.lower()
+
+            # Only match processes that are running VoiceType scripts directly
+            # (not just any process with 'voicetype' in the path)
+            is_voicetype_process = (
+                "launcher.py" in line_lower
+                or "voicetype.ui.qt.main" in line_lower  # module form
+                or "ui\\qt\\main.py" in line_lower
+                or "ui/qt/main.py" in line_lower
+                or "splash_runner.py" in line_lower
+            )
+
+            if not is_voicetype_process:
+                continue
+
+            # Extract PID (last number in line)
+            parts = line.strip().split()
+            if parts:
+                try:
+                    pid = int(parts[-1])
+                    if pid != current_pid:
+                        # Kill the process
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True,
+                            timeout=5,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                        print(f"[CLEANUP] Killed orphan VoiceType process: PID {pid}")
+                        killed += 1
+                except (ValueError, subprocess.TimeoutExpired):
+                    pass
+    except Exception as e:
+        print(f"[CLEANUP] Warning: Could not scan for orphan processes: {e}")
+
+    return killed
 
 
 def is_process_alive(pid: int) -> bool:
@@ -39,6 +110,49 @@ def is_process_alive(pid: int) -> bool:
             return True
         except OSError:
             return False
+
+
+def try_acquire_mutex() -> bool:
+    """Try to acquire Windows Named Mutex. Returns True if successful."""
+    global _mutex_handle
+    if sys.platform != "win32":
+        return True  # Skip on non-Windows
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+
+        # CreateMutexW
+        _mutex_handle = kernel32.CreateMutexW(None, True, MUTEX_NAME)
+        if _mutex_handle:
+            last_error = ctypes.get_last_error()
+            ERROR_ALREADY_EXISTS = 183
+            if last_error == ERROR_ALREADY_EXISTS:
+                # Mutex exists - another instance is running
+                kernel32.CloseHandle(_mutex_handle)
+                _mutex_handle = None
+                return False
+            return True
+        return False
+    except Exception as e:
+        print(f"[MUTEX] Warning: Could not create mutex: {e}")
+        return True  # Fall through to file lock
+
+
+def release_mutex():
+    """Release Windows Named Mutex."""
+    global _mutex_handle
+    if _mutex_handle and sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.ReleaseMutex(_mutex_handle)
+            ctypes.windll.kernel32.CloseHandle(_mutex_handle)
+        except Exception:
+            pass
+        _mutex_handle = None
 
 
 def check_and_cleanup_stale_lock() -> bool:
@@ -82,7 +196,11 @@ def acquire_lock():
     """Try to acquire singleton lock. Returns True if successful."""
     global _lock_handle
 
-    # First, check for stale locks
+    # First, try Windows Named Mutex (more reliable)
+    if not try_acquire_mutex():
+        return False
+
+    # Check for stale file locks
     check_and_cleanup_stale_lock()
 
     try:
@@ -105,12 +223,15 @@ def acquire_lock():
             _lock_handle.flush()
             return True
     except (IOError, OSError):
+        release_mutex()  # Release mutex if file lock fails
         return False
 
 
 def release_lock():
     """Release the singleton lock."""
     global _lock_handle
+
+    # Release file lock
     if _lock_handle:
         try:
             if sys.platform == "win32":
@@ -124,7 +245,16 @@ def release_lock():
             os.remove(LOCK_FILE)
         except Exception:
             pass
+        _lock_handle = None
 
+    # Release mutex
+    release_mutex()
+
+
+# === Cleanup orphan processes before singleton check ===
+# NOTE: Orphan process cleanup disabled - too aggressive and kills parent processes
+# The Named Mutex + stale lock file cleanup is sufficient for singleton enforcement
+# If you need to force-kill stuck processes, use: python tools/kill_and_restart.py
 
 # Check singleton before doing anything expensive
 if not acquire_lock():
@@ -133,7 +263,7 @@ if not acquire_lock():
     print("=" * 50)
     print(f"Lock file: {LOCK_FILE}")
     print("If VoiceType is not visible, check system tray.")
-    print("If stuck, delete the lock file manually or restart computer.")
+    print("If stuck, run: python tools/kill_and_restart.py")
     sys.exit(1)
 
 # Register cleanup

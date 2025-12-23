@@ -26,12 +26,15 @@ _DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.
 
 
 def _log(msg: str):
-    """Write debug message to shared log file."""
+    """Write debug message to shared log file (pythonw.exe safe)."""
     import datetime
+    import sys
 
     ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
     line = f"[{ts}] {msg}\n"
-    print(line.strip())
+    # Guard for pythonw.exe (sys.stdout is None)
+    if sys.stdout is not None:
+        print(line.strip())
     try:
         with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
             f.write(line)
@@ -158,6 +161,9 @@ def main():
     bridge.voiceActivity.connect(ball.on_voice_activity)
     bridge.levelChanged.connect(ball.on_level_changed)  # Audio level for waveform
     bridge.commandExecuted.connect(ball.on_command_executed)  # Voice command feedback
+    bridge.highlightSaved.connect(
+        ball.on_highlight_saved
+    )  # Gold flash for highlight save
     bridge.error.connect(lambda msg: QMessageBox.warning(None, "VoiceType Error", msg))
 
     # Handle setting changes from backend (e.g., via wakeword commands)
@@ -172,7 +178,7 @@ def main():
         ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] [MAIN] on_setting_changed received: {setting} = {value}\n")
-        print(f"[UI] Setting changed via wakeword: {setting} = {value}")
+        _log(f"[UI] Setting changed via wakeword: {setting} = {value}")
         if setting == "auto_send":
             action_auto_send.setChecked(value)
             ball.set_auto_send(value)  # Update floating ball color indicator
@@ -199,7 +205,7 @@ def main():
         from .mock_backend import MockBackend
 
         backend = MockBackend(bridge)
-        print("VoiceType Qt Frontend Started (Demo Mode - Floating Ball)")
+        _log("VoiceType Qt Frontend Started (Demo Mode - Floating Ball)")
     else:
         # Real backend
         try:
@@ -216,14 +222,14 @@ def main():
                 config_hotkey = config.get("general", {}).get("hotkey", "")
                 if config_hotkey:
                     actual_hotkey = config_hotkey.lower()
-                    print(f"[VoiceType] Using hotkey from config: {actual_hotkey}")
+                    _log(f"[VoiceType] Using hotkey from config: {actual_hotkey}")
             except Exception as e:
-                print(f"[VoiceType] Could not read hotkey from config: {e}")
+                _log(f"[VoiceType] Could not read hotkey from config: {e}")
 
             backend = VoiceTypeApp(hotkey=actual_hotkey)
             backend.set_bridge(bridge)
             backend.start()
-            print(f"VoiceType Qt Frontend Started (Hotkey: {actual_hotkey})")
+            _log(f"VoiceType Qt Frontend Started (Hotkey: {actual_hotkey})")
 
             # Check start_active setting - if False, disable hotkey listening
             # (reuse config already loaded above)
@@ -232,7 +238,7 @@ def main():
                 if not start_active:
                     # Enter sleeping mode (UI shows dimmed, wakeword still works)
                     backend.set_sleeping(True)
-                    print("[VoiceType] Started in sleeping mode (start_active=False)")
+                    _log("[VoiceType] Started in sleeping mode (start_active=False)")
                 else:
                     # CRITICAL FIX: Explicitly ensure system is fully active
                     # Issue: PopupMenu emits enableToggled(True) during __init__,
@@ -261,7 +267,7 @@ def main():
                             ball._popup_menu.toggle.setChecked(True)
                             ball._popup_menu.toggle.blockSignals(False)
                             _log("[STARTUP] Toggle switch synced to ON")
-                        print("[VoiceType] System fully activated (start_active=True)")
+                        _log("[VoiceType] System fully activated (start_active=True)")
                         _log("[STARTUP] System fully activated!")
 
                     def _auto_start_recording():
@@ -270,16 +276,16 @@ def main():
                         if hasattr(backend, "toggle_recording"):
                             backend.toggle_recording()
                             _log("[STARTUP] Recording started automatically!")
-                            print("[VoiceType] Recording started automatically")
+                            _log("[VoiceType] Recording started automatically")
 
                     # Use 500ms delay to ensure all components are ready
                     # (100ms was sometimes too short on slower machines)
                     QTimer.singleShot(500, _ensure_active_state)
                     # Auto-start recording 200ms after activation
                     QTimer.singleShot(700, _auto_start_recording)
-                    print("[VoiceType] Started in active mode (start_active=True)")
+                    _log("[VoiceType] Started in active mode (start_active=True)")
             except Exception as e:
-                print(f"[VoiceType] Could not read start_active setting: {e}")
+                _log(f"[VoiceType] Could not read start_active setting: {e}")
                 # Default: emit IDLE state after event loop starts
                 QTimer.singleShot(100, lambda: bridge.emit_state("IDLE"))
         except Exception as e:
@@ -326,7 +332,7 @@ def main():
         _log(
             f"[MAIN] Type name check: {action.type.name if hasattr(action.type, 'name') else 'N/A'}"
         )
-        print(f"[UI] Action triggered: {action.type}, id={action.request_id}")
+        _log(f"[UI] Action triggered: {action.type}, id={action.request_id}")
 
         if action.type == ActionType.SHOW_TRANSLATION:
             try:
@@ -334,6 +340,21 @@ def main():
                 _log(
                     f"[MAIN] Calling show_loading with {len(action.source_text)} chars"
                 )
+                # RAW DEBUG: Write directly to file before calling
+                try:
+                    from pathlib import Path
+
+                    _raw_log = (
+                        Path(__file__).parent.parent.parent
+                        / "DebugLog"
+                        / "wakeword_debug.log"
+                    )
+                    with open(_raw_log, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"[RAW] MAIN: About to call translation_popup.show_loading()\n"
+                        )
+                except Exception:
+                    pass
                 translation_popup.show_loading(action.source_text, action.request_id)
                 _log("[MAIN] show_loading called OK")
 
@@ -381,7 +402,7 @@ def main():
                 request_id=action.request_id,
                 initial_question=action.initial_question,
             )
-            print(
+            _log(
                 f"[UI] ChatAction: opened chat window with {len(action.context_text)} chars"
             )
 
@@ -435,40 +456,40 @@ def main():
             # Use Qt's clipboard (always available) instead of pyperclip
             clipboard = QApplication.clipboard()
             clipboard.setText(translated_text)
-            print(
+            _log(
                 f"[UI] Clipboard translation finished: {len(translated_text)} chars copied"
             )
             tray.showMessage(
                 "VoiceType", "已复制到剪切板", QSystemTrayIcon.Information, 2000
             )
         except Exception as e:
-            print(f"[UI] Failed to copy to clipboard: {e}")
+            _log(f"[UI] Failed to copy to clipboard: {e}")
             tray.showMessage(
                 "VoiceType", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000
             )
 
     def on_clipboard_translation_error(request_id: str, error_msg: str):
         """Handle clipboard translation error."""
-        print(f"[UI] Clipboard translation error: {error_msg}")
+        _log(f"[UI] Clipboard translation error: {error_msg}")
         tray.showMessage(
             "VoiceType", f"翻译失败: {error_msg}", QSystemTrayIcon.Warning, 3000
         )
 
     def on_translation_finished(request_id: str, translated_text: str):
         """Handle translation completion."""
-        print(f"[UI] Translation finished: {request_id}")
+        _log(f"[UI] Translation finished: {request_id}")
         translation_popup.show_result(translated_text, request_id)
 
     def on_translation_error(request_id: str, error_msg: str):
         """Handle translation error."""
-        print(f"[UI] Translation error: {request_id} - {error_msg}")
+        _log(f"[UI] Translation error: {request_id} - {error_msg}")
         translation_popup.show_error(error_msg, request_id)
 
     def on_copy_translation(text: str):
         """Handle copy request from translation popup."""
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
-        print(f"[UI] Translation copied to clipboard: {text[:50]}...")
+        _log(f"[UI] Translation copied to clipboard: {text[:50]}...")
 
     # =========================================================================
     # AI Chat LLM handling
@@ -516,19 +537,19 @@ def main():
 
     def on_chat_finished(request_id: str, final_content: str):
         """Handle LLM completion."""
-        print(f"[UI] Chat finished: {len(final_content)} chars")
+        _log(f"[UI] Chat finished: {len(final_content)} chars")
         ai_chat_window.update_response(final_content, is_final=True)
 
     def on_chat_error(request_id: str, error_msg: str):
         """Handle LLM error."""
-        print(f"[UI] Chat error: {error_msg}")
+        _log(f"[UI] Chat error: {error_msg}")
         ai_chat_window.show_error(error_msg)
 
     def on_chat_insert_requested(text: str):
         """Handle insert request from chat window."""
         if hasattr(backend, "output_injector"):
             backend.output_injector.insert_text(text)
-            print(f"[UI] Chat response inserted: {text[:50]}...")
+            _log(f"[UI] Chat response inserted: {text[:50]}...")
 
     # Connect chat window signals
     def on_chat_send_wrapper():
@@ -576,7 +597,7 @@ def main():
 
     # Handle enable toggle from popup menu
     def on_enable_toggled(enabled):
-        print(f"[VoiceType] Enable toggled: {enabled}")
+        _log(f"[VoiceType] Enable toggled: {enabled}")
         if hasattr(backend, "set_enabled"):
             backend.set_enabled(enabled)
 
@@ -584,7 +605,7 @@ def main():
 
     # Handle mode change from popup menu
     def on_mode_changed(mode):
-        print(f"[VoiceType] Polish mode changed: {mode}")
+        _log(f"[VoiceType] Polish mode changed: {mode}")
         if hasattr(backend, "set_polish_mode"):
             backend.set_polish_mode(mode)
         # Sync settings window
@@ -594,7 +615,7 @@ def main():
 
     # Handle sleep toggle from popup menu (fallback button)
     def on_sleep_toggled(sleeping):
-        print(f"[VoiceType] Sleep toggled via UI: {sleeping}")
+        _log(f"[VoiceType] Sleep toggled via UI: {sleeping}")
         if hasattr(backend, "set_sleeping"):
             backend.set_sleeping(sleeping)
 
@@ -604,7 +625,7 @@ def main():
         # Handle translate output mode change from popup menu
         def on_translate_mode_changed(mode):
             """Handle translation output mode change from popup menu."""
-            print(f"[VoiceType] Translate output mode changed: {mode}")
+            _log(f"[VoiceType] Translate output mode changed: {mode}")
             try:
                 import json
                 from voicetype.core.utils import get_config_path
@@ -621,7 +642,7 @@ def main():
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, ensure_ascii=False, indent=2)
 
-                print(f"[VoiceType] Translate output mode saved: {mode}")
+                _log(f"[VoiceType] Translate output mode saved: {mode}")
                 tray.showMessage(
                     "VoiceType",
                     f"翻译输出模式: {'弹窗显示' if mode == 'popup' else '复制到剪贴板'}",
@@ -629,7 +650,7 @@ def main():
                     1500,
                 )
             except Exception as e:
-                print(f"[VoiceType] Failed to save translate mode: {e}")
+                _log(f"[VoiceType] Failed to save translate mode: {e}")
 
         ball._popup_menu.translateModeChanged.connect(on_translate_mode_changed)
 
@@ -650,27 +671,88 @@ def main():
     if hasattr(backend, "get_polish_mode"):
         initial_mode = backend.get_polish_mode()
         ball.set_polish_mode(initial_mode)
-        print(f"[VoiceType] Initial polish mode: {initial_mode}")
+        _log(f"[VoiceType] Initial polish mode: {initial_mode}")
 
     def cleanup_and_quit():
         """Cleanup backend before quitting."""
-        print("[VoiceType] Cleaning up and quitting...")
-        # Hide tray icon first to prevent ghost icons on Windows
-        tray.hide()
+        import threading
+        import os
+
+        _log("[VoiceType] Cleaning up and quitting...")
+
+        # Step 1: Hide tray icon first to prevent ghost icons on Windows
+        try:
+            tray.hide()
+        except Exception as e:
+            _log(f"[VoiceType] Tray hide error (ignored): {e}")
+
+        # Step 2: Stop backend (ASR, audio capture, hotkey listener)
         if hasattr(backend, "stop"):
-            backend.stop()
-        app.quit()
+            try:
+                backend.stop()
+                _log("[VoiceType] Backend stopped successfully")
+            except Exception as e:
+                _log(f"[VoiceType] Backend stop error: {e}")
+
+        # Step 3: Wait briefly for threads to terminate
+        import time
+
+        time.sleep(0.3)
+
+        # Step 4: Check for remaining non-daemon threads
+        remaining = [
+            t for t in threading.enumerate() if not t.daemon and t.name != "MainThread"
+        ]
+        if remaining:
+            _log(
+                f"[VoiceType] Warning: {len(remaining)} non-daemon threads still running: {[t.name for t in remaining]}"
+            )
+
+        # Step 5: Quit Qt application
+        try:
+            app.quit()
+        except Exception as e:
+            _log(f"[VoiceType] App quit error (ignored): {e}")
+
+        _log("[VoiceType] Cleanup complete")
+
+        # Step 6: Force exit if still running after 1 second
+        # (handles stubborn threads that don't respond to app.quit)
+        def force_exit():
+            time.sleep(1.0)
+            remaining_final = [
+                t
+                for t in threading.enumerate()
+                if not t.daemon and t.name != "MainThread"
+            ]
+            if remaining_final:
+                _log(
+                    f"[VoiceType] Force exiting due to stuck threads: {[t.name for t in remaining_final]}"
+                )
+                os._exit(0)
+
+        force_thread = threading.Thread(target=force_exit, daemon=True)
+        force_thread.start()
 
     action_quit.triggered.connect(cleanup_and_quit)
 
     # Register cleanup for signal handling and atexit
     def signal_handler(signum, frame):
-        print(f"[VoiceType] Received signal {signum}, cleaning up...")
+        _log(f"[VoiceType] Received signal {signum}, cleaning up...")
         cleanup_and_quit()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    atexit.register(lambda: backend.stop() if hasattr(backend, "stop") else None)
+
+    def atexit_cleanup():
+        """Safe cleanup on process exit."""
+        try:
+            if hasattr(backend, "stop"):
+                backend.stop()
+        except Exception as e:
+            _log(f"[VoiceType] atexit cleanup error (ignored): {e}")
+
+    atexit.register(atexit_cleanup)
 
     # Settings saved -> reload backend config and sync popup menu
     def on_settings_saved(config):
@@ -688,20 +770,20 @@ def main():
         # Sync popup menu with saved mode
         saved_mode = config.get("polish_mode", "fast")
         ball.set_polish_mode(saved_mode)
-        print(f"[VoiceType] Settings saved, polish mode synced: {saved_mode}")
+        _log(f"[VoiceType] Settings saved, polish mode synced: {saved_mode}")
 
     settings.settingsSaved.connect(on_settings_saved)
 
     # Show floating ball
     ball.show()
 
-    print("VoiceType Floating Ball is now visible.")
-    print("  - Left-click: Toggle recording")
-    print("  - Right-click: Show popup menu")
-    print("  - Middle-click: Lock position")
-    print("  - Drag: Move ball (when unlocked)")
-    print("  - System tray single-click: Show history (Ctrl+1-9 to copy)")
-    print("  - System tray double-click: Open hotwords settings")
+    _log("VoiceType Floating Ball is now visible.")
+    _log("  - Left-click: Toggle recording")
+    _log("  - Right-click: Show popup menu")
+    _log("  - Middle-click: Lock position")
+    _log("  - Drag: Move ball (when unlocked)")
+    _log("  - System tray single-click: Show history (Ctrl+1-9 to copy)")
+    _log("  - System tray double-click: Open hotwords settings")
 
     return app.exec()
 

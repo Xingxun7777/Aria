@@ -60,25 +60,41 @@ class SoundManager:
         if event in sound_map:
             sound_map[event]()
 
+    def _play_wav(self, filename: str):
+        """Play a wav file from the sounds directory."""
+        wav_path = self._sounds_dir / filename
+        if wav_path.exists():
+            if sys.platform == "win32":
+                try:
+                    import winsound
+
+                    winsound.PlaySound(
+                        str(wav_path), winsound.SND_ASYNC | winsound.SND_FILENAME
+                    )
+                except Exception:
+                    self._beep(600, 50)  # Fallback to beep
+        else:
+            self._beep(600, 50)  # Fallback if file missing
+
     def _play_start(self):
-        """Play start recording sound (short, subtle)."""
-        self._beep(800, 50)  # High short beep
+        """Play start recording sound - 'The Inhale' (G4→C5 slide)."""
+        self._play_wav("start.wav")
 
     def _play_stop(self):
-        """Play stop recording sound (short, subtle)."""
-        self._beep(600, 50)  # Lower short beep
+        """Play stop recording sound - 'The Snap' (C5→G4 slide)."""
+        self._play_wav("stop.wav")
 
     def _play_success(self):
         """Play success sound - DISABLED for silent operation."""
         pass  # No sound
 
     def _play_lock(self):
-        """Play lock sound - DISABLED for silent operation."""
-        pass  # No sound
+        """Play lock sound - 'The Latch' (double pulse)."""
+        self._play_wav("lock.wav")
 
     def _play_unlock(self):
-        """Play unlock sound - DISABLED for silent operation."""
-        pass  # No sound
+        """Play unlock sound - same as lock for consistency."""
+        self._play_wav("lock.wav")
 
     def _play_error(self):
         """Play error sound - DISABLED for silent operation."""
