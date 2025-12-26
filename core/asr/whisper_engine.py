@@ -88,11 +88,30 @@ class WhisperEngine(ASREngine):
                 logger.info(f"Loading faster-whisper model: {self.config.model_name}")
                 start = time.time()
 
-                self._model = WhisperModel(
-                    self.config.model_name,
-                    device=self.config.device,
-                    compute_type=self.config.compute_type,
-                )
+                device = self.config.device
+                compute_type = self.config.compute_type
+
+                try:
+                    self._model = WhisperModel(
+                        self.config.model_name,
+                        device=device,
+                        compute_type=compute_type,
+                    )
+                except RuntimeError as e:
+                    # CUDA fallback: 如果 GPU 不可用，自动切换到 CPU
+                    if device == "cuda" and (
+                        "CUDA" in str(e) or "cudnn" in str(e).lower()
+                    ):
+                        logger.warning(f"CUDA 不可用 ({e})，自动切换到 CPU 模式")
+                        device = "cpu"
+                        compute_type = "int8"  # CPU 推荐使用 int8
+                        self._model = WhisperModel(
+                            self.config.model_name,
+                            device=device,
+                            compute_type=compute_type,
+                        )
+                    else:
+                        raise
 
                 self._load_time = time.time() - start
                 logger.info(f"faster-whisper model loaded in {self._load_time:.1f}s")

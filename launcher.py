@@ -480,13 +480,50 @@ try:
             print("FireRedASR model pre-loaded!")
         elif asr_engine == "whisper":
             log("Pre-loading Whisper model (before Qt imports)...")
-            emit_progress("funasr_model", "加载语音模型中...", 20)
             print("Pre-loading Whisper model (before Qt)...")
+
+            # Step 0: 检查 faster-whisper 是否已安装
+            try:
+                import faster_whisper  # noqa: F401
+            except ImportError:
+                log("faster-whisper not installed, cannot use Whisper engine")
+                emit_progress("whisper_error", "Whisper 引擎依赖未安装", 50)
+                raise ImportError(
+                    "faster-whisper not installed. Run: pip install faster-whisper"
+                )
+
+            # 设置 HuggingFace 国内镜像（加速中国用户下载）
+            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            log("Set HF_ENDPOINT to hf-mirror.com for China users")
+
             from voicetype.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+            from pathlib import Path
 
             whisper_cfg = config.get("whisper", {})
+            model_name = whisper_cfg.get("model_name", "large-v3-turbo")
+
+            # 检测模型是否已存在
+            cache_dir = (
+                Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+                / "hub"
+            )
+            model_pattern = f"models--Systran--faster-whisper-{model_name}"
+            model_exists = (cache_dir / model_pattern).exists()
+
+            if model_exists:
+                emit_progress(
+                    "whisper_load", f"加载 Whisper 模型 ({model_name})...", 20
+                )
+            else:
+                emit_progress(
+                    "whisper_download",
+                    f"首次使用，正在下载 Whisper 模型 ({model_name})...\n"
+                    "这可能需要 2-5 分钟，请耐心等待",
+                    20,
+                )
+
             pre_config = WhisperConfig(
-                model_name=whisper_cfg.get("model_name", "large-v3-turbo"),
+                model_name=model_name,
                 device=whisper_cfg.get("device", "cuda"),
                 language=whisper_cfg.get("language", "zh"),
                 compute_type=whisper_cfg.get("compute_type", "float16"),

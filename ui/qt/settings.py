@@ -48,6 +48,161 @@ from . import styles
 from voicetype.core.hotword import DEFAULT_POLISH_PROMPT
 from voicetype.core.utils.phonetic import get_matcher
 
+# Whisper 模型大小参考（用于提示用户）
+WHISPER_MODEL_SIZES = {
+    "large-v3-turbo": "1.5GB",
+    "large-v3": "3GB",
+    "medium": "1.5GB",
+    "small": "500MB",
+}
+
+
+def check_whisper_model_exists(model_name: str) -> bool:
+    """检查 Whisper 模型是否已下载到本地缓存。"""
+    import os
+
+    # faster-whisper 默认缓存路径
+    cache_dir = (
+        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    )
+
+    # 模型目录名称模式
+    model_patterns = {
+        "large-v3-turbo": "models--Systran--faster-whisper-large-v3-turbo",
+        "large-v3": "models--Systran--faster-whisper-large-v3",
+        "medium": "models--Systran--faster-whisper-medium",
+        "small": "models--Systran--faster-whisper-small",
+    }
+
+    pattern = model_patterns.get(model_name)
+    if pattern and (cache_dir / pattern).exists():
+        return True
+    return False
+
+
+# Whisper 模型大小（字节，用于磁盘空间检测）
+WHISPER_MODEL_BYTES = {
+    "large-v3-turbo": 1.6 * 1024 * 1024 * 1024,  # 1.6GB
+    "large-v3": 3.2 * 1024 * 1024 * 1024,  # 3.2GB
+    "medium": 1.6 * 1024 * 1024 * 1024,  # 1.6GB
+    "small": 0.5 * 1024 * 1024 * 1024,  # 0.5GB
+}
+
+
+def check_disk_space_for_whisper(model_name: str) -> tuple[bool, str]:
+    """
+    检查磁盘空间是否足够下载 Whisper 模型。
+
+    Returns:
+        (is_sufficient, message): 是否足够，提示信息
+    """
+    import os
+    import shutil
+
+    # 获取缓存目录
+    cache_dir = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+
+    # 确保目录存在（否则无法获取磁盘信息）
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # 获取磁盘使用情况
+        disk_usage = shutil.disk_usage(cache_dir)
+        free_bytes = disk_usage.free
+        free_gb = free_bytes / (1024 * 1024 * 1024)
+
+        # 获取模型所需空间（加 20% 余量）
+        required_bytes = WHISPER_MODEL_BYTES.get(model_name, 1.6 * 1024 * 1024 * 1024)
+        required_with_margin = required_bytes * 1.2
+        required_gb = required_with_margin / (1024 * 1024 * 1024)
+
+        if free_bytes >= required_with_margin:
+            return True, f"可用空间: {free_gb:.1f}GB"
+        else:
+            return False, (
+                f"磁盘空间不足！\n"
+                f"需要: {required_gb:.1f}GB\n"
+                f"可用: {free_gb:.1f}GB\n"
+                f"缓存目录: {cache_dir}"
+            )
+    except Exception as e:
+        # 无法检测时默认允许继续
+        return True, f"无法检测磁盘空间: {e}"
+
+
+def check_faster_whisper_installed() -> bool:
+    """检查 faster-whisper 是否已安装。"""
+    try:
+        import faster_whisper  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def install_faster_whisper(parent=None) -> tuple[bool, str]:
+    """
+    动态安装 faster-whisper 包。
+
+    Args:
+        parent: 父窗口（用于显示进度对话框）
+
+    Returns:
+        (success, message): 是否成功，消息
+    """
+    import subprocess
+    import sys
+
+    # 显示安装进度对话框
+    from PySide6.QtWidgets import QProgressDialog
+    from PySide6.QtCore import Qt
+
+    progress = QProgressDialog(
+        "正在安装 Whisper 引擎依赖...\n这可能需要 1-2 分钟",
+        None,  # 不显示取消按钮
+        0,
+        0,  # 不确定进度
+        parent,
+    )
+    progress.setWindowTitle("安装依赖")
+    progress.setWindowModality(Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.show()
+
+    try:
+        # 使用当前 Python 解释器的 pip 安装
+        # 使用清华镜像加速
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "faster-whisper",
+                "-i",
+                "https://pypi.tuna.tsinghua.edu.cn/simple",
+                "--quiet",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 分钟超时
+        )
+
+        progress.close()
+
+        if result.returncode == 0:
+            return True, "faster-whisper 安装成功"
+        else:
+            error_msg = result.stderr or result.stdout or "未知错误"
+            return False, f"安装失败: {error_msg}"
+
+    except subprocess.TimeoutExpired:
+        progress.close()
+        return False, "安装超时（超过 5 分钟）"
+    except Exception as e:
+        progress.close()
+        return False, f"安装出错: {e}"
+
 
 def get_audio_input_devices() -> list:
     """
@@ -307,7 +462,7 @@ class SettingsWindow(QMainWindow):
         list_header = QLabel("<b>词汇列表</b>")
         layout.addWidget(list_header)
 
-        guide_label = QLabel("调整权重：0=禁用，1=低，2=正常，3=高")
+        guide_label = QLabel("权重: 0=Off, 0.3=Min, 0.5=Low, 1=Normal, 1.5=High, 2=Max")
         guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
         layout.addWidget(guide_label)
 
@@ -316,8 +471,8 @@ class SettingsWindow(QMainWindow):
         self.vocab_table.setHorizontalHeaderLabels(["词汇", "权重", ""])
         self.vocab_table.horizontalHeader().setStretchLastSection(False)
         self.vocab_table.setColumnWidth(0, 200)  # Word column
-        self.vocab_table.setColumnWidth(1, 180)  # Weight slider column
-        self.vocab_table.setColumnWidth(2, 50)  # Weight value display
+        self.vocab_table.setColumnWidth(1, 150)  # Weight dropdown column
+        self.vocab_table.setColumnWidth(2, 10)  # Minimal (unused)
         self.vocab_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.vocab_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.vocab_table.setMinimumHeight(200)
@@ -398,41 +553,59 @@ class SettingsWindow(QMainWindow):
         return w
 
     def _add_vocab_row(self, word: str, weight: float = 1.0):
-        """Add a vocabulary row with word and weight slider."""
+        """Add a vocabulary row with word and weight dropdown."""
         row = self.vocab_table.rowCount()
         self.vocab_table.insertRow(row)
+        self.vocab_table.setRowHeight(row, 36)  # Ensure enough height for ComboBox
 
         # Word column (read-only)
         word_item = QTableWidgetItem(word)
         word_item.setFlags(word_item.flags() & ~Qt.ItemIsEditable)
         self.vocab_table.setItem(row, 0, word_item)
 
-        # Clamp weight to valid range (0-3), convert old float values
-        weight = max(0, min(3, int(weight + 0.5)))
+        # Weight options: value -> display text
+        weight_options = [
+            (0, "0 - Off"),
+            (0.3, "0.3 - Min"),
+            (0.5, "0.5 - Low"),
+            (1.0, "1 - Normal"),
+            (1.5, "1.5 - High"),
+            (2.0, "2 - Max"),
+        ]
 
-        # Weight slider (0-3 range: 0=off, 1=low, 2=normal, 3=high)
-        slider = QSlider(Qt.Horizontal)
-        slider.setMinimum(0)
-        slider.setMaximum(3)
-        slider.setValue(weight)
-        slider.setTickPosition(QSlider.TicksBelow)
-        slider.setTickInterval(1)
-        self.vocab_table.setCellWidget(row, 1, slider)
+        # Find closest weight option
+        closest_idx = 3  # Default to "1 - 正常"
+        min_diff = float("inf")
+        for i, (val, _) in enumerate(weight_options):
+            diff = abs(val - weight)
+            if diff < min_diff:
+                min_diff = diff
+                closest_idx = i
 
-        # Weight value display
-        weight_label = QLabel(str(weight))
-        weight_label.setAlignment(Qt.AlignCenter)
-        self.vocab_table.setCellWidget(row, 2, weight_label)
+        # Weight dropdown (ComboBox)
+        combo = QComboBox()
+        combo.setMinimumWidth(120)
+        combo.setMinimumHeight(28)
+        # Add items with display text only
+        for val, text in weight_options:
+            combo.addItem(text)
+        combo.setCurrentIndex(closest_idx)
+        # Store mapping for later use
+        combo.setProperty("weight_values", [v for v, _ in weight_options])
+        self.vocab_table.setCellWidget(row, 1, combo)
 
-        # Connect slider to update label and store weight
-        def on_slider_change(value, w=word, lbl=weight_label):
-            lbl.setText(str(value))
+        # Empty placeholder for column 2 (previously used for label)
+        self.vocab_table.setCellWidget(row, 2, QLabel(""))
+
+        # Connect dropdown to store weight
+        def on_combo_change(index, w=word, opts=weight_options):
+            value = opts[index][0]  # Get actual float value from options
             self._hotword_weights[w] = value
 
-        slider.valueChanged.connect(on_slider_change)
+        combo.currentIndexChanged.connect(on_combo_change)
 
         # Store initial weight
-        self._hotword_weights[word] = weight
+        self._hotword_weights[word] = weight_options[closest_idx][0]
 
     def _add_prompt_word(self):
         text, ok = QInputDialog.getText(
@@ -666,6 +839,12 @@ class SettingsWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "连接失败", message)
 
+    def _on_engine_changed(self, index: int):
+        """Handle ASR engine selection change - show/hide corresponding settings."""
+        is_whisper = index == 1
+        self.funasr_group.setVisible(not is_whisper)
+        self.whisper_group.setVisible(is_whisper)
+
     def _on_wakeword_text_changed(self, text: str):
         """Update pinyin hint when wakeword text changes."""
         if text.strip():
@@ -691,30 +870,79 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(QLabel("<h2>高级设置</h2>"))
 
-        # ASR settings (FunASR)
-        asr_group = QGroupBox("语音识别 (FunASR)")
-        asr_layout = QFormLayout(asr_group)
+        # === ASR Engine Selection ===
+        engine_group = QGroupBox("语音识别引擎")
+        engine_layout = QFormLayout(engine_group)
 
-        self.asr_model = QComboBox()
-        self.asr_model.addItems(
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["FunASR (推荐，中文优化)", "Whisper (多语言支持)"])
+        self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
+        engine_layout.addRow("引擎:", self.engine_combo)
+
+        engine_info = QLabel("切换引擎后需要重启应用")
+        engine_info.setStyleSheet("color: #ff8c00; font-size: 12px;")
+        engine_layout.addRow("", engine_info)
+
+        layout.addWidget(engine_group)
+
+        # === FunASR Settings (visible when FunASR selected) ===
+        self.funasr_group = QGroupBox("FunASR 设置")
+        funasr_layout = QFormLayout(self.funasr_group)
+
+        self.funasr_model = QComboBox()
+        self.funasr_model.addItems(
             [
                 "大模型 (paraformer-zh) - 推荐，准确度高",
                 "小模型 (SenseVoice) - 显存<8GB时使用",
             ]
         )
-        self.asr_model.setCurrentIndex(0)
-        asr_layout.addRow("模型:", self.asr_model)
+        self.funasr_model.setCurrentIndex(0)
+        funasr_layout.addRow("模型:", self.funasr_model)
 
-        self.asr_device = QComboBox()
-        self.asr_device.addItems(["cuda", "cpu"])
-        asr_layout.addRow("设备:", self.asr_device)
+        self.funasr_device = QComboBox()
+        self.funasr_device.addItems(["cuda", "cpu"])
+        funasr_layout.addRow("设备:", self.funasr_device)
 
-        # Model info label
-        model_info = QLabel("大模型约需3GB显存，小模型约需1.5GB显存")
-        model_info.setStyleSheet("color: #888; font-size: 12px;")
-        asr_layout.addRow("", model_info)
+        funasr_info = QLabel("大模型约需3GB显存，小模型约需1.5GB显存")
+        funasr_info.setStyleSheet("color: #888; font-size: 12px;")
+        funasr_layout.addRow("", funasr_info)
 
-        layout.addWidget(asr_group)
+        layout.addWidget(self.funasr_group)
+
+        # === Whisper Settings (visible when Whisper selected) ===
+        self.whisper_group = QGroupBox("Whisper 设置")
+        whisper_layout = QFormLayout(self.whisper_group)
+
+        self.whisper_model = QComboBox()
+        self.whisper_model.addItems(
+            [
+                "large-v3-turbo - 推荐，速度快",
+                "large-v3 - 最高准确度，较慢",
+                "medium - 中等，适合弱显卡",
+                "small - 快速，准确度较低",
+            ]
+        )
+        self.whisper_model.setCurrentIndex(0)
+        whisper_layout.addRow("模型:", self.whisper_model)
+
+        self.whisper_device = QComboBox()
+        self.whisper_device.addItems(["cuda", "cpu"])
+        whisper_layout.addRow("设备:", self.whisper_device)
+
+        self.whisper_compute = QComboBox()
+        self.whisper_compute.addItems(["float16 - 推荐", "int8 - 省显存"])
+        whisper_layout.addRow("精度:", self.whisper_compute)
+
+        whisper_info = QLabel("首次使用需下载模型（约1-3GB），请耐心等待")
+        whisper_info.setStyleSheet("color: #888; font-size: 12px;")
+        whisper_layout.addRow("", whisper_info)
+
+        layout.addWidget(self.whisper_group)
+        self.whisper_group.setVisible(False)  # Default: hidden
+
+        # Legacy compatibility: keep old names for save_config detection
+        self.asr_model = self.funasr_model
+        self.asr_device = self.funasr_device
 
         # VAD settings
         vad_group = QGroupBox("VAD (语音活动检测)")
@@ -838,19 +1066,51 @@ class SettingsWindow(QMainWindow):
         self.timeout.setValue(polish.get("timeout", 30))
 
         # === Advanced tab ===
+        # ASR engine selection
+        asr_engine = self.config.get("asr_engine", "funasr")
+        if asr_engine == "whisper":
+            self.engine_combo.setCurrentIndex(1)
+        else:
+            self.engine_combo.setCurrentIndex(0)
+        # Trigger visibility update
+        self._on_engine_changed(self.engine_combo.currentIndex())
+
         # FunASR settings
         funasr = self.config.get("funasr", {})
         funasr_model = funasr.get("model_name", "paraformer-zh")
         # Map model name to combo index (0=large/paraformer, 1=small/sensevoice)
         if "sensevoice" in funasr_model.lower():
-            self.asr_model.setCurrentIndex(1)
+            self.funasr_model.setCurrentIndex(1)
         else:
-            self.asr_model.setCurrentIndex(0)
+            self.funasr_model.setCurrentIndex(0)
 
         funasr_device = funasr.get("device", "cuda")
-        idx = self.asr_device.findText(funasr_device)
+        idx = self.funasr_device.findText(funasr_device)
         if idx >= 0:
-            self.asr_device.setCurrentIndex(idx)
+            self.funasr_device.setCurrentIndex(idx)
+
+        # Whisper settings
+        whisper = self.config.get("whisper", {})
+        whisper_model = whisper.get("model_name", "large-v3-turbo")
+        # Map model name to combo index
+        whisper_model_map = {
+            "large-v3-turbo": 0,
+            "large-v3": 1,
+            "medium": 2,
+            "small": 3,
+        }
+        self.whisper_model.setCurrentIndex(whisper_model_map.get(whisper_model, 0))
+
+        whisper_device = whisper.get("device", "cuda")
+        idx = self.whisper_device.findText(whisper_device)
+        if idx >= 0:
+            self.whisper_device.setCurrentIndex(idx)
+
+        whisper_compute = whisper.get("compute_type", "float16")
+        if "int8" in whisper_compute:
+            self.whisper_compute.setCurrentIndex(1)
+        else:
+            self.whisper_compute.setCurrentIndex(0)
 
         # VAD settings
         vad = self.config.get("vad", {})
@@ -885,7 +1145,9 @@ class SettingsWindow(QMainWindow):
         """Save configuration to hotwords.json."""
         # Track if restart-required settings changed
         restart_needed = False
+        old_engine = self.config.get("asr_engine", "funasr")
         old_funasr = self.config.get("funasr", {})
+        old_whisper = self.config.get("whisper", {})
         old_vad = self.config.get("vad", {})
 
         # === General tab ===
@@ -943,16 +1205,85 @@ class SettingsWindow(QMainWindow):
         self.config["polish"]["timeout"] = self.timeout.value()
         self.config["polish"]["prompt_template"] = self.prompt_edit.toPlainText()
 
+        # === Advanced tab - ASR Engine Selection ===
+        new_engine = "funasr" if self.engine_combo.currentIndex() == 0 else "whisper"
+        if old_engine != new_engine:
+            restart_needed = True
+
+        # 切换到 Whisper 时的完整检查流程
+        if new_engine == "whisper" and old_engine != "whisper":
+            whisper_model_map = ["large-v3-turbo", "large-v3", "medium", "small"]
+            whisper_model = whisper_model_map[self.whisper_model.currentIndex()]
+            model_size = WHISPER_MODEL_SIZES.get(whisper_model, "1.5GB")
+
+            # Step 1: 检查 faster-whisper 是否已安装
+            if not check_faster_whisper_installed():
+                reply = QMessageBox.question(
+                    self,
+                    "需要安装依赖",
+                    "切换到 Whisper 需要安装 faster-whisper 引擎。\n\n"
+                    "是否现在安装？（约 100MB，需要 1-2 分钟）",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    success, msg = install_faster_whisper(self)
+                    if not success:
+                        QMessageBox.critical(
+                            self,
+                            "安装失败",
+                            f"faster-whisper 安装失败:\n\n{msg}\n\n"
+                            "请检查网络连接后重试。",
+                        )
+                        return  # 安装失败，不保存配置
+                    else:
+                        QMessageBox.information(
+                            self, "安装成功", "Whisper 引擎依赖已安装成功！"
+                        )
+                else:
+                    # 用户取消安装，恢复引擎选择
+                    self.engine_combo.setCurrentIndex(0)  # 恢复为 FunASR
+                    return
+
+            # Step 2: 检查模型是否已存在
+            if not check_whisper_model_exists(whisper_model):
+                # Step 2a: 检查磁盘空间
+                has_space, space_msg = check_disk_space_for_whisper(whisper_model)
+
+                if not has_space:
+                    # 磁盘空间不足，显示警告
+                    QMessageBox.warning(
+                        self,
+                        "磁盘空间不足",
+                        f"无法下载 Whisper 模型:\n\n{space_msg}\n\n"
+                        "请清理磁盘空间后重试。",
+                    )
+                else:
+                    # Step 2b: 空间足够，显示下载提醒
+                    QMessageBox.information(
+                        self,
+                        "首次使用 Whisper",
+                        f"下次启动时将自动下载 Whisper 模型:\n\n"
+                        f"模型: {whisper_model}\n"
+                        f"大小: 约 {model_size}\n"
+                        f"预计时间: 2-5 分钟\n\n"
+                        "请确保网络连接正常。\n"
+                        "(已自动配置国内镜像加速)",
+                    )
+
+        self.config["asr_engine"] = new_engine
+
         # === Advanced tab - FunASR ===
         if "funasr" not in self.config:
             self.config["funasr"] = {}
 
         # Map combo index to model name
-        asr_model_idx = self.asr_model.currentIndex()
+        funasr_model_idx = self.funasr_model.currentIndex()
         new_funasr_model = (
-            "paraformer-zh" if asr_model_idx == 0 else "iic/SenseVoiceSmall"
+            "paraformer-zh" if funasr_model_idx == 0 else "iic/SenseVoiceSmall"
         )
-        new_funasr_device = self.asr_device.currentText()
+        new_funasr_device = self.funasr_device.currentText()
 
         if (
             old_funasr.get("model_name") != new_funasr_model
@@ -962,8 +1293,30 @@ class SettingsWindow(QMainWindow):
 
         self.config["funasr"]["model_name"] = new_funasr_model
         self.config["funasr"]["device"] = new_funasr_device
-        # Ensure asr_engine is set to funasr
-        self.config["asr_engine"] = "funasr"
+
+        # === Advanced tab - Whisper ===
+        if "whisper" not in self.config:
+            self.config["whisper"] = {}
+
+        # Map combo index to model name
+        whisper_model_map = ["large-v3-turbo", "large-v3", "medium", "small"]
+        new_whisper_model = whisper_model_map[self.whisper_model.currentIndex()]
+        new_whisper_device = self.whisper_device.currentText()
+        new_whisper_compute = (
+            "int8" if self.whisper_compute.currentIndex() == 1 else "float16"
+        )
+
+        if (
+            old_whisper.get("model_name") != new_whisper_model
+            or old_whisper.get("device") != new_whisper_device
+            or old_whisper.get("compute_type") != new_whisper_compute
+        ):
+            restart_needed = True
+
+        self.config["whisper"]["model_name"] = new_whisper_model
+        self.config["whisper"]["device"] = new_whisper_device
+        self.config["whisper"]["compute_type"] = new_whisper_compute
+        self.config["whisper"]["language"] = "zh"  # Default to Chinese
 
         # === Advanced tab - VAD ===
         if "vad" not in self.config:

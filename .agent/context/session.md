@@ -86,3 +86,56 @@ Wakeword "遥遥记一下" + content
     → bridge.emit_highlight_saved()
     → floating_ball.on_highlight_saved() (gold flash)
 ```
+
+---
+
+## Session: 2025-12-26 12:00
+
+### Completed
+- [x] 完成 ASR 引擎切换功能审计（FunASR ↔ Whisper）
+- [x] 修复 settings.py 硬编码 `asr_engine = "funasr"` 导致切换无效的 bug
+- [x] 添加 HuggingFace 国内镜像加速（hf-mirror.com）
+- [x] 实现 faster-whisper 动态安装（用户切换时自动安装依赖）
+- [x] 添加 CUDA fallback 机制（GPU 不可用时自动切换 CPU）
+- [x] 添加磁盘空间预检测（下载前检查空间是否充足）
+- [x] 添加首次使用 Whisper 弹窗提醒
+- [x] 更新热词表（添加 FunASR、Whisper 等术语）
+- [x] 优化 DeepSeek polish prompt（更敢于纠正 ASR 错误）
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `ui/qt/settings.py` | 动态安装 faster-whisper + 磁盘空间检测 + 首次使用提醒弹窗 |
+| `launcher.py` | HF_ENDPOINT 镜像 + 进度文案优化 + 依赖检测 |
+| `core/asr/whisper_engine.py` | CUDA fallback（GPU→CPU 自动切换） |
+| `config/hotwords.json` | 新增 FunASR/Whisper 热词 + 优化 polish prompt |
+| `config/hotwords_prompt_backup.txt` | 原始 prompt 备份 |
+
+### Key Decisions
+- **动态安装 vs 预装**: 选择动态安装 faster-whisper，避免增加 300MB 安装包体积
+- **镜像策略**: 使用 hf-mirror.com 公益镜像，对中国用户友好
+- **Polish Prompt**: 从"最小改动"改为"必须修复"语气，让 DeepSeek 更敢纠错
+
+### Technical Findings
+1. **FunASR/Whisper 切换**: HotWord 适配层已存在（app.py:633-650），但 settings.py 硬编码了引擎
+2. **faster-whisper 安装**: 使用 `subprocess.run([sys.executable, "-m", "pip", ...])` 动态安装
+3. **CUDA fallback**: 捕获 RuntimeError，检查 "CUDA" 或 "cudnn" 关键词后切换 CPU+int8
+4. **HuggingFace 缓存路径**: `~/.cache/huggingface/hub/models--Systran--faster-whisper-{model}`
+5. **DeepSeek 保守问题**: 原 prompt "能不改就不改" 导致很多 ASR 错误不敢修正
+
+### Pending Tasks
+1. [ ] 测试新 polish prompt 效果（需要用户实际使用验证）
+2. [ ] 考虑离线版（预打包 Whisper 模型）作为可选方案
+3. [ ] 清理调试代码（用户确认稳定后）
+
+### Known Issues
+- Polish 对同音字纠错（如"整齐→整体"）仍需依赖上下文判断，可能不够准确
+
+---
+
+## Warmup Hints
+<!-- 预热系统读取此区块 -->
+focus: config/hotwords.json
+mode: standard
+pending_research: DeepSeek polish 效果验证
+debug_context: ASR 错误纠正率待观察

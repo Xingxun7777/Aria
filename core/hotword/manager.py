@@ -206,6 +206,7 @@ class HotWordManager:
         - Natural sentence structure for better Whisper bias
         - Explicit instruction to keep English casing
         - Important hotwords at the start (224 token limit)
+        - Only includes hotwords with weight >= 0.5 (low weight = excluded)
         """
         if not self.config.enable_initial_prompt:
             logger.info("initial_prompt disabled by config")
@@ -217,9 +218,36 @@ class HotWordManager:
         if not self.config.prompt_words:
             return ""
 
+        # Load weights to filter low-priority hotwords
+        weights = {}
+        if self.config.config_path:
+            try:
+                with open(self.config.config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                weights = data.get("hotword_weights", {})
+            except Exception:
+                pass
+
+        # Filter: only include words with weight >= 0.5
+        # This allows users to set low weight (0.3) to exclude from Whisper prompt
+        # while keeping them available for DeepSeek polish reference
+        MIN_WEIGHT_FOR_PROMPT = 0.5
+        filtered_words = [
+            word
+            for word in self.config.prompt_words
+            if weights.get(word, 1.0) >= MIN_WEIGHT_FOR_PROMPT
+        ]
+
+        if not filtered_words:
+            logger.info("No hotwords with weight >= 0.5, skipping initial_prompt")
+            return ""
+
         # Build optimized prompt format
         # Use comma-separated list instead of Chinese punctuation for better tokenization
-        vocab_str = ", ".join(self.config.prompt_words)
+        vocab_str = ", ".join(filtered_words)
+        logger.debug(
+            f"Whisper prompt includes {len(filtered_words)}/{len(self.config.prompt_words)} hotwords (weight >= {MIN_WEIGHT_FOR_PROMPT})"
+        )
 
         # Natural sentence with explicit instruction to preserve English
         prompt_parts = []
@@ -242,11 +270,31 @@ class HotWordManager:
         """Get AI polisher instance for quality mode (lazy init)."""
         if self.config.polish_config and self.config.polish_config.enabled:
             if self._polisher is None:
-                # Inject hotwords and domain_context into polish config
-                # Use hotwords (primary) merged with prompt_words (includes legacy)
-                self.config.polish_config.hotwords = self.config.prompt_words
+                # Load weights to filter disabled hotwords (weight=0)
+                weights = {}
+                if self.config.config_path:
+                    try:
+                        with open(self.config.config_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        weights = data.get("hotword_weights", {})
+                    except Exception:
+                        pass
+
+                # Filter: exclude weight=0 (disabled) from polish hotwords
+                # weight > 0 goes to DeepSeek (even low weights like 0.3)
+                # This allows "soft disable" for Whisper while keeping DeepSeek correction
+                filtered_hotwords = [
+                    word
+                    for word in self.config.prompt_words
+                    if weights.get(word, 1.0) > 0
+                ]
+
+                self.config.polish_config.hotwords = filtered_hotwords
                 self.config.polish_config.domain_context = self.config.domain_context
                 self._polisher = AIPolisher(self.config.polish_config)
+                logger.debug(
+                    f"Polish hotwords: {len(filtered_hotwords)}/{len(self.config.prompt_words)} (excluded weight=0)"
+                )
             return self._polisher
         return None
 
@@ -340,16 +388,28 @@ class HotWordManager:
             except Exception:
                 pass
 
-        # Weight mapping: UI value -> FunASR score
-        # 0=disabled, 1=low(5), 2=normal(10), 3=high(20)
-        weight_to_score = {0: 0, 1: 5, 2: 10, 3: 20}
+        # Weight to FunASR score mapping (supports float values)
+        # 0=disabled, 0.3=minimal(3), 0.5=low(5), 1.0=normal(10), 1.5=higher(15), 2.0=high(20)
+        def weight_to_score(w: float) -> int:
+            if w <= 0:
+                return 0  # Disabled
+            elif w <= 0.3:
+                return 3  # Minimal
+            elif w <= 0.5:
+                return 5  # Low
+            elif w <= 1.0:
+                return 10  # Normal
+            elif w <= 1.5:
+                return 15  # Higher
+            else:
+                return 20  # High
 
         result = []
         for word in self.config.hotwords:
-            ui_weight = weights.get(word, 2)  # Default to normal(2)
-            if ui_weight <= 0:
+            ui_weight = weights.get(word, 1.0)  # Default to normal(1.0)
+            score = weight_to_score(float(ui_weight))
+            if score <= 0:
                 continue  # Skip disabled words
-            score = weight_to_score.get(int(ui_weight), 10)
             # FunASR format: "word score" (e.g., "阿里巴巴 20")
             result.append(f"{word} {score}")
 
