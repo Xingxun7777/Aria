@@ -83,7 +83,7 @@
   },
   "local_polish": {
     "enabled": false,
-    "model_path": "G:\\VCP\\voicetype\\models\\qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "model_path": "models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
     "n_gpu_layers": -1,
     "n_ctx": 512
   },

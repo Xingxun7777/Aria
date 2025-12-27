@@ -89,8 +89,64 @@ def find_and_kill_voicetype_processes() -> int:
     return killed
 
 
-def is_process_alive(pid: int) -> bool:
-    """Check if a process with given PID is still running."""
+def get_process_creation_time(pid: int) -> float:
+    """
+    Get process creation time as a timestamp.
+    Returns 0.0 if unable to get creation time.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return 0.0
+
+            try:
+                # FILETIME structures for GetProcessTimes
+                creation_time = wintypes.FILETIME()
+                exit_time = wintypes.FILETIME()
+                kernel_time = wintypes.FILETIME()
+                user_time = wintypes.FILETIME()
+
+                if kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation_time),
+                    ctypes.byref(exit_time),
+                    ctypes.byref(kernel_time),
+                    ctypes.byref(user_time),
+                ):
+                    # Convert FILETIME to Python timestamp
+                    # FILETIME is 100-nanosecond intervals since 1601-01-01
+                    filetime = (
+                        creation_time.dwHighDateTime << 32
+                    ) | creation_time.dwLowDateTime
+                    # Convert to Unix timestamp (seconds since 1970-01-01)
+                    # 116444736000000000 = difference between 1601 and 1970 in 100ns intervals
+                    unix_time = (filetime - 116444736000000000) / 10000000.0
+                    return unix_time
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+    return 0.0
+
+
+def is_process_alive(pid: int, expected_creation_time: float = None) -> bool:
+    """
+    Check if a process with given PID is still running.
+
+    Args:
+        pid: Process ID to check
+        expected_creation_time: Optional creation time to verify (prevents PID reuse false positive)
+
+    Returns:
+        True if process is alive (and matches creation time if provided)
+    """
     if sys.platform == "win32":
         try:
             import ctypes
@@ -100,6 +156,16 @@ def is_process_alive(pid: int) -> bool:
             handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
                 kernel32.CloseHandle(handle)
+                # If creation time provided, verify it matches
+                if expected_creation_time is not None and expected_creation_time > 0:
+                    actual_time = get_process_creation_time(pid)
+                    if actual_time > 0:
+                        # Allow 2 second tolerance for timing differences
+                        if abs(actual_time - expected_creation_time) > 2.0:
+                            print(
+                                f"[LOCK] PID {pid} exists but creation time mismatch (reused PID)"
+                            )
+                            return False
                 return True
             return False
         except Exception:
@@ -155,10 +221,44 @@ def release_mutex():
         _mutex_handle = None
 
 
+def safe_remove_lock_file(max_retries: int = 3, delay: float = 0.1) -> bool:
+    """
+    Safely remove the lock file with retry logic for WinError 32.
+
+    Args:
+        max_retries: Maximum number of removal attempts
+        delay: Delay between retries in seconds
+
+    Returns:
+        True if file was removed or doesn't exist, False if removal failed
+    """
+    for attempt in range(max_retries):
+        try:
+            if os.path.exists(LOCK_FILE):
+                os.remove(LOCK_FILE)
+            return True
+        except PermissionError as e:
+            # WinError 32: The process cannot access the file because it is being used
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))  # Exponential backoff
+            else:
+                print(
+                    f"[LOCK] Warning: Could not remove lock file after {max_retries} attempts: {e}"
+                )
+                return False
+        except OSError as e:
+            print(f"[LOCK] Warning: Error removing lock file: {e}")
+            return False
+    return True
+
+
 def check_and_cleanup_stale_lock() -> bool:
     """
     Check if lock file exists and if the owning process is still alive.
     Returns True if lock was stale and cleaned up, False otherwise.
+
+    Lock file format: PID:CREATION_TIME (e.g., "12345:1703637600.5")
+    Legacy format (just PID) is also supported for backward compatibility.
     """
     if not os.path.exists(LOCK_FILE):
         return False
@@ -168,28 +268,42 @@ def check_and_cleanup_stale_lock() -> bool:
             content = f.read().strip()
             if not content:
                 # Empty lock file - stale
-                os.remove(LOCK_FILE)
-                print("[LOCK] Removed empty stale lock file")
-                return True
+                if safe_remove_lock_file():
+                    print("[LOCK] Removed empty stale lock file")
+                    return True
+                return False
 
-            old_pid = int(content)
+            # Parse lock file: new format "PID:CREATION_TIME" or legacy "PID"
+            old_pid = 0
+            creation_time = None
+            if ":" in content:
+                parts = content.split(":", 1)
+                old_pid = int(parts[0])
+                creation_time = float(parts[1])
+            else:
+                # Legacy format - just PID
+                old_pid = int(content)
 
-            if not is_process_alive(old_pid):
-                # Process is dead - stale lock
-                os.remove(LOCK_FILE)
-                print(f"[LOCK] Removed stale lock (PID {old_pid} not running)")
-                return True
+            if not is_process_alive(old_pid, creation_time):
+                # Process is dead or PID was reused - stale lock
+                if safe_remove_lock_file():
+                    if creation_time:
+                        print(
+                            f"[LOCK] Removed stale lock (PID {old_pid} not running or reused)"
+                        )
+                    else:
+                        print(f"[LOCK] Removed stale lock (PID {old_pid} not running)")
+                    return True
+                return False
             else:
                 print(f"[LOCK] VoiceType is running (PID {old_pid})")
                 return False
     except (ValueError, IOError, OSError) as e:
         # Corrupted lock file - try to remove
-        try:
-            os.remove(LOCK_FILE)
+        if safe_remove_lock_file():
             print(f"[LOCK] Removed corrupted lock file: {e}")
             return True
-        except Exception:
-            return False
+        return False
 
 
 def acquire_lock():
@@ -210,7 +324,10 @@ def acquire_lock():
 
             _lock_handle = open(LOCK_FILE, "w")
             msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
-            _lock_handle.write(str(os.getpid()))
+            # Write PID:CREATION_TIME format for robust stale lock detection
+            pid = os.getpid()
+            creation_time = get_process_creation_time(pid)
+            _lock_handle.write(f"{pid}:{creation_time}")
             _lock_handle.flush()
             return True
         else:
@@ -241,10 +358,8 @@ def release_lock():
             _lock_handle.close()
         except Exception:
             pass
-        try:
-            os.remove(LOCK_FILE)
-        except Exception:
-            pass
+        # Use safe removal with retry for WinError 32
+        safe_remove_lock_file()
         _lock_handle = None
 
     # Release mutex
@@ -304,6 +419,41 @@ def log(msg):
         f.write(msg + "\n")
 
 
+def get_project_python() -> str:
+    """
+    Get the correct Python interpreter path for this project.
+
+    Priority:
+    1. If in venv (sys.prefix != sys.base_prefix), use venv Python
+    2. If project .venv exists, use that
+    3. Fallback to sys.executable
+
+    This prevents issues when system PATH has multiple Python installations.
+    """
+    launcher_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Check if we're running in a venv
+    if sys.prefix != sys.base_prefix:
+        # We're in a venv - use its Python
+        if sys.platform == "win32":
+            venv_python = os.path.join(sys.prefix, "Scripts", "python.exe")
+        else:
+            venv_python = os.path.join(sys.prefix, "bin", "python")
+        if os.path.exists(venv_python):
+            return venv_python
+
+    # Check for project's .venv directory
+    if sys.platform == "win32":
+        project_venv = os.path.join(launcher_dir, ".venv", "Scripts", "python.exe")
+    else:
+        project_venv = os.path.join(launcher_dir, ".venv", "bin", "python")
+    if os.path.exists(project_venv):
+        return project_venv
+
+    # Fallback to sys.executable
+    return sys.executable
+
+
 # === Splash Screen Functions ===
 
 
@@ -329,8 +479,8 @@ def start_splash():
 
         # Launch splash as separate Python process using subprocess
         # Use pythonw.exe on Windows to avoid console window
-        python_exe = sys.executable
-        log(f"Python exe: {python_exe}")
+        python_exe = get_project_python()
+        log(f"Python exe (from get_project_python): {python_exe}")
         if sys.platform == "win32" and python_exe.endswith("python.exe"):
             pythonw = python_exe.replace("python.exe", "pythonw.exe")
             if os.path.exists(pythonw):
@@ -416,6 +566,7 @@ try:
     from pathlib import Path
 
     config_path = Path(__file__).parent / "config" / "hotwords.json"
+    config = {}  # 默认空配置，防止 JSON 解析失败时 NameError
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
