@@ -12,9 +12,27 @@ import subprocess
 # Fix OpenMP conflict between PyTorch and faster-whisper (MUST be before any imports)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+
+# === Detect if running from portable build ===
+def _is_portable_build() -> bool:
+    """Check if running from dist_portable directory."""
+    script_path = os.path.abspath(__file__)
+    # Portable build runs from: dist_portable/VoiceType/_internal/app/voicetype/launcher.py
+    # or the embedded Python runs it as module
+    return "dist_portable" in script_path or "_internal" in script_path
+
+
+IS_PORTABLE = _is_portable_build()
+
 # === Singleton Check with Named Mutex (Windows) + File Lock (fallback) ===
-LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-dev.lock")
-MUTEX_NAME = "VoiceType-Dev-Singleton-Mutex"
+# Use different names for dev and portable to allow simultaneous running
+if IS_PORTABLE:
+    LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-portable.lock")
+    MUTEX_NAME = "VoiceType-Portable-Singleton-Mutex"
+else:
+    LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-dev.lock")
+    MUTEX_NAME = "VoiceType-Dev-Singleton-Mutex"
+
 _lock_handle = None
 _mutex_handle = None
 

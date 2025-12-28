@@ -4,6 +4,51 @@
 
 ---
 
+## Issue: 第一句话必出问题（重复/截断）- Prompt Shock
+
+**Date**: 2025-12-28
+
+**Symptom**:
+- 启动后第一句话总是有问题
+- Whisper 返回重复句子：`"测试。测试。"` 而不是 `"测试。"`
+- 幻觉检测触发，回退到不完整的 interim 结果 → 截断
+- 后续句子正常，只有第一句有问题
+
+**Root Cause** (来自 Gemini 三方会谈分析):
+- GPU warmup 在 `initial_prompt` 设置**之前**运行
+- 第一次真正识别是模型首次看到 hotword prompt
+- 同时处理 prompt KV cache + 音频编码 → 注意力机制"循环" → 重复输出
+- 这被称为 **"Prompt Shock"** - warmup 状态和 production 状态不一致
+
+**原代码问题**:
+```python
+# 错误顺序！
+warmup_audio = np.random.randn(8000)  # 随机噪声也有问题
+_ = self.asr_engine.transcribe(warmup_audio)  # 此时 initial_prompt 还未设置！
+# ... 后面才设置 initial_prompt
+```
+
+**Solution**:
+1. 将 warmup 移到 `initial_prompt` 设置**之后**
+2. 用静音（zeros）替代随机噪声（Whisper 没见过白噪声）
+3. 延长到 1 秒（16000 samples）
+
+```python
+# 正确顺序：先设置 initial_prompt，再 warmup
+self.asr_engine.set_initial_prompt(initial_prompt)
+# ...
+# GPU Warmup - MUST run AFTER initial_prompt is set
+warmup_audio = np.zeros(16000, dtype=np.float32)  # 静音，不是噪声
+_ = self.asr_engine.transcribe(warmup_audio)  # 现在有 initial_prompt 了
+```
+
+**Key Learning**:
+- Warmup 必须模拟真实推理环境（包括 prompt、VAD 设置等）
+- 白噪声可能扰乱 LayerNorm 统计，用静音更安全
+- 第一句话问题通常是初始化顺序问题，检查 warmup 时机
+
+---
+
 ## Issue: pythonw.exe 环境下 print() 导致闪退
 
 **Date**: 2025-12-23
@@ -182,3 +227,161 @@ def mousePressEvent(self, event):
 - 非激活窗口 (`WindowDoesNotAcceptFocus`) 的剪贴板操作应直接执行，不要依赖信号槽
 - Qt 按钮点击事件会冒泡到父级，需要手动阻止
 - 剪贴板操作应添加 try/except 和重试逻辑
+
+---
+
+## Issue: Whisper 冷启动幻觉导致第一句话丢失
+
+**Date**: 2025-12-28
+
+**Symptom**:
+- 程序空闲一段时间后，用户说的第一句话不被识别
+- 第二句话开始才能正常工作
+- 日志显示 `[ASR] Filtered hallucination: '重复的句子...'`
+
+**Root Cause**:
+1. GPU 长时间空闲后，CUDA 内核需要"预热"
+2. Whisper 第一次推理容易产生幻觉（典型特征：重复句子）
+3. 幻觉过滤器 `_is_hallucination()` 的 Pattern 5（重复句子检测）正确识别并过滤
+4. 但用户的真实语音也被一起丢弃了
+
+**日志示例**:
+```
+[INTERIM] 以及能不能发育工具的设计  ← 实时识别正确
+[ASR] raw: '以及能不能防御攻击者的恶意攻击。 以及能不能防御攻击者的恶意攻击。' ← 最终结果是幻觉
+[ASR] Filtered hallucination: '...'
+[WARN] No speech recognized  ← 用户语音丢失
+```
+
+**Solution**:
+在 `app.py` 的 ASR worker 中实现双重恢复机制：
+
+1. **重试机制**：检测到幻觉时，立即重试一次转录（GPU 已预热，第二次通常正常）
+2. **Interim 回退**：如果重试仍失败，使用之前的 interim 结果
+
+```python
+if self._is_hallucination(text):
+    print(f"[ASR] Detected hallucination: '{text}'")
+
+    # Strategy 1: Retry transcription
+    retry_result = self.asr_engine.transcribe(audio)
+    retry_text = retry_result.text.strip()
+
+    if retry_text and not self._is_hallucination(retry_text):
+        text = retry_text  # 重试成功
+    else:
+        # Strategy 2: Fallback to interim
+        if self._last_interim_text and not self._is_hallucination(self._last_interim_text):
+            text = self._last_interim_text  # 使用 interim
+        else:
+            text = ""  # 两种策略都失败
+```
+
+**Key Learning**:
+- Whisper 空闲后第一次推理容易幻觉，这是 CUDA/GPU warmup 问题
+- Interim 结果（实时识别）通常比最终结果更稳定
+- 遇到幻觉时重试一次是低成本高回报的策略
+- 幻觉典型特征：相同句子重复 2+ 次
+
+---
+
+## Issue: 会话黏连 - 语音累积不输出 (Sticky Session)
+
+**Date**: 2025-12-28
+
+**Symptom**:
+- 悬浮窗显示 interim 文字，但不插入到目标应用
+- 只有开始说下一句话时，上一句才突然输出
+- 日志显示超长音频段：258048 samples（16秒！正常应该 2-5 秒）
+- ASR 处理时间极长（46秒处理 16秒音频）
+
+**Root Cause** (来自三方会谈分析):
+1. **VAD 阈值过低 (0.2)**：
+   - Silero-VAD 返回 0-1 的语音概率
+   - 0.2 阈值太敏感，环境噪声/呼吸都会被识别为语音
+   - 导致 silence_samples 永远达不到 min_silence_samples
+   - speech_end 事件永不触发
+
+2. **max_speech_ms 未被正确应用**：
+   - 默认 15 秒限制应该触发强制分割
+   - 但 app.py 没有传递 max_speech_ms 给 VADConfig
+
+**日志证据**:
+```
+[17:36:59.359] Got audio: 258048 samples (16.1秒)
+[17:37:45.360] Transcription done (46秒处理时间)
+```
+
+**Solution**:
+1. 提高 VAD 阈值：0.2 → 0.35（减少误报）
+2. 降低最大语音时长：15s → 8s（作为安全网）
+3. 缩短静音检测时间：600ms → 500ms（更快响应停顿）
+4. 在 app.py 中读取并传递 max_speech_ms 配置
+
+```python
+# hotwords.json
+"vad": {
+    "threshold": 0.35,      # 原来 0.2
+    "min_silence_ms": 500,  # 原来 600
+    "max_speech_ms": 8000   # 新增，8秒强制分割
+}
+
+# app.py - 读取并传递 max_speech_ms
+vad_max_speech = max(3000, min(30000, vad_cfg.get("max_speech_ms", 8000)))
+VADConfig(
+    threshold=vad_threshold,
+    min_speech_ms=vad_min_speech,
+    min_silence_ms=vad_min_silence,
+    max_speech_ms=vad_max_speech,  # 新增
+)
+```
+
+**Key Learning**:
+- VAD 阈值对实时语音识别至关重要：太低→累积，太高→截断
+- 推荐阈值范围：0.3-0.5（根据环境噪声调整）
+- 必须有 max_speech 安全网，防止无限累积
+- 超长音频会导致 Whisper 处理时间指数增长
+- 添加日志打印 VAD 配置，方便排查配置未生效问题
+
+---
+
+## Issue: Whisper 无限循环幻觉（处理时间暴增）
+
+**Date**: 2025-12-28
+
+**Symptom**:
+- 正常音频（2-4秒）处理时间突然从 1-2 秒暴增到 18-50 秒
+- 输出是重复字符："嘟嘟嘟嘟嘟..."、"哒哒哒哒..."
+- 或完全乱码的输出
+- 导致后续音频在队列中排队，恢复后"一下输出一大段"
+
+**Root Cause**:
+- Whisper 模型偶尔陷入 **无限序列生成（infinite sequence generation）**
+- 特别是在音频质量差、背景噪声、或 GPU 压力大时
+- 模型不断生成重复 token，直到达到最大长度限制
+
+**日志证据**:
+```
+samples=67072 (4.2秒) → 18661ms (18秒处理！)
+samples=31232 (1.9秒) → 31432ms (31秒处理！)
+结果: "嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟嘟..."
+```
+
+**Solution**:
+在 `whisper_engine.py` 的 `transcribe()` 方法中添加防护参数：
+
+```python
+transcribe_kwargs = {
+    # ... 原有参数 ...
+    # Anti-infinite-loop parameters
+    "compression_ratio_threshold": 2.4,  # 检测重复输出
+    "log_prob_threshold": -1.0,          # 过滤低置信度
+    "no_speech_threshold": 0.6,          # 跳过静音段
+    # 注意：不要使用 max_new_tokens！会和 initial_prompt 冲突
+}
+```
+
+**Key Learning**:
+- Whisper 的 decoder 可能陷入重复生成循环
+- `compression_ratio_threshold` 是检测 "嘟嘟嘟..." 这类重复的关键
+- **不要使用 `max_new_tokens`**：Whisper max_length=448，initial_prompt 可能占用 196 tokens，设置 max_new_tokens 会导致超限报错

@@ -362,7 +362,7 @@ class VoiceTypeApp:
         - Timestamps (2022-09-15 16:15:22)
         - Repeated characters/patterns
         - Random number sequences
-        - Repeated sentences/phrases
+        - Repeated sentences/phrases (3+ times, not 2 - see _deduplicate_sentences)
         """
         import re
 
@@ -385,16 +385,16 @@ class VoiceTypeApp:
         if re.search(r"(.)\1{3,}", text):
             return True
 
-        # Pattern 5: Repeated sentences (same phrase 2+ times)
-        # Split by common punctuation and check for duplicates
+        # Pattern 5: Repeated sentences (same phrase 3+ times = hallucination)
+        # Note: 2x repetition is handled by _deduplicate_sentences (Whisper bug, not hallucination)
         sentences = re.split(r"[。！？，,\.!?]", text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 3]
-        if len(sentences) >= 2:
+        if len(sentences) >= 3:
             from collections import Counter
 
             counts = Counter(sentences)
             for phrase, count in counts.items():
-                if count >= 2 and len(phrase) > 5:
+                if count >= 3 and len(phrase) > 5:
                     return True
 
         # Pattern 6: Common hallucination phrases
@@ -415,6 +415,39 @@ class VoiceTypeApp:
                 return True
 
         return False
+
+    def _deduplicate_sentences(self, text: str) -> str:
+        """
+        Fix Whisper's sentence repetition bug.
+
+        Whisper sometimes outputs the same sentence twice:
+        "我现在在进行一个新的测试。我现在在进行一个新的测试。"
+
+        This extracts unique sentences while preserving order.
+        """
+        import re
+
+        # Split by sentence-ending punctuation
+        parts = re.split(r"([。！？!?])", text)
+
+        seen = set()
+        result = []
+
+        i = 0
+        while i < len(parts):
+            sentence = parts[i].strip()
+            punct = parts[i + 1] if i + 1 < len(parts) else ""
+
+            if sentence and len(sentence) > 3:
+                if sentence not in seen:
+                    seen.add(sentence)
+                    result.append(sentence + punct)
+            elif sentence:
+                result.append(sentence + punct)
+
+            i += 2 if punct else 1
+
+        return "".join(result)
 
     def _load_asr_config(self) -> dict:
         """Load ASR configuration from hotwords.json."""
@@ -498,9 +531,10 @@ class VoiceTypeApp:
 
         # VAD config with validation (clamp to valid ranges)
         vad_cfg = asr_cfg.get("vad", {})
-        vad_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
+        vad_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.35)))
         vad_min_speech = max(50, min(1000, vad_cfg.get("min_speech_ms", 150)))
-        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 1200)))
+        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 500)))
+        vad_max_speech = max(3000, min(30000, vad_cfg.get("max_speech_ms", 8000)))
 
         # Find audio device ID from config name
         audio_device_name = asr_cfg.get("audio_device")
@@ -522,6 +556,7 @@ class VoiceTypeApp:
                 threshold=vad_threshold,
                 min_speech_ms=vad_min_speech,
                 min_silence_ms=vad_min_silence,
+                max_speech_ms=vad_max_speech,
             ),
         )
         self.audio_capture = AudioCapture(audio_config)
@@ -625,7 +660,7 @@ class VoiceTypeApp:
             self.asr_engine.load()
             print(f"FunASR model loaded (fallback): {asr_config.model_name}")
 
-        # HotWord system initialization
+        # HotWord system initialization (warmup moved to after initial_prompt is set)
         print("Loading hotword configuration...")
         self.hotword_manager = HotWordManager.from_default()
 
@@ -648,6 +683,25 @@ class VoiceTypeApp:
             if initial_prompt:
                 self.asr_engine.set_initial_prompt(initial_prompt)
                 print(f"[HOTWORD] Initial prompt: {initial_prompt[:60]}...")
+
+        # GPU Warmup - MUST run AFTER initial_prompt is set (Gemini "Prompt Shock" fix)
+        # Previous warmup ran before initial_prompt, causing first sentence to fail
+        if self._asr_engine_type == "whisper":
+            try:
+                import numpy as np
+
+                # Use 1s of silence (zeros), not random noise
+                # - Silence matches what Whisper was trained on
+                # - Random noise can skew LayerNorm statistics
+                # - 16000 samples = 1 second @ 16kHz
+                warmup_audio = np.zeros(16000, dtype=np.float32)
+                print("[WARMUP] Pre-heating GPU with initial_prompt...")
+                _ = self.asr_engine.transcribe(warmup_audio)
+                print("[WARMUP] GPU ready (prompt-aware)!")
+            except Exception as e:
+                print(
+                    f"[WARMUP] Warning: warmup failed ({e}), first transcription may be slow"
+                )
 
         self.hotword_processor = HotWordProcessor(
             self.hotword_manager.get_replacements()
@@ -1013,14 +1067,62 @@ class VoiceTypeApp:
                 )
                 print(f"[ASR] raw: '{text}' ({asr_time:.0f}ms)")
 
+                # Fix Whisper sentence repetition bug (before hallucination check)
+                if self._asr_engine_type == "whisper" and text:
+                    deduped = self._deduplicate_sentences(text)
+                    if deduped != text:
+                        print(f"[ASR] Deduplicated: '{text}' -> '{deduped}'")
+                        text = deduped
+
                 # Filter Whisper hallucinations (skip for FunASR - it doesn't have this problem)
+                # Enhanced: retry once on hallucination, then fallback to interim result
                 if (
                     self._asr_engine_type == "whisper"
                     and text
                     and self._is_hallucination(text)
                 ):
-                    print(f"[ASR] Filtered hallucination: '{text}'")
-                    text = ""
+                    print(f"[ASR] Detected hallucination: '{text}'")
+
+                    # Strategy 1: Retry transcription once (cold-start hallucinations often clear on retry)
+                    print("[ASR] Retrying transcription...")
+                    retry_start = time_module.time()
+                    with self._asr_lock:
+                        retry_result = self.asr_engine.transcribe(audio)
+                    retry_time = (time_module.time() - retry_start) * 1000
+                    retry_text = (
+                        retry_result.text.strip()
+                        if retry_result and retry_result.text
+                        else ""
+                    )
+                    print(f"[ASR] retry: '{retry_text}' ({retry_time:.0f}ms)")
+
+                    if retry_text and not self._is_hallucination(retry_text):
+                        # Retry succeeded - use retry result
+                        print(f"[ASR] Retry succeeded, using: '{retry_text}'")
+                        text = retry_text
+                        debug.log_error(
+                            f"Hallucination recovered via retry: '{retry_text}'"
+                        )
+                    else:
+                        # Strategy 2: Fallback to interim result if available
+                        interim_text = self._last_interim_text
+                        if (
+                            interim_text
+                            and len(interim_text) > 3
+                            and not self._is_hallucination(interim_text)
+                        ):
+                            print(f"[ASR] Using interim fallback: '{interim_text}'")
+                            text = interim_text
+                            debug.log_error(
+                                f"Hallucination recovered via interim: '{interim_text}'"
+                            )
+                        else:
+                            # Both strategies failed
+                            print(
+                                f"[ASR] Filtered hallucination (no recovery): '{text}'"
+                            )
+                            debug.log_error(f"Hallucination filtered: '{text}'")
+                            text = ""
 
                 # Emit interim text to UI (before polish)
                 if text:

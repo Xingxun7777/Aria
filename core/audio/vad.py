@@ -34,6 +34,9 @@ class VADConfig:
     min_silence_ms: int = (
         800  # Minimum silence to end speech segment (increased for natural pauses)
     )
+    max_speech_ms: int = (
+        15000  # Maximum speech segment length before forced split (15 seconds)
+    )
 
     # Audio parameters
     sample_rate: int = 16000  # Must be 16000 for Silero-VAD
@@ -56,6 +59,10 @@ class VADConfig:
     @property
     def min_silence_samples(self) -> int:
         return int(self.sample_rate * self.min_silence_ms / 1000)
+
+    @property
+    def max_speech_samples(self) -> int:
+        return int(self.sample_rate * self.max_speech_ms / 1000)
 
 
 class VADProcessor:
@@ -82,6 +89,20 @@ class VADProcessor:
         self._model = None
         self._is_speaking = False
         self._use_fallback = False  # True if silero_vad/torch failed to load
+
+        # Log VAD config for debugging (pythonw.exe safe)
+        import sys
+
+        if sys.stdout is not None:
+            print(
+                f"[VAD] Config: threshold={self.config.threshold}, "
+                f"min_silence={self.config.min_silence_ms}ms, "
+                f"max_speech={self.config.max_speech_ms}ms ({self.config.max_speech_samples} samples)"
+            )
+        logger.info(
+            f"VAD Config: threshold={self.config.threshold}, "
+            f"min_silence={self.config.min_silence_ms}ms, max_speech={self.config.max_speech_ms}ms"
+        )
 
         # State tracking
         self._speech_samples = 0
@@ -244,6 +265,34 @@ class VADProcessor:
 
                 if self._on_speech_chunk:
                     self._on_speech_chunk(audio, prob)
+
+                # Check max speech length - force segment to prevent accumulation
+                if self._speech_samples >= self.config.max_speech_samples:
+                    # pythonw.exe safe logging
+                    import sys
+
+                    if sys.stdout is not None:
+                        print(
+                            f"[VAD] Max speech reached: {self._speech_samples} >= {self.config.max_speech_samples} samples, forcing split"
+                        )
+                    logger.info(
+                        f"Max speech length reached ({self._speech_samples} samples), forcing segment"
+                    )
+                    self._is_speaking = False
+                    self._silence_samples = 0
+
+                    with self._buffer_lock:
+                        full_audio = np.concatenate(self._speech_buffer)
+                        self._speech_buffer.clear()
+
+                    # Reset for next segment (keep speaking state)
+                    self._speech_samples = 0
+                    self._is_speaking = True  # Immediately re-enter speaking state
+
+                    if self._on_speech_end:
+                        self._on_speech_end(full_audio)
+
+                    return "speech_end", full_audio
 
                 return "speech_continue", None
         else:

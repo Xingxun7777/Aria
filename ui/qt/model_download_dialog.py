@@ -39,7 +39,7 @@ class DownloadWorker(QThread):
     def run(self):
         """Run download in background."""
         try:
-            from core.model_manager import ModelDownloader, get_missing_models
+            from voicetype.core.model_manager import ModelDownloader, get_missing_models
 
             missing = get_missing_models()
             if not missing:
@@ -259,7 +259,7 @@ def show_download_dialog_if_needed() -> bool:
         False if user cancelled or download failed
     """
     try:
-        from core.model_manager import get_missing_models
+        from voicetype.core.model_manager import get_missing_models
 
         missing = get_missing_models()
         if not missing:
@@ -284,7 +284,7 @@ def show_download_dialog_if_needed() -> bool:
 
 # For testing
 if __name__ == "__main__":
-    from core.model_manager import REQUIRED_MODELS
+    from voicetype.core.model_manager import REQUIRED_MODELS
 
     app = QApplication(sys.argv)
 

@@ -163,6 +163,12 @@ class WhisperEngine(ASREngine):
                 # Disable conditioning on previous text to prevent hallucination loops
                 # When True (default), ASR errors can propagate to subsequent segments
                 "condition_on_previous_text": False,
+                # Anti-infinite-loop parameters (prevent "嘟嘟嘟..." hallucinations)
+                "compression_ratio_threshold": 2.4,  # Detect repetitive output
+                "log_prob_threshold": -1.0,  # Filter low-confidence output
+                "no_speech_threshold": 0.6,  # Skip silent segments
+                # Note: max_new_tokens removed - conflicts with long initial_prompt
+                # Whisper max_length=448, initial_prompt can be 196 tokens
             }
 
             # Add initial_prompt if set (HotWord support)

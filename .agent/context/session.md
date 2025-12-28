@@ -133,9 +133,77 @@ Wakeword "遥遥记一下" + content
 
 ---
 
+---
+
+## Session: 2025-12-28 17:30
+
+### Completed
+- [x] 调查 Whisper 冷启动幻觉问题（第一句话丢失）
+- [x] 实现双重恢复机制：重试 + Interim 回退
+- [x] 便携版 launcher.py 单例锁机制修复
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `app.py:1016-1064` | 幻觉检测后添加重试机制 + interim 回退 |
+| `launcher.py` | PID 创建时间校验、stale lock 清理优化 |
+
+### Key Decisions
+- **幻觉恢复策略**: 优先重试（GPU 已预热），其次用 interim 结果
+
+### Technical Findings
+1. **冷启动幻觉原因**: GPU 空闲后 CUDA kernel 需预热，导致第一次推理不稳定
+2. **幻觉特征**: Whisper 输出重复句子（`_is_hallucination` Pattern 5 检测）
+3. **Interim 价值**: 实时识别通常比最终结果稳定，可作为回退
+
+### Pending Tasks
+1. [ ] **修复启动页面缺失问题** ← 当前优先
+2. [ ] 验证冷启动幻觉修复效果（用户反馈）
+3. [ ] 清理调试代码
+
+### Known Issues
+- 启动页面（Splash Screen）不显示了 → 待调查
+
+---
+
+## Session: 2025-12-28 18:15
+
+### Completed
+- [x] 修复 VAD 会话黏连问题（语音积累不输出）
+- [x] 修复 vad.py 中 pythonw.exe 不安全的 print() 调用
+- [x] 修复 Whisper 无限循环幻觉（处理时间暴增到 18-50 秒）
+- [x] 修复 max_new_tokens 与 initial_prompt 冲突问题
+- [x] 深度审查并验证所有修复
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `config/hotwords.json` | VAD: threshold 0.2→0.35, min_silence_ms 600→700, max_speech_ms=10000 |
+| `app.py:532-560` | 读取并传递 max_speech_ms 到 VADConfig |
+| `core/audio/vad.py:93-104,269-280` | 添加 `if sys.stdout is not None:` print 保护 |
+| `core/asr/whisper_engine.py:166-171` | 添加 compression_ratio_threshold, log_prob_threshold, no_speech_threshold |
+| `docs/DEBUG_LESSONS.md` | 记录 VAD 积累 + Whisper 幻觉问题解决方案 |
+
+### Key Decisions
+- **VAD threshold 0.35**: 平衡灵敏度和误报，允许自然停顿
+- **max_speech_ms 10000**: 10秒安全网，防止无限累积
+- **不使用 max_new_tokens**: 与 initial_prompt (196 tokens) 冲突，超过 Whisper max_length=448
+
+### Technical Findings
+1. **VAD 积累根因**: threshold=0.2 太低，环境噪声被误判为语音，silence 检测永不触发
+2. **Whisper 幻觉特征**: 输出 "嘟嘟嘟..." 重复字符，处理时间暴增到 40-50 秒
+3. **compression_ratio_threshold=2.4**: 关键参数，检测重复输出并提前终止
+4. **FunASR vs Whisper**: 之前用 FunASR 没遇到这些问题，Whisper 需要更多防护参数
+
+### Pending Tasks
+1. [ ] 便携版打包测试
+2. [ ] 长期使用验证 VAD/Whisper 参数稳定性
+
+### Known Issues
+- Whisper 偶发性处理变慢（可能是模型状态问题，但 compression_ratio 等参数已提供防护）
+
 ## Warmup Hints
 <!-- 预热系统读取此区块 -->
-focus: config/hotwords.json
+focus: build.py
 mode: standard
-pending_research: DeepSeek polish 效果验证
-debug_context: ASR 错误纠正率待观察
+pending_research: 无

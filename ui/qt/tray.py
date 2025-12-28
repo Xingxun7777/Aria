@@ -8,7 +8,10 @@ from PySide6.QtCore import Signal, Qt
 
 
 def create_voicetype_icon(size: int = 64, recording: bool = False) -> QIcon:
-    """Create a black-orange VoiceType icon programmatically."""
+    """Create a professional microphone + waveform VoiceType icon."""
+    from PySide6.QtGui import QRadialGradient, QPainterPath
+    from PySide6.QtCore import QPointF, QRectF
+
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
 
@@ -16,40 +19,90 @@ def create_voicetype_icon(size: int = 64, recording: bool = False) -> QIcon:
     p.setRenderHint(QPainter.Antialiasing)
 
     center = size // 2
-    radius = size // 2 - 4
+    radius = size // 2 - 2
 
-    # Dark circle background
+    # Gradient background (matching floating ball style)
+    gradient = QRadialGradient(center, center, radius)
+    gradient.setColorAt(0, QColor(50, 50, 55, 245))
+    gradient.setColorAt(0.7, QColor(35, 35, 40, 245))
+    gradient.setColorAt(1.0, QColor(25, 25, 30, 245))
+
     p.setPen(Qt.NoPen)
-    p.setBrush(QColor(30, 30, 35, 240))
+    p.setBrush(QBrush(gradient))
     p.drawEllipse(center - radius, center - radius, radius * 2, radius * 2)
 
-    # Orange border
-    orange = QColor("#ff8c00") if not recording else QColor("#ff5500")
-    p.setPen(QPen(orange, 3))
+    # Subtle border
+    border_color = QColor("#ff8c00") if not recording else QColor("#ff4500")
+    p.setPen(QPen(border_color, 1.5))
     p.setBrush(Qt.NoBrush)
     p.drawEllipse(
-        center - radius + 2, center - radius + 2, (radius - 2) * 2, (radius - 2) * 2
+        center - radius + 1, center - radius + 1, (radius - 1) * 2, (radius - 1) * 2
     )
 
-    # Sound wave bars (3 bars)
-    bar_color = orange
+    # === Microphone (left side) ===
+    mic_color = QColor("#ffffff") if not recording else border_color
     p.setPen(Qt.NoPen)
-    p.setBrush(bar_color)
+    p.setBrush(mic_color)
 
-    bar_w = size // 10
-    bar_gap = size // 12
-    total_w = bar_w * 3 + bar_gap * 2
-    start_x = center - total_w // 2
+    # Microphone head (rounded rectangle)
+    mic_w = size * 0.18
+    mic_h = size * 0.28
+    mic_x = center - size * 0.22
+    mic_y = center - mic_h * 0.6
+    p.drawRoundedRect(QRectF(mic_x, mic_y, mic_w, mic_h), mic_w * 0.4, mic_w * 0.4)
 
-    heights = (
-        [size // 4, size // 2.5, size // 4]
-        if not recording
-        else [size // 3, size // 2, size // 3]
+    # Microphone stand (arc + line)
+    p.setPen(QPen(mic_color, size * 0.04))
+    p.setBrush(Qt.NoBrush)
+
+    # Arc under mic head
+    arc_w = mic_w * 1.4
+    arc_h = mic_h * 0.5
+    arc_x = mic_x - (arc_w - mic_w) / 2
+    arc_y = mic_y + mic_h - arc_h * 0.3
+    p.drawArc(QRectF(arc_x, arc_y, arc_w, arc_h), 0, -180 * 16)
+
+    # Stand line
+    stand_x = mic_x + mic_w / 2
+    stand_top = arc_y + arc_h / 2
+    stand_bottom = center + size * 0.25
+    p.drawLine(QPointF(stand_x, stand_top), QPointF(stand_x, stand_bottom))
+
+    # Stand base
+    base_w = size * 0.15
+    p.drawLine(
+        QPointF(stand_x - base_w / 2, stand_bottom),
+        QPointF(stand_x + base_w / 2, stand_bottom),
     )
-    for i, h in enumerate(heights):
-        x = start_x + i * (bar_w + bar_gap)
-        y = center - h // 2
-        p.drawRoundedRect(int(x), int(y), bar_w, int(h), 2, 2)
+
+    # === Sound waves (right side) ===
+    wave_color = border_color if recording else QColor("#ff8c00")
+    wave_alpha = 255 if recording else 200
+
+    wave_x = center + size * 0.05
+    wave_y = center
+
+    # 3 curved wave arcs
+    for i, (wave_r, alpha_mult) in enumerate([(0.12, 1.0), (0.22, 0.7), (0.32, 0.4)]):
+        wave_radius = size * wave_r
+        wave_pen = QPen(
+            QColor(
+                wave_color.red(),
+                wave_color.green(),
+                wave_color.blue(),
+                int(wave_alpha * alpha_mult),
+            ),
+            size * 0.035,
+        )
+        wave_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(wave_pen)
+        p.setBrush(Qt.NoBrush)
+
+        # Draw arc (right-facing sound wave)
+        arc_rect = QRectF(
+            wave_x - wave_radius, wave_y - wave_radius, wave_radius * 2, wave_radius * 2
+        )
+        p.drawArc(arc_rect, -60 * 16, 120 * 16)  # 120 degree arc facing right
 
     p.end()
     return QIcon(pixmap)

@@ -24,6 +24,9 @@ _project_dir = os.path.dirname(
 # not from a sibling stable version (e.g., /AIBOX/voicetype vs /AIBOX/voicetype-v1.1-dev)
 if _project_dir not in sys.path:
     sys.path.insert(0, _project_dir)
+# Also add script directory so we can import splash.py directly
+if _script_dir not in sys.path:
+    sys.path.insert(0, _script_dir)
 os.chdir(_project_dir)
 
 # Log file for splash errors

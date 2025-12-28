@@ -32,8 +32,31 @@ from ..logging import get_system_logger
 
 logger = get_system_logger()
 
+
 # Lazy import - FireRedASR is heavy (imports torch), only import when actually used
-FIREREDASR_PATH = r"G:\AIBOX\FireRedASR"
+# Path detection: environment variable > sibling directory > None (disabled)
+def _detect_fireredasr_path() -> Optional[str]:
+    """Detect FireRedASR installation path."""
+    # 1. Environment variable takes priority
+    env_path = os.environ.get("FIREREDASR_PATH")
+    if env_path and os.path.isdir(env_path):
+        return env_path
+
+    # 2. Check sibling directory (for development: G:\AIBOX\FireRedASR)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up: core/asr -> core -> voicetype-v1.1-dev -> AIBOX
+    aibox_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
+    )
+    sibling_path = os.path.join(aibox_dir, "FireRedASR")
+    if os.path.isdir(sibling_path):
+        return sibling_path
+
+    # 3. Not found - FireRedASR is optional
+    return None
+
+
+FIREREDASR_PATH = _detect_fireredasr_path()
 FireRedAsr = None
 FIREREDASR_AVAILABLE = None  # Will be set on first check
 
@@ -44,8 +67,14 @@ def check_fireredasr_installation() -> bool:
     if FIREREDASR_AVAILABLE is not None:
         return FIREREDASR_AVAILABLE
 
+    # FireRedASR path not detected - not available
+    if FIREREDASR_PATH is None:
+        FIREREDASR_AVAILABLE = False
+        logger.info("FireRedASR not detected (optional feature)")
+        return FIREREDASR_AVAILABLE
+
     # Add FireRedASR to path if available
-    if os.path.exists(FIREREDASR_PATH) and FIREREDASR_PATH not in sys.path:
+    if FIREREDASR_PATH not in sys.path:
         sys.path.insert(0, FIREREDASR_PATH)
 
     try:
@@ -53,13 +82,21 @@ def check_fireredasr_installation() -> bool:
 
         FireRedAsr = _FireRedAsr
         FIREREDASR_AVAILABLE = True
+        logger.info(f"FireRedASR found at: {FIREREDASR_PATH}")
     except ImportError:
         FIREREDASR_AVAILABLE = False
         logger.warning(
-            "FireRedASR not installed. "
-            "Clone https://github.com/FireRedTeam/FireRedASR to G:\\AIBOX\\FireRedASR"
+            f"FireRedASR import failed from {FIREREDASR_PATH}. "
+            "Run: pip install -r requirements.txt in FireRedASR directory"
         )
     return FIREREDASR_AVAILABLE
+
+
+def _get_default_model_path() -> str:
+    """Get default model path based on detected FireRedASR location."""
+    if FIREREDASR_PATH:
+        return os.path.join(FIREREDASR_PATH, "pretrained_models", "FireRedASR-AED-L")
+    return ""  # No default when FireRedASR not installed
 
 
 @dataclass
@@ -68,7 +105,7 @@ class FireRedASRConfig:
 
     # Model selection
     model_type: str = "aed"  # "aed" (1.1B, up to 60s) or "llm" (8.3B, up to 30s)
-    model_path: str = r"G:\AIBOX\FireRedASR\pretrained_models\FireRedASR-AED-L"
+    model_path: str = ""  # Set in __post_init__ based on detected path
 
     # Device configuration
     use_gpu: bool = True
@@ -94,6 +131,11 @@ class FireRedASRConfig:
     # Temp file management
     cleanup_temp_files: bool = True
     temp_dir: Optional[str] = None  # None = system temp
+
+    def __post_init__(self):
+        """Set default model_path if not provided."""
+        if not self.model_path:
+            self.model_path = _get_default_model_path()
 
     @property
     def sample_rate(self) -> int:
@@ -442,26 +484,29 @@ class FireRedASREngine(ASREngine):
         return FIREREDASR_AVAILABLE
 
 
-def check_fireredasr_installation() -> dict:
+def get_fireredasr_info() -> dict:
     """
-    Check FireRedASR installation status.
+    Get FireRedASR installation status info.
 
     Returns:
         Dict with installation info
     """
+    default_model = _get_default_model_path()
     info = {
-        "installed": FIREREDASR_AVAILABLE,
+        "installed": FIREREDASR_AVAILABLE or False,
         "repo_path": FIREREDASR_PATH,
-        "repo_exists": os.path.exists(FIREREDASR_PATH),
+        "repo_exists": FIREREDASR_PATH is not None and os.path.exists(FIREREDASR_PATH),
         "models_available": [],
-        "default_model_path": r"G:\AIBOX\FireRedASR\pretrained_models\FireRedASR-AED-L",
+        "default_model_path": default_model,
     }
 
     if FIREREDASR_AVAILABLE:
         info["models_available"] = ["aed", "llm"]
 
         # Check if default model exists
-        default_path = info["default_model_path"]
-        info["default_model_exists"] = os.path.exists(default_path)
+        if default_model:
+            info["default_model_exists"] = os.path.exists(default_model)
+        else:
+            info["default_model_exists"] = False
 
     return info
