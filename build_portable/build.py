@@ -308,13 +308,27 @@ def step_clean_sensitive_data():
                 config["domain_context"] = ""
                 log("  Cleaned: domain_context (emptied)")
 
+            # Clean user-specific hardware info (exposes microphone brand/model)
+            if "general" in config:
+                if "audio_device" in config["general"]:
+                    config["general"]["audio_device"] = ""
+                    log("  Cleaned: general.audio_device (reset to auto-detect)")
+
             # Set default ASR engine to funasr (better out-of-box experience)
             config["asr_engine"] = "funasr"
             log("  Set: asr_engine = funasr (default)")
 
-            # Set polish_mode to local (doesn't require API)
-            config["polish_mode"] = "local"
-            log("  Set: polish_mode = local (default)")
+            # Set polish_mode to fast (uses local Qwen model, doesn't require API)
+            config["polish_mode"] = "fast"
+            log("  Set: polish_mode = fast (default)")
+
+            # Enable local polish, disable API polish (for out-of-box experience)
+            if "local_polish" in config:
+                config["local_polish"]["enabled"] = True
+                log("  Set: local_polish.enabled = true")
+            if "polish" in config:
+                config["polish"]["enabled"] = False
+                log("  Set: polish.enabled = false (API disabled by default)")
 
             # Clean hardcoded paths (replace absolute paths with relative)
             def clean_paths(obj, path=""):
