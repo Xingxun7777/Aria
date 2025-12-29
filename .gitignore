@@ -57,7 +57,9 @@ models/*.gguf
 
 # Portable build artifacts
 dist_portable/
-build_portable/
+build_portable/.pyinstaller_build/
+build_portable/.cache/
+build_portable/*.spec
 
 # User data
 data/
