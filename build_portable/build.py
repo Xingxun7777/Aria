@@ -397,7 +397,33 @@ def step_clean_sensitive_data():
     log("  Created: empty data/insights/")
 
     # ==========================================================================
-    # 6. Remove __pycache__ directories
+    # 6. Reset wakeword.json to default (user-friendly wakeword)
+    # ==========================================================================
+    wakeword_file = config_dir / "wakeword.json"
+    if wakeword_file.exists():
+        try:
+            with open(wakeword_file, "r", encoding="utf-8") as f:
+                wakeword_config = json.load(f)
+
+            # Set default wakeword for distribution
+            wakeword_config["wakeword"] = "小助手"
+
+            # Add to available list if not present
+            if "小助手" not in wakeword_config.get("available_wakewords", []):
+                wakeword_config.setdefault("available_wakewords", []).insert(
+                    0, "小助手"
+                )
+
+            with open(wakeword_file, "w", encoding="utf-8") as f:
+                json.dump(wakeword_config, f, ensure_ascii=False, indent=2)
+
+            log("  Set: wakeword = 小助手 (default)")
+
+        except Exception as e:
+            log(f"  WARNING: Failed to reset wakeword.json: {e}")
+
+    # ==========================================================================
+    # 7. Remove __pycache__ directories
     # ==========================================================================
     pycache_count = 0
     for pycache in voicetype_dir.rglob("__pycache__"):
