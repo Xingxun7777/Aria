@@ -2,7 +2,7 @@
 Translation Popup Widget
 ========================
 Non-focus-stealing popup to display translation results.
-Designed for VoiceType v1.1 action-driven architecture.
+Designed for Aria v1.1 action-driven architecture.
 
 UI Spec (from Gemini consultation):
 - Size: 360px fixed width, height adaptive (max 300px)

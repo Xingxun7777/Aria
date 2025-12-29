@@ -1,5 +1,5 @@
 """
-Path utilities for VoiceType.
+Path utilities for Aria.
 
 Handles path resolution for both development (running as script) and
 production (frozen PyInstaller executable) environments.
@@ -17,13 +17,13 @@ def get_base_path() -> Path:
     Returns:
         Path: Base directory path
             - For frozen (PyInstaller): directory containing the executable
-            - For script: voicetype package directory
+            - For script: aria package directory
     """
     if getattr(sys, "frozen", False):
         # Running as compiled executable
         return Path(sys.executable).parent
     else:
-        # Running as script - return the voicetype package directory
+        # Running as script - return the aria package directory
         return Path(__file__).parent.parent.parent
 
 

@@ -1,10 +1,10 @@
 """
-VoiceType Selection Processing Module
-=====================================
+Aria Selection Processing Module
+================================
 Process selected text with voice commands (polish, translate, rewrite, etc.)
 
 Usage:
-    from voicetype.core.selection import SelectionDetector, SelectionProcessor, SelectionCommand
+    from aria.core.selection import SelectionDetector, SelectionProcessor, SelectionCommand
 
     # Detect selected text
     detector = SelectionDetector(output_injector)

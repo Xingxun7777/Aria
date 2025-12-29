@@ -1,5 +1,5 @@
 # history.py
-# History popup window for VoiceType
+# History popup window for Aria
 # Shows recent transcriptions with copy functionality
 
 import sys

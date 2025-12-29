@@ -1,5 +1,5 @@
 """
-Build VoiceType.exe Launcher
+Build Aria.exe Launcher
 ============================
 Compiles launcher_stub.py to a small EXE using PyInstaller.
 
@@ -7,7 +7,7 @@ Usage:
     python build_portable/build_launcher_exe.py
 
 Output:
-    dist_portable/VoiceType/VoiceType.exe
+    dist_portable/Aria/Aria.exe
 """
 
 import subprocess
@@ -17,11 +17,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 BUILD_DIR = PROJECT_ROOT / "build_portable"
-DIST_DIR = PROJECT_ROOT / "dist_portable" / "VoiceType"
+DIST_DIR = PROJECT_ROOT / "dist_portable" / "Aria"
 
 
 def main():
-    print("[BUILD] Building VoiceType.exe launcher...")
+    print("[BUILD] Building Aria.exe launcher...")
 
     # Check PyInstaller
     try:
@@ -35,8 +35,8 @@ def main():
 
     # Paths
     launcher_script = BUILD_DIR / "launcher_stub.py"
-    icon_file = PROJECT_ROOT / "assets" / "voicetype.ico"
-    output_exe = DIST_DIR / "VoiceType.exe"
+    icon_file = PROJECT_ROOT / "assets" / "aria.ico"
+    output_exe = DIST_DIR / "Aria.exe"
 
     if not launcher_script.exists():
         print(f"[BUILD] ERROR: {launcher_script} not found!")
@@ -51,8 +51,8 @@ def main():
         "--windowed",  # No console window
         "--clean",  # Clean build
         "--noconfirm",  # Overwrite without asking
-        f"--name=VoiceType",  # Output name
-        f"--distpath={DIST_DIR}",  # Output to dist_portable/VoiceType/
+        f"--name=Aria",  # Output name
+        f"--distpath={DIST_DIR}",  # Output to dist_portable/Aria/
         f"--workpath={BUILD_DIR}/.pyinstaller_build",
         f"--specpath={BUILD_DIR}",
     ]

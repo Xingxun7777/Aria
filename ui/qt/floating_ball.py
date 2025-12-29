@@ -1,5 +1,5 @@
 # floating_ball.py
-# Floating ball widget - main UI for VoiceType
+# Floating ball widget - main UI for Aria
 # Left-click: toggle ASR, Right-click: show popup menu (settings, lock, mode)
 # Middle-click: lock position (legacy shortcut)
 
@@ -32,7 +32,7 @@ from .popup_menu import PopupMenu
 
 class FloatingBall(QWidget):
     """
-    Floating ball widget that serves as the main VoiceType interface.
+    Floating ball widget that serves as the main Aria interface.
 
     Design:
     - Idle: Gray ball with subtle border

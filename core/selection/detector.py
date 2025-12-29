@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from voicetype.system.output import OutputInjector
+    from aria.system.output import OutputInjector
 
 
 @dataclass

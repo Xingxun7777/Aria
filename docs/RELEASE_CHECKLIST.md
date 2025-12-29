@@ -1,4 +1,4 @@
-# VoiceType 发布审核清单
+# Aria 发布审核清单
 
 ## 三方会谈审核结果 (2025-12-16)
 审核人: Claude + Codex + Gemini

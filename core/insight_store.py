@@ -1,10 +1,10 @@
 """
-VoiceType Insight Store
-=======================
+Aria Insight Store
+==================
 Simple storage for voice transcripts to enable AI-powered retrieval.
 
 Usage:
-    from voicetype.core.insight_store import InsightStore
+    from aria.core.insight_store import InsightStore
 
     store = InsightStore(data_dir=Path("data/insights"))
     store.add(text="我的想法...", timestamp="2025-12-12T10:30:45", ...)

@@ -1,5 +1,5 @@
 # sound.py
-# Sound effects module for VoiceType
+# Sound effects module for Aria
 # Uses Windows system sounds or generates simple beeps
 
 import sys
@@ -9,7 +9,7 @@ from typing import Optional
 
 class SoundManager:
     """
-    Manages sound effects for VoiceType UI feedback.
+    Manages sound effects for Aria UI feedback.
 
     Sound events:
     - start_recording: When ASR starts

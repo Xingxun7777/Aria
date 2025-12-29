@@ -79,7 +79,7 @@ class WakewordExecutor:
         Initialize wakeword executor.
 
         Args:
-            app_instance: VoiceTypeApp instance with setter methods
+            app_instance: AriaApp instance with setter methods
             bridge: QtBridge for UI notification (optional)
             cooldown_ms: Minimum time between commands
         """

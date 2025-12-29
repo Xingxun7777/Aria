@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to VoiceType will be documented in this file.
+All notable changes to Aria will be documented in this file.
 
 ## [1.1.0] - 2025-12-27
 

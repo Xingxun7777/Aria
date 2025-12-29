@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Generate VoiceType application icon (.ico file)."""
+"""Generate Aria application icon (.ico file)."""
 
 from pathlib import Path
 
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     assets_dir = project_root / "assets"
     assets_dir.mkdir(exist_ok=True)
 
-    output = assets_dir / "voicetype.ico"
+    output = assets_dir / "aria.ico"
     if generate_icon(output):
         print(f"Icon generated: {output}")
     else:

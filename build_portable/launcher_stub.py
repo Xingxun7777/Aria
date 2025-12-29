@@ -1,7 +1,7 @@
 """
-VoiceType Launcher Stub
+Aria Launcher Stub
 =======================
-A minimal launcher that starts VoiceType using the embedded Python.
+A minimal launcher that starts Aria using the embedded Python.
 This script is compiled to EXE using PyInstaller to avoid VBS security issues.
 """
 
@@ -33,18 +33,18 @@ def main():
             ctypes.windll.user32.MessageBoxW(
                 0,
                 f"找不到 Python 运行环境:\n{pythonw}\n\n请确保 _internal 文件夹完整。",
-                "VoiceType 启动错误",
+                "Aria 启动错误",
                 0x10,  # MB_ICONERROR
             )
         except Exception:
             pass
         sys.exit(1)
 
-    # Launch VoiceType
+    # Launch Aria
     # Use pythonw.exe for no console window
     # -s: don't add user site-packages
-    # -m voicetype.launcher: run as module
-    cmd = [str(pythonw), "-s", "-m", "voicetype.launcher"]
+    # -m aria.launcher: run as module
+    cmd = [str(pythonw), "-s", "-m", "aria.launcher"]
 
     try:
         # Start without waiting (detached process)
@@ -59,8 +59,8 @@ def main():
 
             ctypes.windll.user32.MessageBoxW(
                 0,
-                f"启动失败:\n{e}\n\n请尝试使用 VoiceType_debug.bat 启动查看详细错误。",
-                "VoiceType 启动错误",
+                f"启动失败:\n{e}\n\n请尝试使用 Aria_debug.bat 启动查看详细错误。",
+                "Aria 启动错误",
                 0x10,
             )
         except Exception:

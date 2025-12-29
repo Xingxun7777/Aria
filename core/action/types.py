@@ -1,5 +1,5 @@
 """
-Action Types for VoiceType v1.1
+Action Types for Aria v1.1
 ================================
 Action-driven architecture: Backend generates UIAction → QtBridge signal → UI responds
 

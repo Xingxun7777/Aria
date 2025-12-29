@@ -7,8 +7,8 @@ from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen, QBrus
 from PySide6.QtCore import Signal, Qt
 
 
-def create_voicetype_icon(size: int = 64, recording: bool = False) -> QIcon:
-    """Create a professional microphone + waveform VoiceType icon."""
+def create_aria_icon(size: int = 64, recording: bool = False) -> QIcon:
+    """Create a professional microphone + waveform Aria icon."""
     from PySide6.QtGui import QRadialGradient, QPainterPath
     from PySide6.QtCore import QPointF, QRectF
 
@@ -119,8 +119,8 @@ class SystemTray(QSystemTrayIcon):
         super().__init__(parent)
 
         # Custom black-orange icon
-        self._icon_idle = create_voicetype_icon(64, recording=False)
-        self._icon_recording = create_voicetype_icon(64, recording=True)
+        self._icon_idle = create_aria_icon(64, recording=False)
+        self._icon_recording = create_aria_icon(64, recording=True)
         self.setIcon(self._icon_idle)
         self.setVisible(True)
 
@@ -154,5 +154,5 @@ class SystemTray(QSystemTrayIcon):
     def set_recording_state(self, is_recording: bool):
         """Update tray icon to reflect recording state."""
         self.setIcon(self._icon_recording if is_recording else self._icon_idle)
-        tooltip = "VoiceType-Dev - 录音中..." if is_recording else "VoiceType-Dev"
+        tooltip = "Aria-Dev - 录音中..." if is_recording else "Aria-Dev"
         self.setToolTip(tooltip)

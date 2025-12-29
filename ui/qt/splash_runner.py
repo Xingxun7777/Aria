@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Standalone splash screen runner for VoiceType.
+Standalone splash screen runner for Aria.
 This script is launched as a subprocess to display the splash screen
 while the main application loads.
 
@@ -12,16 +12,16 @@ import sys
 import os
 import traceback
 
-# Set up path for imports - must be before any voicetype imports
+# Set up path for imports - must be before any aria imports
 # Calculate paths relative to this script's location
-# This script is at: voicetype-v1.1-dev/ui/qt/splash_runner.py
+# This script is at: aria/ui/qt/splash_runner.py
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _project_dir = os.path.dirname(
     os.path.dirname(_script_dir)
 )  # Go up from ui/qt to project root
 
 # CRITICAL: Insert project dir FIRST to ensure we import from THIS project,
-# not from a sibling stable version (e.g., /AIBOX/voicetype vs /AIBOX/voicetype-v1.1-dev)
+# not from a sibling stable version (e.g., /AIBOX/aria vs /AIBOX/aria-v1.1-dev)
 if _project_dir not in sys.path:
     sys.path.insert(0, _project_dir)
 # Also add script directory so we can import splash.py directly
@@ -96,7 +96,7 @@ def main():
         log_error("Listener connected to main process!")
 
         app = QApplication(sys.argv)
-        app.setApplicationName("VoiceType Splash")
+        app.setApplicationName("Aria Splash")
 
         splash = SplashWindow()
         splash.show()

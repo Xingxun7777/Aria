@@ -1,13 +1,13 @@
-# VoiceType 发布指南
+# Aria 发布指南
 
 ## 快速发布（一键命令）
 
 ```powershell
-cd G:\AIBOX\voicetype-v1.1-dev
+cd G:\AIBOX\aria-v1.1-dev
 .venv\Scripts\python.exe build_portable\build.py && .venv\Scripts\python.exe build_portable\build_launcher_exe.py
 ```
 
-完成后，`dist_portable\VoiceType\` 就是可分发的便携版。
+完成后，`dist_portable\Aria\` 就是可分发的便携版。
 
 ---
 
@@ -17,7 +17,7 @@ cd G:\AIBOX\voicetype-v1.1-dev
 
 ```powershell
 # 确保开发版能正常运行
-.venv\Scripts\pythonw.exe -m voicetype.launcher
+.venv\Scripts\pythonw.exe -m aria.launcher
 
 # 提交代码
 git add -A
@@ -39,10 +39,10 @@ git push
 
 ```powershell
 # 测试启动
-dist_portable\VoiceType\VoiceType.exe
+dist_portable\Aria\Aria.exe
 
 # 检查敏感数据已清理
-findstr "sk-or-v1" dist_portable\VoiceType\_internal\app\voicetype\config\hotwords.json
+findstr "sk-or-v1" dist_portable\Aria\_internal\app\aria\config\hotwords.json
 # 应该无输出
 ```
 
@@ -50,10 +50,10 @@ findstr "sk-or-v1" dist_portable\VoiceType\_internal\app\voicetype\config\hotwor
 
 ```powershell
 # 使用 7-Zip 压缩（推荐）
-7z a -t7z -mx=9 VoiceType-v1.1-portable.7z dist_portable\VoiceType\
+7z a -t7z -mx=9 Aria-v1.1-portable.7z dist_portable\Aria\
 
 # 或 ZIP 格式
-7z a -tzip VoiceType-v1.1-portable.zip dist_portable\VoiceType\
+7z a -tzip Aria-v1.1-portable.zip dist_portable\Aria\
 ```
 
 ---
@@ -63,15 +63,15 @@ findstr "sk-or-v1" dist_portable\VoiceType\_internal\app\voicetype\config\hotwor
 | 步骤 | 说明 |
 |------|------|
 | 1. 下载 Python | embedded Python 3.10.11 |
-| 2. 复制代码 | voicetype/ → _internal/app/voicetype/ |
+| 2. 复制代码 | aria/ → _internal/app/aria/ |
 | 3. 复制依赖 | site-packages (~5.7GB) |
 | 4. **清理敏感数据** | API key → 占位符, 日志/录音/缓存 → 删除 |
 | 5. 创建启动脚本 | .cmd, .vbs, .bat |
 
 ## build_launcher_exe.py 做的事情
 
-- 用 PyInstaller 编译 launcher_stub.py → VoiceType.exe
-- 嵌入图标 (assets/voicetype.ico)
+- 用 PyInstaller 编译 launcher_stub.py → Aria.exe
+- 嵌入图标 (assets/aria.ico)
 - 输出约 6MB
 
 ---
@@ -100,9 +100,9 @@ EXE 未签名，首次运行会警告。README.txt 已说明绕过方法。
 ## 目录结构
 
 ```
-voicetype-v1.1-dev/
+aria-v1.1-dev/
 ├── .venv/                  开发虚拟环境
-├── voicetype/              源代码（开发版）
+├── aria/              源代码（开发版）
 ├── config/                 配置文件（开发版，含 API key）
 ├── build_portable/         打包脚本
 │   ├── build.py            主打包脚本
@@ -110,9 +110,9 @@ voicetype-v1.1-dev/
 │   ├── launcher_stub.py    EXE 源码
 │   └── RELEASE_GUIDE.md    本文件
 ├── dist_portable/          打包输出
-│   └── VoiceType/          可分发的便携版
+│   └── Aria/          可分发的便携版
 └── assets/
-    └── voicetype.ico       图标
+    └── aria.ico       图标
 ```
 
 ---

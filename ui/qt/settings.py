@@ -10,7 +10,7 @@ from typing import Optional, Callable
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from voicetype.core.utils import get_config_path
+from aria.core.utils import get_config_path
 
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -45,8 +45,8 @@ from PySide6.QtGui import QKeySequence
 from . import styles
 
 # Import shared prompt constant from hotword module
-from voicetype.core.hotword import DEFAULT_POLISH_PROMPT
-from voicetype.core.utils.phonetic import get_matcher
+from aria.core.hotword import DEFAULT_POLISH_PROMPT
+from aria.core.utils.phonetic import get_matcher
 
 # Whisper 模型大小参考（用于提示用户）
 WHISPER_MODEL_SIZES = {
@@ -285,7 +285,7 @@ class SettingsWindow(QMainWindow):
 
     def __init__(self, config_path: Optional[Path] = None):
         super().__init__()
-        self.setWindowTitle("VoiceType 设置")
+        self.setWindowTitle("Aria 设置")
         self.resize(900, 650)
         self.setStyleSheet(styles.STYLESHEET_SETTINGS)
 
@@ -360,7 +360,7 @@ class SettingsWindow(QMainWindow):
 
         # Startup options
         self.chk_auto_startup = QCheckBox("开机自动启动")
-        self.chk_auto_startup.setToolTip("在 Windows 启动时自动运行 VoiceType")
+        self.chk_auto_startup.setToolTip("在 Windows 启动时自动运行 Aria")
         layout.addWidget(self.chk_auto_startup)
 
         self.chk_start_active = QCheckBox("启动时激活语音（默认开始录音）")
@@ -1002,7 +1002,7 @@ class SettingsWindow(QMainWindow):
         # === General tab ===
         general = self.config.get("general", {})
         hotkey = general.get("hotkey", "grave")
-        # Convert VoiceType hotkey format to Qt format
+        # Convert Aria hotkey format to Qt format
         qt_hotkey = self._hotkey_to_qt(hotkey)
         self.hotkey_edit.setKeySequence(QKeySequence(qt_hotkey))
 
@@ -1154,7 +1154,7 @@ class SettingsWindow(QMainWindow):
         if "general" not in self.config:
             self.config["general"] = {}
         hotkey_seq = self.hotkey_edit.keySequence().toString()
-        # Convert Qt format to VoiceType format for storage
+        # Convert Qt format to Aria format for storage
         self.config["general"]["hotkey"] = (
             self._qt_to_hotkey(hotkey_seq) if hotkey_seq else "grave"
         )
@@ -1409,7 +1409,7 @@ class SettingsWindow(QMainWindow):
             / "Programs"
             / "Startup"
         )
-        return startup_folder / "VoiceType.lnk"
+        return startup_folder / "Aria.lnk"
 
     def _is_auto_startup_enabled(self) -> bool:
         """Check if auto startup shortcut exists."""
@@ -1424,15 +1424,15 @@ class SettingsWindow(QMainWindow):
                 return  # Already enabled
 
             try:
-                # Find VoiceType.vbs launcher
+                # Find Aria.vbs launcher
                 project_dir = Path(__file__).parent.parent.parent
-                launcher = project_dir / "VoiceType.vbs"
+                launcher = project_dir / "Aria.vbs"
 
                 # For portable build, launcher is in dist folder
                 if not launcher.exists():
                     # Try to find in parent directories
                     for parent in [project_dir.parent, project_dir.parent.parent]:
-                        candidate = parent / "VoiceType.vbs"
+                        candidate = parent / "Aria.vbs"
                         if candidate.exists():
                             launcher = candidate
                             break
@@ -1450,7 +1450,7 @@ $Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
 $Shortcut.TargetPath = "wscript.exe"
 $Shortcut.Arguments = '"{launcher}"'
 $Shortcut.WorkingDirectory = "{launcher.parent}"
-$Shortcut.Description = "VoiceType - Local AI Voice Dictation"
+$Shortcut.Description = "Aria - Local AI Voice Dictation"
 $Shortcut.Save()
 """
                 subprocess.run(
@@ -1474,8 +1474,8 @@ $Shortcut.Save()
                     print(f"[AutoStartup] Failed to remove shortcut: {e}")
 
     def _hotkey_to_qt(self, hotkey: str) -> str:
-        """Convert VoiceType hotkey format to Qt QKeySequence format."""
-        # Mapping from VoiceType format to Qt format
+        """Convert Aria hotkey format to Qt QKeySequence format."""
+        # Mapping from Aria format to Qt format
         key_map = {
             "grave": "`",
             "backtick": "`",
@@ -1521,10 +1521,10 @@ $Shortcut.Save()
         return "+".join(qt_parts)
 
     def _qt_to_hotkey(self, qt_hotkey: str) -> str:
-        """Convert Qt QKeySequence format to VoiceType hotkey format."""
+        """Convert Qt QKeySequence format to Aria hotkey format."""
         if not qt_hotkey:
             return "grave"
-        # Mapping from Qt format to VoiceType format
+        # Mapping from Qt format to Aria format
         key_map = {
             "`": "grave",
             "CapsLock": "capslock",

@@ -1,4 +1,4 @@
-# VoiceType Qt Frontend
+# Aria Qt Frontend
 # PySide6-based GUI components
 
 from .bridge import QtBridge

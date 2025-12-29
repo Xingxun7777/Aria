@@ -1,10 +1,10 @@
 """
-VoiceType Debug System
-======================
+Aria Debug System
+=================
 Comprehensive debug logging for all processing layers.
 
 Usage:
-    from voicetype.core.debug import DebugSession
+    from aria.core.debug import DebugSession
 
     debug = DebugSession()
     debug.log_audio(...)
@@ -30,6 +30,7 @@ DEBUG_DIR = Path(__file__).parent.parent / "DebugLog"
 @dataclass
 class AudioDebugInfo:
     """Audio capture debug information."""
+
     timestamp: str = ""
     session_id: int = 0
 
@@ -53,6 +54,7 @@ class AudioDebugInfo:
 @dataclass
 class ASRDebugInfo:
     """ASR transcription debug information."""
+
     timestamp: str = ""
     session_id: int = 0
 
@@ -79,6 +81,7 @@ class ASRDebugInfo:
 @dataclass
 class HotWordDebugInfo:
     """HotWord correction debug information."""
+
     timestamp: str = ""
     session_id: int = 0
 
@@ -100,6 +103,7 @@ class HotWordDebugInfo:
 @dataclass
 class PolishDebugInfo:
     """AI Polish debug information."""
+
     timestamp: str = ""
     session_id: int = 0
 
@@ -129,6 +133,7 @@ class PolishDebugInfo:
 @dataclass
 class DiagnosticsSummary:
     """Auto-computed diagnostics for LLM analysis."""
+
     likely_issue: str = "N/A"  # Main issue category
 
     # Audio health
@@ -157,6 +162,7 @@ class DiagnosticsSummary:
 @dataclass
 class SessionDebugInfo:
     """Complete session debug information."""
+
     session_id: int = 0
     start_time: str = ""
     end_time: str = ""
@@ -196,8 +202,7 @@ class DebugSession:
         self._start_time = time.time()
 
         self.info = SessionDebugInfo(
-            session_id=session_id,
-            start_time=datetime.now().isoformat()
+            session_id=session_id, start_time=datetime.now().isoformat()
         )
 
         # Ensure debug directory exists
@@ -218,7 +223,7 @@ class DebugSession:
         speech_segments: int = 0,
         audio_level_avg: float = 0.0,
         audio_level_max: float = 0.0,
-        audio_file_path: str = ""
+        audio_file_path: str = "",
     ) -> None:
         """Log audio capture information."""
         if not self.enabled:
@@ -236,7 +241,7 @@ class DebugSession:
             speech_segments=speech_segments,
             audio_level_avg=audio_level_avg,
             audio_level_max=audio_level_max,
-            audio_file_path=audio_file_path
+            audio_file_path=audio_file_path,
         )
 
     def log_asr(
@@ -251,7 +256,7 @@ class DebugSession:
         transcribe_time_ms: float,
         segments: Optional[List[Dict]] = None,
         language_detected: str = "",
-        language_probability: float = 0.0
+        language_probability: float = 0.0,
     ) -> None:
         """Log ASR transcription information."""
         if not self.enabled:
@@ -270,7 +275,7 @@ class DebugSession:
             transcribe_time_ms=transcribe_time_ms,
             segments=segments or [],
             language_detected=language_detected,
-            language_probability=language_probability
+            language_probability=language_probability,
         )
 
     def log_hotword(
@@ -282,7 +287,7 @@ class DebugSession:
         layer2_output: str,
         layer2_replacements_applied: List[Dict[str, str]],
         layer2_rules_count: int,
-        layer2_time_ms: float
+        layer2_time_ms: float,
     ) -> None:
         """Log HotWord correction information."""
         if not self.enabled:
@@ -298,7 +303,7 @@ class DebugSession:
             layer2_output=layer2_output,
             layer2_replacements_applied=layer2_replacements_applied,
             layer2_rules_count=layer2_rules_count,
-            layer2_time_ms=layer2_time_ms
+            layer2_time_ms=layer2_time_ms,
         )
 
     def log_polish(
@@ -314,7 +319,7 @@ class DebugSession:
         changed: bool = False,
         api_time_ms: float = 0.0,
         error: str = "",
-        http_status: int = 0
+        http_status: int = 0,
     ) -> None:
         """Log AI Polish information."""
         if not self.enabled:
@@ -334,7 +339,7 @@ class DebugSession:
             changed=changed,
             api_time_ms=api_time_ms,
             error=error,
-            http_status=http_status
+            http_status=http_status,
         )
 
     def log_error(self, error: str) -> None:
@@ -362,19 +367,29 @@ class DebugSession:
         if self.info.audio:
             summary.audio_duration_ok = self.info.audio.duration_seconds > 0.2
             summary.audio_level_ok = self.info.audio.audio_level_avg > 0.001
-            summary.vad_activity_ok = self.info.audio.speech_segments > 0 if self.info.audio.vad_enabled else True
+            summary.vad_activity_ok = (
+                self.info.audio.speech_segments > 0
+                if self.info.audio.vad_enabled
+                else True
+            )
 
         # Performance diagnostics
         if self.info.total_time_ms > 0:
             if self.info.asr:
-                summary.asr_latency_ratio = self.info.asr.transcribe_time_ms / self.info.total_time_ms
+                summary.asr_latency_ratio = (
+                    self.info.asr.transcribe_time_ms / self.info.total_time_ms
+                )
             if self.info.polish:
-                summary.polish_latency_ratio = self.info.polish.api_time_ms / self.info.total_time_ms
+                summary.polish_latency_ratio = (
+                    self.info.polish.api_time_ms / self.info.total_time_ms
+                )
         summary.is_performant = self.info.total_time_ms < 3000
 
         # HotWord diagnostics
         if self.info.hotword:
-            summary.hotword_corrections_applied = len(self.info.hotword.layer2_replacements_applied)
+            summary.hotword_corrections_applied = len(
+                self.info.hotword.layer2_replacements_applied
+            )
 
         # Polish diagnostics
         if self.info.polish:
@@ -412,14 +427,14 @@ class DebugSession:
 
                 # Convert dataclasses to dict
                 def convert(obj):
-                    if hasattr(obj, '__dataclass_fields__'):
+                    if hasattr(obj, "__dataclass_fields__"):
                         return asdict(obj)
                     return obj
 
                 data = asdict(self.info)
 
                 # Write JSON
-                with open(filepath, 'w', encoding='utf-8') as f:
+                with open(filepath, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
                 return str(filepath)
@@ -439,18 +454,24 @@ class DebugSession:
 
         if self.info.audio:
             a = self.info.audio
-            print(f"[AUDIO] duration={a.duration_seconds:.2f}s, samples={a.sample_count}, "
-                  f"level_avg={a.audio_level_avg:.4f}, level_max={a.audio_level_max:.4f}")
+            print(
+                f"[AUDIO] duration={a.duration_seconds:.2f}s, samples={a.sample_count}, "
+                f"level_avg={a.audio_level_avg:.4f}, level_max={a.audio_level_max:.4f}"
+            )
 
         if self.info.asr:
             r = self.info.asr
-            print(f"[ASR] model={r.model_name}, device={r.device}, time={r.transcribe_time_ms:.0f}ms")
+            print(
+                f"[ASR] model={r.model_name}, device={r.device}, time={r.transcribe_time_ms:.0f}ms"
+            )
             print(f"[ASR] initial_prompt_enabled={r.initial_prompt_enabled}")
             print(f"[ASR] raw_text: {r.raw_text}")
 
         if self.info.hotword:
             h = self.info.hotword
-            print(f"[HOTWORD] L1_enabled={h.layer1_enabled}, L2_rules={h.layer2_rules_count}")
+            print(
+                f"[HOTWORD] L1_enabled={h.layer1_enabled}, L2_rules={h.layer2_rules_count}"
+            )
             if h.layer2_replacements_applied:
                 print(f"[HOTWORD] replacements: {h.layer2_replacements_applied}")
             print(f"[HOTWORD] input: {h.layer2_input}")
@@ -458,7 +479,9 @@ class DebugSession:
 
         if self.info.polish:
             p = self.info.polish
-            print(f"[POLISH] enabled={p.enabled}, model={p.model}, time={p.api_time_ms:.0f}ms")
+            print(
+                f"[POLISH] enabled={p.enabled}, model={p.model}, time={p.api_time_ms:.0f}ms"
+            )
             if p.enabled:
                 print(f"[POLISH] input: {p.input_text}")
                 print(f"[POLISH] output: {p.output_text}")
@@ -467,7 +490,9 @@ class DebugSession:
                     print(f"[POLISH] ERROR: {p.error}")
 
         print(f"[FINAL] text: {self.info.final_text}")
-        print(f"[FINAL] inserted={self.info.inserted}, total_time={self.info.total_time_ms:.0f}ms")
+        print(
+            f"[FINAL] inserted={self.info.inserted}, total_time={self.info.total_time_ms:.0f}ms"
+        )
 
         if self.info.errors:
             print(f"[ERRORS] {self.info.errors}")
@@ -478,6 +503,7 @@ class DebugSession:
 # Global debug configuration
 class DebugConfig:
     """Global debug configuration."""
+
     enabled: bool = True
     print_summary: bool = True
     save_to_file: bool = True
@@ -485,9 +511,9 @@ class DebugConfig:
     @classmethod
     def from_env(cls):
         """Load config from environment variables."""
-        cls.enabled = os.environ.get("VOICETYPE_DEBUG", "1") == "1"
-        cls.print_summary = os.environ.get("VOICETYPE_DEBUG_PRINT", "1") == "1"
-        cls.save_to_file = os.environ.get("VOICETYPE_DEBUG_SAVE", "1") == "1"
+        cls.enabled = os.environ.get("ARIA_DEBUG", "1") == "1"
+        cls.print_summary = os.environ.get("ARIA_DEBUG_PRINT", "1") == "1"
+        cls.save_to_file = os.environ.get("ARIA_DEBUG_SAVE", "1") == "1"
 
 
 # Initialize from environment

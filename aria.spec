@@ -1,14 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-VoiceType PyInstaller Spec File
+Aria PyInstaller Spec File
 ===============================
-Builds VoiceType as a portable EXE application.
+Builds Aria as a portable EXE application.
 
 Usage:
-    pyinstaller voicetype.spec --clean
+    pyinstaller aria.spec --clean
 
 Output:
-    dist/VoiceType/ - Portable application folder
+    dist/Aria/ - Portable application folder
 """
 
 import sys
@@ -41,7 +41,7 @@ for sp in site.getsitepackages() + [site.getusersitepackages()]:
         break
 
 # Collect all Python source files as data (for dynamic imports)
-# This ensures the voicetype package structure is preserved
+# This ensures the aria package structure is preserved
 for subdir in ['core', 'ui', 'features', 'scheduler']:
     src_path = PROJECT_ROOT / subdir
     if src_path.exists():
@@ -242,7 +242,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='VoiceType-Dev',
+    name='Aria-Dev',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -264,14 +264,14 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='VoiceType-Dev',
+    name='Aria-Dev',
 )
 
 # Post-build fix: Ensure base_library.zip is copied to dist
 # (Workaround for PyInstaller bug where base_library.zip may be missing)
 import shutil
-base_lib_src = PROJECT_ROOT / 'build' / 'voicetype' / 'base_library.zip'
-base_lib_dst = PROJECT_ROOT / 'dist' / 'VoiceType' / '_internal' / 'base_library.zip'
+base_lib_src = PROJECT_ROOT / 'build' / 'aria' / 'base_library.zip'
+base_lib_dst = PROJECT_ROOT / 'dist' / 'Aria' / '_internal' / 'base_library.zip'
 if base_lib_src.exists() and not base_lib_dst.exists():
     base_lib_dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(base_lib_src), str(base_lib_dst))

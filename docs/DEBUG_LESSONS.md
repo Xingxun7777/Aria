@@ -1,4 +1,4 @@
-# VoiceType Debug Lessons
+# Aria Debug Lessons
 
 记录调试过程中的经验教训，避免重复踩坑。
 

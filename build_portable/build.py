@@ -1,5 +1,5 @@
 """
-VoiceType Portable Build Script v2.0
+Aria Portable Build Script v2.0
 ====================================
 Creates a portable distribution using embedded Python.
 Reviewed and fixed by Codex + Gemini 三方会谈.
@@ -8,7 +8,7 @@ Usage:
     python build_portable/build.py
 
 Output:
-    dist_portable/VoiceType/  - Ready-to-distribute folder
+    dist_portable/Aria/  - Ready-to-distribute folder
 """
 
 import os
@@ -35,7 +35,7 @@ PYTHON_EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 BUILD_DIR = PROJECT_ROOT / "build_portable"
-DIST_DIR = PROJECT_ROOT / "dist_portable" / "VoiceType"
+DIST_DIR = PROJECT_ROOT / "dist_portable" / "Aria"
 CACHE_DIR = BUILD_DIR / ".cache"
 
 # Source directories to copy (relative to PROJECT_ROOT)
@@ -212,7 +212,7 @@ def step_configure_pth():
     # 1. stdlib first (prevents shadowing)
     # 2. site-packages (dependencies)
     # 3. app (our code root)
-    # 4. app/voicetype (CRITICAL: allows "import core", "import ui" etc.)
+    # 4. app/aria (CRITICAL: allows "import core", "import ui" etc.)
     # 5. import site (enables .pth processing, must be last)
     stdlib_zip = f"python{PYTHON_MAJOR}{PYTHON_MINOR}.zip"
 
@@ -220,7 +220,7 @@ def step_configure_pth():
         stdlib_zip,  # stdlib first
         "Lib\\site-packages",  # dependencies (use backslash for Windows)
         "app",  # app root
-        "app\\voicetype",  # CRITICAL: inner package for relative imports
+        "app\\aria",  # CRITICAL: inner package for relative imports
         "",
         "import site",  # MUST be last line
     ]
@@ -235,15 +235,15 @@ def step_copy_source():
 
     app_dir = DIST_DIR / "_internal" / "app"
 
-    # Create voicetype package directory
-    voicetype_dir = app_dir / "voicetype"
-    voicetype_dir.mkdir(exist_ok=True)
+    # Create aria package directory
+    aria_dir = app_dir / "aria"
+    aria_dir.mkdir(exist_ok=True)
 
     # Copy directories (using EXCLUDE_PATTERNS for security)
     for dir_name in SOURCE_DIRS:
         src = PROJECT_ROOT / dir_name
         if src.exists():
-            dst = voicetype_dir / dir_name
+            dst = aria_dir / dir_name
             copy_tree(src, dst, ignore_patterns=EXCLUDE_PATTERNS)
             log(f"  Copied {dir_name}/")
 
@@ -251,7 +251,7 @@ def step_copy_source():
     for file_name in SOURCE_FILES:
         src = PROJECT_ROOT / file_name
         if src.exists():
-            dst = voicetype_dir / file_name
+            dst = aria_dir / file_name
             shutil.copy2(src, dst)
             log(f"  Copied {file_name}")
 
@@ -259,7 +259,7 @@ def step_copy_source():
     for dir_name in DATA_DIRS:
         src = PROJECT_ROOT / dir_name
         if src.exists():
-            dst = voicetype_dir / dir_name
+            dst = aria_dir / dir_name
             copy_tree(src, dst, ignore_patterns=EXCLUDE_PATTERNS)
             log(f"  Copied data: {dir_name}/")
 
@@ -270,8 +270,8 @@ def step_clean_sensitive_data():
     """Step 4.5: Clean ALL user-specific and sensitive data."""
     log("Step 4.5: Cleaning sensitive and user data...")
 
-    voicetype_dir = DIST_DIR / "_internal" / "app" / "voicetype"
-    config_dir = voicetype_dir / "config"
+    aria_dir = DIST_DIR / "_internal" / "app" / "aria"
+    config_dir = aria_dir / "config"
 
     if not config_dir.exists():
         log("  No config directory found, skipping.")
@@ -368,18 +368,18 @@ def step_clean_sensitive_data():
     # ==========================================================================
     # 3. Remove ALL log files
     # ==========================================================================
-    for log_file in voicetype_dir.glob("*.log"):
+    for log_file in aria_dir.glob("*.log"):
         log_file.unlink()
         log(f"  Removed: {log_file.name}")
 
-    for log_file in voicetype_dir.glob("*_error.log"):
+    for log_file in aria_dir.glob("*_error.log"):
         log_file.unlink()
         log(f"  Removed: {log_file.name}")
 
     # ==========================================================================
     # 4. Clean DebugLog directory (session files, audio recordings, debug logs)
     # ==========================================================================
-    debug_log_dir = voicetype_dir / "DebugLog"
+    debug_log_dir = aria_dir / "DebugLog"
     if debug_log_dir.exists():
         # Count files before removal
         session_count = len(list(debug_log_dir.glob("session_*.json")))
@@ -398,7 +398,7 @@ def step_clean_sensitive_data():
     # ==========================================================================
     # 5. Clean InsightStore data (user voice transcripts)
     # ==========================================================================
-    insights_dir = voicetype_dir / "data" / "insights"
+    insights_dir = aria_dir / "data" / "insights"
     if insights_dir.exists():
         insight_files = list(insights_dir.glob("*.json"))
         for f in insight_files:
@@ -440,7 +440,7 @@ def step_clean_sensitive_data():
     # 7. Remove __pycache__ directories
     # ==========================================================================
     pycache_count = 0
-    for pycache in voicetype_dir.rglob("__pycache__"):
+    for pycache in aria_dir.rglob("__pycache__"):
         if pycache.is_dir():
             rmtree_force(pycache)
             pycache_count += 1
@@ -530,10 +530,10 @@ def step_create_launcher():
     # 1. Main CMD launcher
     cmd_content = """@echo off
 cd /d "%~dp0"
-start "" "_internal\\pythonw.exe" -s -m voicetype.launcher
+start "" "_internal\\pythonw.exe" -s -m aria.launcher
 """
-    (DIST_DIR / "VoiceType.cmd").write_text(cmd_content, encoding="utf-8")
-    log("  Created VoiceType.cmd")
+    (DIST_DIR / "Aria.cmd").write_text(cmd_content, encoding="utf-8")
+    log("  Created Aria.cmd")
 
     # 2. VBS silent launcher (robust version with absolute paths)
     vbs_content = '''Set WshShell = CreateObject("WScript.Shell")
@@ -541,27 +541,27 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 base = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = base
 python = base & "\\_internal\\pythonw.exe"
-WshShell.Run """" & python & """ -s -m voicetype.launcher", 0, False
+WshShell.Run """" & python & """ -s -m aria.launcher", 0, False
 '''
-    (DIST_DIR / "VoiceType.vbs").write_text(vbs_content, encoding="utf-8")
-    log("  Created VoiceType.vbs (silent launch)")
+    (DIST_DIR / "Aria.vbs").write_text(vbs_content, encoding="utf-8")
+    log("  Created Aria.vbs (silent launch)")
 
     # 3. DEBUG launcher (shows console and errors)
     debug_content = """@echo off
 cd /d "%~dp0"
 echo ========================================
-echo VoiceType DEBUG Mode
+echo Aria DEBUG Mode
 echo ========================================
 echo Python: _internal\\python.exe
 echo.
-"_internal\\python.exe" -s -m voicetype.launcher
+"_internal\\python.exe" -s -m aria.launcher
 echo.
 echo ========================================
 echo Application exited. Press any key to close.
 pause > nul
 """
-    (DIST_DIR / "VoiceType_debug.bat").write_text(debug_content, encoding="utf-8")
-    log("  Created VoiceType_debug.bat (debug mode)")
+    (DIST_DIR / "Aria_debug.bat").write_text(debug_content, encoding="utf-8")
+    log("  Created Aria_debug.bat (debug mode)")
 
     log("Launchers created.")
 
@@ -571,24 +571,24 @@ def step_create_shortcut_generator():
     log("Step 7: Creating shortcut generator...")
 
     # Copy icon file to dist
-    icon_src = PROJECT_ROOT / "assets" / "voicetype.ico"
+    icon_src = PROJECT_ROOT / "assets" / "aria.ico"
     if icon_src.exists():
-        icon_dst = DIST_DIR / "voicetype.ico"
+        icon_dst = DIST_DIR / "aria.ico"
         shutil.copy2(icon_src, icon_dst)
-        log("  Copied voicetype.ico")
+        log("  Copied aria.ico")
     else:
-        log("  Warning: voicetype.ico not found, shortcut will use default icon")
+        log("  Warning: aria.ico not found, shortcut will use default icon")
 
     # PowerShell script with icon support
     ps_content = """# Run this to create a desktop shortcut
 $WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\\Desktop\\VoiceType.lnk")
+$Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\\Desktop\\Aria.lnk")
 $Shortcut.TargetPath = "$PSScriptRoot\\_internal\\pythonw.exe"
-$Shortcut.Arguments = "-s -m voicetype.launcher"
+$Shortcut.Arguments = "-s -m aria.launcher"
 $Shortcut.WorkingDirectory = $PSScriptRoot
-$Shortcut.Description = "VoiceType - Local AI Voice Dictation"
+$Shortcut.Description = "Aria - Local AI Voice Dictation"
 # Set custom icon
-$IconPath = "$PSScriptRoot\\voicetype.ico"
+$IconPath = "$PSScriptRoot\\aria.ico"
 if (Test-Path $IconPath) {
     $Shortcut.IconLocation = "$IconPath,0"
 }
@@ -617,7 +617,7 @@ def step_verify_build():
         internal_dir / "pythonw.exe",
         internal_dir / "python.exe",
         internal_dir / f"python{PYTHON_MAJOR}{PYTHON_MINOR}.dll",
-        internal_dir / "app" / "voicetype" / "launcher.py",
+        internal_dir / "app" / "aria" / "launcher.py",
         internal_dir / "Lib" / "site-packages" / "numpy",
         internal_dir / "Lib" / "site-packages" / "torch",
     ]
@@ -639,19 +639,19 @@ def step_summary():
     log(f"Output: {DIST_DIR}")
     log("")
     log("Directory structure:")
-    log("  VoiceType/")
-    log("  +-- VoiceType.cmd        <- Standard launcher")
-    log("  +-- VoiceType.vbs        <- Silent launcher (recommended)")
-    log("  +-- VoiceType_debug.bat  <- Debug mode (shows errors)")
+    log("  Aria/")
+    log("  +-- Aria.cmd        <- Standard launcher")
+    log("  +-- Aria.vbs        <- Silent launcher (recommended)")
+    log("  +-- Aria_debug.bat  <- Debug mode (shows errors)")
     log("  +-- CreateShortcut.cmd   <- Create desktop shortcut")
     log("  +-- _internal/")
     log("      +-- python.exe / pythonw.exe")
-    log("      +-- app/voicetype/   <- Source code")
+    log("      +-- app/aria/   <- Source code")
     log("      +-- Lib/site-packages/ <- Dependencies")
     log("")
     log("TESTING:")
-    log("  1. First, run VoiceType_debug.bat to check for errors")
-    log("  2. If OK, use VoiceType.vbs for silent launch")
+    log("  1. First, run Aria_debug.bat to check for errors")
+    log("  2. If OK, use Aria.vbs for silent launch")
     log("  3. Upload _internal/pythonw.exe to VirusTotal (should be 0 detections)")
 
 
@@ -661,7 +661,7 @@ def step_summary():
 
 
 def main():
-    log("VoiceType Portable Build v2.0")
+    log("Aria Portable Build v2.0")
     log(f"Project root: {PROJECT_ROOT}")
     log("")
 

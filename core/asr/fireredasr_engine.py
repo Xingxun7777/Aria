@@ -44,7 +44,7 @@ def _detect_fireredasr_path() -> Optional[str]:
 
     # 2. Check sibling directory (for development: G:\AIBOX\FireRedASR)
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Go up: core/asr -> core -> voicetype-v1.1-dev -> AIBOX
+    # Go up: core/asr -> core -> aria-v1.1-dev -> AIBOX
     aibox_dir = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
     )

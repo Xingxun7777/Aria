@@ -63,3 +63,4 @@ build_portable/*.spec
 
 # User data
 data/
+.venv_old/

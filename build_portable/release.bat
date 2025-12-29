@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ================================================
-echo    VoiceType 便携版打包脚本
+echo    Aria 便携版打包脚本
 echo ================================================
 echo.
 
@@ -26,7 +26,7 @@ if errorlevel 1 (
 
 echo.
 echo [3/3] 验证敏感数据已清理...
-findstr /c:"sk-or-v1" dist_portable\VoiceType\_internal\app\voicetype\config\hotwords.json >nul 2>&1
+findstr /c:"sk-or-v1" dist_portable\Aria\_internal\app\aria\config\hotwords.json >nul 2>&1
 if not errorlevel 1 (
     echo 警告：发现 API Key 未清理！
     pause
@@ -39,10 +39,10 @@ echo ================================================
 echo    打包完成！
 echo ================================================
 echo.
-echo 输出目录: dist_portable\VoiceType\
+echo 输出目录: dist_portable\Aria\
 echo.
 echo 下一步:
-echo   1. 测试: dist_portable\VoiceType\VoiceType.exe
-echo   2. 压缩: 7z a VoiceType-v1.1.7z dist_portable\VoiceType\
+echo   1. 测试: dist_portable\Aria\Aria.exe
+echo   2. 压缩: 7z a Aria-v1.1.7z dist_portable\Aria\
 echo.
 pause

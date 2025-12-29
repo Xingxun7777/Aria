@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""VoiceType Launcher with error logging, singleton check, and splash screen."""
+"""Aria Launcher with error logging, singleton check, and splash screen."""
 
 import sys
 import os
@@ -17,7 +17,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 def _is_portable_build() -> bool:
     """Check if running from dist_portable directory."""
     script_path = os.path.abspath(__file__)
-    # Portable build runs from: dist_portable/VoiceType/_internal/app/voicetype/launcher.py
+    # Portable build runs from: dist_portable/Aria/_internal/app/aria/launcher.py
     # or the embedded Python runs it as module
     return "dist_portable" in script_path or "_internal" in script_path
 
@@ -27,23 +27,23 @@ IS_PORTABLE = _is_portable_build()
 # === Singleton Check with Named Mutex (Windows) + File Lock (fallback) ===
 # Use different names for dev and portable to allow simultaneous running
 if IS_PORTABLE:
-    LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-portable.lock")
-    MUTEX_NAME = "VoiceType-Portable-Singleton-Mutex"
+    LOCK_FILE = os.path.join(tempfile.gettempdir(), "aria-portable.lock")
+    MUTEX_NAME = "Aria-Portable-Singleton-Mutex"
 else:
-    LOCK_FILE = os.path.join(tempfile.gettempdir(), "voicetype-dev.lock")
-    MUTEX_NAME = "VoiceType-Dev-Singleton-Mutex"
+    LOCK_FILE = os.path.join(tempfile.gettempdir(), "aria-dev.lock")
+    MUTEX_NAME = "Aria-Dev-Singleton-Mutex"
 
 _lock_handle = None
 _mutex_handle = None
 
 
-def find_and_kill_voicetype_processes() -> int:
+def find_and_kill_aria_processes() -> int:
     """
-    Find and kill any existing VoiceType processes.
+    Find and kill any existing Aria processes.
     Returns number of processes killed.
 
     IMPORTANT: Only kills processes running launcher.py or main.py directly,
-    not any process that happens to have 'voicetype' in the path.
+    not any process that happens to have 'aria' in the path.
     """
     if sys.platform != "win32":
         return 0
@@ -52,7 +52,7 @@ def find_and_kill_voicetype_processes() -> int:
     current_pid = os.getpid()
 
     try:
-        # Use wmic to find python processes with voicetype in command line
+        # Use wmic to find python processes with aria in command line
         result = subprocess.run(
             [
                 "wmic",
@@ -71,17 +71,17 @@ def find_and_kill_voicetype_processes() -> int:
         for line in result.stdout.split("\n"):
             line_lower = line.lower()
 
-            # Only match processes that are running VoiceType scripts directly
-            # (not just any process with 'voicetype' in the path)
-            is_voicetype_process = (
+            # Only match processes that are running Aria scripts directly
+            # (not just any process with 'aria' in the path)
+            is_aria_process = (
                 "launcher.py" in line_lower
-                or "voicetype.ui.qt.main" in line_lower  # module form
+                or "aria.ui.qt.main" in line_lower  # module form
                 or "ui\\qt\\main.py" in line_lower
                 or "ui/qt/main.py" in line_lower
                 or "splash_runner.py" in line_lower
             )
 
-            if not is_voicetype_process:
+            if not is_aria_process:
                 continue
 
             # Extract PID (last number in line)
@@ -97,7 +97,7 @@ def find_and_kill_voicetype_processes() -> int:
                             timeout=5,
                             creationflags=subprocess.CREATE_NO_WINDOW,
                         )
-                        print(f"[CLEANUP] Killed orphan VoiceType process: PID {pid}")
+                        print(f"[CLEANUP] Killed orphan Aria process: PID {pid}")
                         killed += 1
                 except (ValueError, subprocess.TimeoutExpired):
                     pass
@@ -314,7 +314,7 @@ def check_and_cleanup_stale_lock() -> bool:
                     return True
                 return False
             else:
-                print(f"[LOCK] VoiceType is running (PID {old_pid})")
+                print(f"[LOCK] Aria is running (PID {old_pid})")
                 return False
     except (ValueError, IOError, OSError) as e:
         # Corrupted lock file - try to remove
@@ -392,10 +392,10 @@ def release_lock():
 # Check singleton before doing anything expensive
 if not acquire_lock():
     print("=" * 50)
-    print("VoiceType is already running!")
+    print("Aria is already running!")
     print("=" * 50)
     print(f"Lock file: {LOCK_FILE}")
-    print("If VoiceType is not visible, check system tray.")
+    print("If Aria is not visible, check system tray.")
     print("If stuck, run: python tools/kill_and_restart.py")
     sys.exit(1)
 
@@ -407,7 +407,7 @@ if sys.platform == "win32":
     try:
         import ctypes
 
-        ctypes.windll.kernel32.SetConsoleTitleW("VoiceType-Dev")
+        ctypes.windll.kernel32.SetConsoleTitleW("Aria-Dev")
     except Exception:
         pass
 
@@ -481,7 +481,7 @@ def start_splash():
     Returns (process, reporter) tuple, or (None, None) if splash fails.
     """
     try:
-        from voicetype.progress_ipc import find_free_port, ProgressReporter
+        from aria.progress_ipc import find_free_port, ProgressReporter
 
         # Find available port for IPC
         port = find_free_port()
@@ -553,8 +553,8 @@ try:
     project_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(project_dir)
     os.chdir(parent_dir)
-    # CRITICAL: Insert project_dir FIRST so local voicetype/ package takes precedence
-    # over stable version at parent_dir/voicetype/
+    # CRITICAL: Insert project_dir FIRST so local aria/ package takes precedence
+    # over stable version at parent_dir/aria/
     if project_dir not in sys.path:
         sys.path.insert(0, project_dir)
     if parent_dir not in sys.path:
@@ -594,7 +594,7 @@ try:
             log("Pre-loading FunASR (before Qt imports)...")
             emit_progress("funasr_model", "加载语音模型中...", 20)
             print("Pre-loading FunASR model (before Qt)...")
-            from voicetype.core.asr.funasr_engine import FunASREngine, FunASRConfig
+            from aria.core.asr.funasr_engine import FunASREngine, FunASRConfig
 
             funasr_cfg = config.get("funasr", {})
             pre_config = FunASRConfig(
@@ -605,9 +605,9 @@ try:
             )
             _preloaded_asr = FunASREngine(pre_config)
             _preloaded_asr.load()
-            import voicetype
+            import aria
 
-            voicetype._preloaded_asr_engine = _preloaded_asr
+            aria._preloaded_asr_engine = _preloaded_asr
             log("FunASR pre-loaded successfully")
             emit_progress("funasr_model", "模型加载完成", 50)
             print("FunASR model pre-loaded!")
@@ -624,7 +624,7 @@ try:
             if os.path.exists(fireredasr_path) and fireredasr_path not in sys.path:
                 sys.path.insert(0, fireredasr_path)
                 log(f"Added FireRedASR to path: {fireredasr_path}")
-            from voicetype.core.asr.fireredasr_engine import (
+            from aria.core.asr.fireredasr_engine import (
                 FireRedASREngine,
                 FireRedASRConfig,
             )
@@ -641,9 +641,9 @@ try:
             )
             _preloaded_asr = FireRedASREngine(pre_config)
             _preloaded_asr.load()
-            import voicetype
+            import aria
 
-            voicetype._preloaded_asr_engine = _preloaded_asr
+            aria._preloaded_asr_engine = _preloaded_asr
             log("FireRedASR pre-loaded successfully")
             emit_progress("funasr_model", "模型加载完成", 50)
             print("FireRedASR model pre-loaded!")
@@ -665,7 +665,7 @@ try:
             os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
             log("Set HF_ENDPOINT to hf-mirror.com for China users")
 
-            from voicetype.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+            from aria.core.asr.whisper_engine import WhisperEngine, WhisperConfig
             from pathlib import Path
 
             whisper_cfg = config.get("whisper", {})
@@ -699,9 +699,9 @@ try:
             )
             _preloaded_asr = WhisperEngine(pre_config)
             _preloaded_asr.load()
-            import voicetype
+            import aria
 
-            voicetype._preloaded_asr_engine = _preloaded_asr
+            aria._preloaded_asr_engine = _preloaded_asr
             log("Whisper model pre-loaded successfully")
             emit_progress("funasr_model", "模型加载完成", 50)
             print("Whisper model pre-loaded!")
@@ -719,7 +719,7 @@ try:
 
     emit_progress("qt_ui")  # 80%
 
-    from voicetype.ui.qt.main import main
+    from aria.ui.qt.main import main
 
     log("Import OK, starting...")
 

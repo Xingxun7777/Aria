@@ -1,5 +1,5 @@
 """
-VoiceType - Local AI Voice Dictation + Smart Completion Tool
+Aria - Local AI Voice Dictation + Smart Completion Tool
 
 Core modules:
 - system: Platform integration (hotkeys, focus, devices)
@@ -10,4 +10,4 @@ Core modules:
 """
 
 __version__ = "1.1dev"
-__author__ = "VoiceType Team"
+__author__ = "Aria Team"

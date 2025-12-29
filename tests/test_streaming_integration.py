@@ -6,11 +6,13 @@ Tests the full pipeline: AudioCapture + VAD + WhisperEngine + StreamingDisplay
 
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import numpy as np
 import time
 from typing import List
+
 
 # Test imports
 def test_imports():
@@ -20,22 +22,29 @@ def test_imports():
     print("=" * 60)
 
     try:
-        from voicetype.core.audio.vad import VADProcessor, VADConfig
+        from aria.core.audio.vad import VADProcessor, VADConfig
+
         print("  [OK] VADProcessor imported")
 
-        from voicetype.core.audio.capture import AudioCapture, AudioConfig
+        from aria.core.audio.capture import AudioCapture, AudioConfig
+
         print("  [OK] AudioCapture imported")
 
-        from voicetype.core.asr.base import ASREngine, ASRResult, TranscriptType
+        from aria.core.asr.base import ASREngine, ASRResult, TranscriptType
+
         print("  [OK] ASR base classes imported")
 
-        from voicetype.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+        from aria.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+
         print("  [OK] WhisperEngine imported")
 
-        from voicetype.ui.streaming_display import (
-            DisplayBuffer, DisplayState, TranscriptSegment,
-            StreamingTranscriptionManager
+        from aria.ui.streaming_display import (
+            DisplayBuffer,
+            DisplayState,
+            TranscriptSegment,
+            StreamingTranscriptionManager,
         )
+
         print("  [OK] StreamingDisplay imported")
 
         return True
@@ -50,7 +59,7 @@ def test_display_buffer():
     print("Test 2: DisplayBuffer State Machine")
     print("=" * 60)
 
-    from voicetype.ui.streaming_display import DisplayBuffer, DisplayState
+    from aria.ui.streaming_display import DisplayBuffer, DisplayState
 
     buffer = DisplayBuffer()
     updates: List[tuple] = []
@@ -59,7 +68,7 @@ def test_display_buffer():
     # Set callbacks
     buffer.set_callbacks(
         on_update=lambda text, is_final: updates.append((text, is_final)),
-        on_state_change=lambda state: states.append(state)
+        on_state_change=lambda state: states.append(state),
     )
 
     # Test state transitions
@@ -92,7 +101,9 @@ def test_display_buffer():
     # Verify callbacks fired
     assert len(updates) >= 3, "Should have multiple update callbacks"
     assert len(states) >= 3, "Should have state change callbacks"
-    print(f"  [OK] Callbacks fired: {len(updates)} updates, {len(states)} state changes")
+    print(
+        f"  [OK] Callbacks fired: {len(updates)} updates, {len(states)} state changes"
+    )
 
     # Test clear
     buffer.clear()
@@ -109,7 +120,7 @@ def test_transcript_segment():
     print("Test 3: TranscriptSegment Display Styles")
     print("=" * 60)
 
-    from voicetype.ui.streaming_display import TranscriptSegment
+    from aria.ui.streaming_display import TranscriptSegment
 
     # Final segment
     final = TranscriptSegment(text="Hello", is_final=True, confidence=1.0)
@@ -135,14 +146,10 @@ def test_asr_result():
     print("Test 4: ASRResult Properties")
     print("=" * 60)
 
-    from voicetype.core.asr.base import ASRResult, TranscriptType
+    from aria.core.asr.base import ASRResult, TranscriptType
 
     # Interim result
-    interim = ASRResult(
-        text="Testing",
-        type=TranscriptType.INTERIM,
-        confidence=0.8
-    )
+    interim = ASRResult(text="Testing", type=TranscriptType.INTERIM, confidence=0.8)
     assert interim.is_interim
     assert not interim.is_final
     print("  [OK] Interim result properties correct")
@@ -153,7 +160,7 @@ def test_asr_result():
         type=TranscriptType.FINAL,
         confidence=1.0,
         start_time=0.0,
-        end_time=2.5
+        end_time=2.5,
     )
     assert final.is_final
     assert not final.is_interim
@@ -169,7 +176,7 @@ def test_whisper_engine_init():
     print("Test 5: WhisperEngine Configuration")
     print("=" * 60)
 
-    from voicetype.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+    from aria.core.asr.whisper_engine import WhisperEngine, WhisperConfig
 
     # Default config
     config = WhisperConfig()
@@ -178,11 +185,7 @@ def test_whisper_engine_init():
     print("  [OK] Default config: model='base', sr=16000")
 
     # Custom config
-    config = WhisperConfig(
-        model_name="small",
-        language="zh",
-        chunk_length_s=3.0
-    )
+    config = WhisperConfig(model_name="small", language="zh", chunk_length_s=3.0)
     engine = WhisperEngine(config)
     assert not engine.is_loaded
     assert engine.config.language == "zh"
@@ -197,9 +200,7 @@ def test_streaming_manager_setup():
     print("Test 6: StreamingTranscriptionManager Setup")
     print("=" * 60)
 
-    from voicetype.ui.streaming_display import (
-        StreamingTranscriptionManager, DisplayState
-    )
+    from aria.ui.streaming_display import StreamingTranscriptionManager, DisplayState
 
     manager = StreamingTranscriptionManager()
 
@@ -230,15 +231,15 @@ def test_simulated_pipeline():
     print("Test 7: Simulated Pipeline (No Real Audio)")
     print("=" * 60)
 
-    from voicetype.ui.streaming_display import DisplayBuffer, DisplayState
-    from voicetype.core.asr.base import ASRResult, TranscriptType
+    from aria.ui.streaming_display import DisplayBuffer, DisplayState
+    from aria.core.asr.base import ASRResult, TranscriptType
 
     buffer = DisplayBuffer()
     results = []
 
     buffer.set_callbacks(
         on_update=lambda t, f: results.append(f"Update: '{t}' (final={f})"),
-        on_state_change=lambda s: results.append(f"State: {s.name}")
+        on_state_change=lambda s: results.append(f"State: {s.name}"),
     )
 
     # Simulate workflow
@@ -276,7 +277,7 @@ def test_simulated_pipeline():
 def run_all_tests():
     """Run all integration tests."""
     print("\n" + "=" * 70)
-    print("  VOICETYPE STREAMING INTEGRATION TEST")
+    print("  ARIA STREAMING INTEGRATION TEST")
     print("=" * 70)
 
     tests = [

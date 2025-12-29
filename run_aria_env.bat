@@ -1,14 +1,14 @@
 @echo off
 cd /d G:\AIBOX
-echo VoiceType Starting (独立环境 + RTX 5090 GPU)
+echo Aria Starting (独立环境 + RTX 5090 GPU)
 echo =============================================
 echo Hotkey: ` (grave/backtick)
 echo Model: large-v3-turbo on CUDA
 echo.
 
 set PYTHONUNBUFFERED=1
-"C:\Users\84238\.conda\envs\voicetype\python.exe" -u -m voicetype --hotkey grave
+"C:\Users\84238\.conda\envs\aria\python.exe" -u -m aria --hotkey grave
 
 echo.
-echo VoiceType exited.
+echo Aria exited.
 pause

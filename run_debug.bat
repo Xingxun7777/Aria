@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title VoiceType DEBUG
+title Aria DEBUG
 
 set "PROJECT_ROOT=%~dp0"
 set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
@@ -15,7 +15,7 @@ set "PYTHONHOME="
 set "KMP_DUPLICATE_LIB_OK=TRUE"
 
 echo ========================================
-echo VoiceType DEBUG Mode
+echo Aria DEBUG Mode
 echo ========================================
 echo.
 

@@ -232,7 +232,7 @@ class SplashWindow(QWidget):
         font.setLetterSpacing(QFont.AbsoluteSpacing, -0.3)
         p.setFont(font)
         p.setPen(Config.TEXT_LIGHT)
-        p.drawText(int(logo_x), int(cy + margin_top + 13), "VoiceType")
+        p.drawText(int(logo_x), int(cy + margin_top + 13), "Aria")
 
         # Status text (centered in content area)
         small_font = QFont("Segoe UI", 8)
@@ -320,7 +320,7 @@ class SplashWindow(QWidget):
 
 def run_splash(address: Tuple[str, int]):
     """Entry point for splash subprocess with IPC."""
-    from voicetype.progress_ipc import ProgressListener
+    from aria.progress_ipc import ProgressListener
 
     app = QApplication(sys.argv)
     splash = SplashWindow()

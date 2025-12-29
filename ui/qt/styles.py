@@ -1,5 +1,5 @@
 # styles.py
-# QSS dark glass theme for VoiceType
+# QSS dark glass theme for Aria
 
 THEME = {
     "bg_dark": "#161618",

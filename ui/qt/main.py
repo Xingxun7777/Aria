@@ -1,5 +1,5 @@
 # main.py
-# Qt frontend entry point for VoiceType
+# Qt frontend entry point for Aria
 # Floating ball UI with mouse interactions
 
 import sys
@@ -45,7 +45,7 @@ def _log(msg: str):
 def main():
     """Main entry point for Qt frontend with floating ball UI."""
     # Parse arguments
-    parser = argparse.ArgumentParser(description="VoiceType Qt Frontend")
+    parser = argparse.ArgumentParser(description="Aria Qt Frontend")
     parser.add_argument(
         "--hotkey", default="grave", help="Hotkey for recording (default: grave/`)"
     )
@@ -54,7 +54,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # Keep running with floating ball
-    app.setApplicationName("VoiceType-Dev")
+    app.setApplicationName("Aria-Dev")
 
     # Create UI components
     bridge = QtBridge()
@@ -77,7 +77,7 @@ def main():
     from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor, QPen, QLinearGradient
 
     def create_tray_icon():
-        """Create a black-orange VoiceType tray icon."""
+        """Create a black-orange Aria tray icon."""
         pixmap = QPixmap(32, 32)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
@@ -134,7 +134,7 @@ def main():
     tray_menu.addAction(action_quit)
 
     tray.setContextMenu(tray_menu)
-    tray.setToolTip("VoiceType-Dev - 单击显示历史，双击打开热词设置")
+    tray.setToolTip("Aria-Dev - 单击显示历史，双击打开热词设置")
     tray.show()
 
     # Tray icon click handlers
@@ -168,7 +168,7 @@ def main():
     bridge.highlightSaved.connect(
         ball.on_highlight_saved
     )  # Gold flash for highlight save
-    bridge.error.connect(lambda msg: QMessageBox.warning(None, "VoiceType Error", msg))
+    bridge.error.connect(lambda msg: QMessageBox.warning(None, "Aria Error", msg))
 
     # Handle setting changes from backend (e.g., via wakeword commands)
     def on_setting_changed(setting: str, value: bool):
@@ -209,13 +209,13 @@ def main():
         from .mock_backend import MockBackend
 
         backend = MockBackend(bridge)
-        _log("VoiceType Qt Frontend Started (Demo Mode - Floating Ball)")
+        _log("Aria Qt Frontend Started (Demo Mode - Floating Ball)")
     else:
         # Real backend
         try:
-            from voicetype.app import VoiceTypeApp
+            from aria.app import AriaApp
             import json
-            from voicetype.core.utils import get_config_path
+            from aria.core.utils import get_config_path
 
             # Read hotkey from config (before creating backend)
             config_path = get_config_path("hotwords.json")
@@ -226,14 +226,14 @@ def main():
                 config_hotkey = config.get("general", {}).get("hotkey", "")
                 if config_hotkey:
                     actual_hotkey = config_hotkey.lower()
-                    _log(f"[VoiceType] Using hotkey from config: {actual_hotkey}")
+                    _log(f"[Aria] Using hotkey from config: {actual_hotkey}")
             except Exception as e:
-                _log(f"[VoiceType] Could not read hotkey from config: {e}")
+                _log(f"[Aria] Could not read hotkey from config: {e}")
 
-            backend = VoiceTypeApp(hotkey=actual_hotkey)
+            backend = AriaApp(hotkey=actual_hotkey)
             backend.set_bridge(bridge)
             backend.start()
-            _log(f"VoiceType Qt Frontend Started (Hotkey: {actual_hotkey})")
+            _log(f"Aria Qt Frontend Started (Hotkey: {actual_hotkey})")
 
             # Check start_active setting - if False, disable hotkey listening
             # (reuse config already loaded above)
@@ -242,7 +242,7 @@ def main():
                 if not start_active:
                     # Enter sleeping mode (UI shows dimmed, wakeword still works)
                     backend.set_sleeping(True)
-                    _log("[VoiceType] Started in sleeping mode (start_active=False)")
+                    _log("[Aria] Started in sleeping mode (start_active=False)")
                 else:
                     # CRITICAL FIX: Explicitly ensure system is fully active
                     # Issue: PopupMenu emits enableToggled(True) during __init__,
@@ -271,7 +271,7 @@ def main():
                             ball._popup_menu.toggle.setChecked(True)
                             ball._popup_menu.toggle.blockSignals(False)
                             _log("[STARTUP] Toggle switch synced to ON")
-                        _log("[VoiceType] System fully activated (start_active=True)")
+                        _log("[Aria] System fully activated (start_active=True)")
                         _log("[STARTUP] System fully activated!")
 
                     def _auto_start_recording():
@@ -280,16 +280,16 @@ def main():
                         if hasattr(backend, "toggle_recording"):
                             backend.toggle_recording()
                             _log("[STARTUP] Recording started automatically!")
-                            _log("[VoiceType] Recording started automatically")
+                            _log("[Aria] Recording started automatically")
 
                     # Use 500ms delay to ensure all components are ready
                     # (100ms was sometimes too short on slower machines)
                     QTimer.singleShot(500, _ensure_active_state)
                     # Auto-start recording 200ms after activation
                     QTimer.singleShot(700, _auto_start_recording)
-                    _log("[VoiceType] Started in active mode (start_active=True)")
+                    _log("[Aria] Started in active mode (start_active=True)")
             except Exception as e:
-                _log(f"[VoiceType] Could not read start_active setting: {e}")
+                _log(f"[Aria] Could not read start_active setting: {e}")
                 # Default: emit IDLE state after event loop starts
                 QTimer.singleShot(100, lambda: bridge.emit_state("IDLE"))
         except Exception as e:
@@ -303,7 +303,7 @@ def main():
             QMessageBox.critical(
                 None,
                 "Startup Error",
-                f"Failed to start VoiceType backend:\n{e}\n\nFalling back to demo mode.",
+                f"Failed to start Aria backend:\n{e}\n\nFalling back to demo mode.",
             )
             from .mock_backend import MockBackend
 
@@ -318,9 +318,9 @@ def main():
 
     def on_action_triggered(action):
         """Handle UI actions from backend."""
-        # CRITICAL: Must use voicetype.core.action (not core.action) to match
+        # CRITICAL: Must use aria.core.action (not core.action) to match
         # the module identity used by executor.py. Otherwise enum comparison fails.
-        from voicetype.core.action import (
+        from aria.core.action import (
             ActionType,
             TranslationAction,
             ChatAction,
@@ -447,7 +447,7 @@ def main():
                 if not api_url or not api_key:
                     _log("[MAIN] ERROR: API not configured for clipboard translation")
                     tray.showMessage(
-                        "VoiceType", "API 未配置", QSystemTrayIcon.Warning, 2000
+                        "Aria", "API 未配置", QSystemTrayIcon.Warning, 2000
                     )
                     return
 
@@ -495,19 +495,19 @@ def main():
                 f"[UI] Clipboard translation finished: {len(translated_text)} chars copied"
             )
             tray.showMessage(
-                "VoiceType", "已复制到剪切板", QSystemTrayIcon.Information, 2000
+                "Aria", "已复制到剪切板", QSystemTrayIcon.Information, 2000
             )
         except Exception as e:
             _log(f"[UI] Failed to copy to clipboard: {e}")
             tray.showMessage(
-                "VoiceType", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000
+                "Aria", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000
             )
 
     def on_clipboard_translation_error(request_id: str, error_msg: str):
         """Handle clipboard translation error."""
         _log(f"[UI] Clipboard translation error: {error_msg}")
         tray.showMessage(
-            "VoiceType", f"翻译失败: {error_msg}", QSystemTrayIcon.Warning, 3000
+            "Aria", f"翻译失败: {error_msg}", QSystemTrayIcon.Warning, 3000
         )
 
     def on_translation_finished(request_id: str, translated_text: str):
@@ -650,7 +650,7 @@ def main():
 
     # Handle enable toggle from popup menu
     def on_enable_toggled(enabled):
-        _log(f"[VoiceType] Enable toggled: {enabled}")
+        _log(f"[Aria] Enable toggled: {enabled}")
         if hasattr(backend, "set_enabled"):
             backend.set_enabled(enabled)
 
@@ -658,7 +658,7 @@ def main():
 
     # Handle mode change from popup menu
     def on_mode_changed(mode):
-        _log(f"[VoiceType] Polish mode changed: {mode}")
+        _log(f"[Aria] Polish mode changed: {mode}")
         if hasattr(backend, "set_polish_mode"):
             backend.set_polish_mode(mode)
         # Sync settings window
@@ -668,7 +668,7 @@ def main():
 
     # Handle sleep toggle from popup menu (fallback button)
     def on_sleep_toggled(sleeping):
-        _log(f"[VoiceType] Sleep toggled via UI: {sleeping}")
+        _log(f"[Aria] Sleep toggled via UI: {sleeping}")
         if hasattr(backend, "set_sleeping"):
             backend.set_sleeping(sleeping)
 
@@ -678,10 +678,10 @@ def main():
         # Handle translate output mode change from popup menu
         def on_translate_mode_changed(mode):
             """Handle translation output mode change from popup menu."""
-            _log(f"[VoiceType] Translate output mode changed: {mode}")
+            _log(f"[Aria] Translate output mode changed: {mode}")
             try:
                 import json
-                from voicetype.core.utils import get_config_path
+                from aria.core.utils import get_config_path
 
                 config_path = get_config_path("hotwords.json")
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -695,22 +695,22 @@ def main():
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, ensure_ascii=False, indent=2)
 
-                _log(f"[VoiceType] Translate output mode saved: {mode}")
+                _log(f"[Aria] Translate output mode saved: {mode}")
                 tray.showMessage(
-                    "VoiceType",
+                    "Aria",
                     f"翻译输出模式: {'弹窗显示' if mode == 'popup' else '复制到剪贴板'}",
                     QSystemTrayIcon.MessageIcon.Information,
                     1500,
                 )
             except Exception as e:
-                _log(f"[VoiceType] Failed to save translate mode: {e}")
+                _log(f"[Aria] Failed to save translate mode: {e}")
 
         ball._popup_menu.translateModeChanged.connect(on_translate_mode_changed)
 
         # Load and sync initial translate mode
         try:
             import json
-            from voicetype.core.utils import get_config_path
+            from aria.core.utils import get_config_path
 
             config_path = get_config_path("hotwords.json")
             with open(config_path, "r", encoding="utf-8") as f:
@@ -724,28 +724,28 @@ def main():
     if hasattr(backend, "get_polish_mode"):
         initial_mode = backend.get_polish_mode()
         ball.set_polish_mode(initial_mode)
-        _log(f"[VoiceType] Initial polish mode: {initial_mode}")
+        _log(f"[Aria] Initial polish mode: {initial_mode}")
 
     def cleanup_and_quit():
         """Cleanup backend before quitting."""
         import threading
         import os
 
-        _log("[VoiceType] Cleaning up and quitting...")
+        _log("[Aria] Cleaning up and quitting...")
 
         # Step 1: Hide tray icon first to prevent ghost icons on Windows
         try:
             tray.hide()
         except Exception as e:
-            _log(f"[VoiceType] Tray hide error (ignored): {e}")
+            _log(f"[Aria] Tray hide error (ignored): {e}")
 
         # Step 2: Stop backend (ASR, audio capture, hotkey listener)
         if hasattr(backend, "stop"):
             try:
                 backend.stop()
-                _log("[VoiceType] Backend stopped successfully")
+                _log("[Aria] Backend stopped successfully")
             except Exception as e:
-                _log(f"[VoiceType] Backend stop error: {e}")
+                _log(f"[Aria] Backend stop error: {e}")
 
         # Step 3: Wait briefly for threads to terminate
         import time
@@ -758,16 +758,16 @@ def main():
         ]
         if remaining:
             _log(
-                f"[VoiceType] Warning: {len(remaining)} non-daemon threads still running: {[t.name for t in remaining]}"
+                f"[Aria] Warning: {len(remaining)} non-daemon threads still running: {[t.name for t in remaining]}"
             )
 
         # Step 5: Quit Qt application
         try:
             app.quit()
         except Exception as e:
-            _log(f"[VoiceType] App quit error (ignored): {e}")
+            _log(f"[Aria] App quit error (ignored): {e}")
 
-        _log("[VoiceType] Cleanup complete")
+        _log("[Aria] Cleanup complete")
 
         # Step 6: Force exit if still running after 1 second
         # (handles stubborn threads that don't respond to app.quit)
@@ -780,7 +780,7 @@ def main():
             ]
             if remaining_final:
                 _log(
-                    f"[VoiceType] Force exiting due to stuck threads: {[t.name for t in remaining_final]}"
+                    f"[Aria] Force exiting due to stuck threads: {[t.name for t in remaining_final]}"
                 )
                 os._exit(0)
 
@@ -791,7 +791,7 @@ def main():
 
     # Register cleanup for signal handling and atexit
     def signal_handler(signum, frame):
-        _log(f"[VoiceType] Received signal {signum}, cleaning up...")
+        _log(f"[Aria] Received signal {signum}, cleaning up...")
         cleanup_and_quit()
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -803,7 +803,7 @@ def main():
             if hasattr(backend, "stop"):
                 backend.stop()
         except Exception as e:
-            _log(f"[VoiceType] atexit cleanup error (ignored): {e}")
+            _log(f"[Aria] atexit cleanup error (ignored): {e}")
 
     atexit.register(atexit_cleanup)
 
@@ -823,14 +823,14 @@ def main():
         # Sync popup menu with saved mode
         saved_mode = config.get("polish_mode", "fast")
         ball.set_polish_mode(saved_mode)
-        _log(f"[VoiceType] Settings saved, polish mode synced: {saved_mode}")
+        _log(f"[Aria] Settings saved, polish mode synced: {saved_mode}")
 
     settings.settingsSaved.connect(on_settings_saved)
 
     # Show floating ball
     ball.show()
 
-    _log("VoiceType Floating Ball is now visible.")
+    _log("Aria Floating Ball is now visible.")
     _log("  - Left-click: Toggle recording")
     _log("  - Right-click: Show popup menu")
     _log("  - Middle-click: Lock position")

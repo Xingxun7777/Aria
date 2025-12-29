@@ -1,10 +1,10 @@
 """
-VoiceType Application
+Aria Application
 =====================
 Main application that orchestrates all components.
 
 Usage:
-    python -m voicetype.app
+    python -m aria.app
 
 Press CapsLock to toggle recording.
 Press Ctrl+C to exit.
@@ -114,9 +114,9 @@ class StreamingConfig:
     min_speech_ms: int = 1000  # 最少说话1秒才开始流式识别（更快响应）
 
 
-class VoiceTypeApp:
+class AriaApp:
     """
-    Main VoiceType application.
+    Main Aria application.
 
     Orchestrates:
     - Hotkey listening (CapsLock toggle)
@@ -129,14 +129,14 @@ class VoiceTypeApp:
     - Text insertion
 
     Usage (Qt mode):
-        app = VoiceTypeApp(hotkey="capslock")
+        app = AriaApp(hotkey="capslock")
         app.set_bridge(bridge)  # QtBridge for UI updates
         app.start()  # Non-blocking
         ...
         app.stop()  # Cleanup
 
     Usage (CLI mode):
-        app = VoiceTypeApp(hotkey="capslock")
+        app = AriaApp(hotkey="capslock")
         app.run()  # Blocking
     """
 
@@ -217,12 +217,12 @@ class VoiceTypeApp:
     def set_sound_enabled(self, enabled: bool) -> None:
         """Enable or disable sound effects."""
         self._sound_enabled = enabled
-        print(f"[VoiceType] Sound {'enabled' if enabled else 'disabled'}")
+        print(f"[Aria] Sound {'enabled' if enabled else 'disabled'}")
 
     def set_auto_send(self, enabled: bool) -> None:
         """Enable or disable auto-send (press Enter after text insertion)."""
         self._auto_send_enabled = enabled
-        print(f"[VoiceType] Auto-send {'enabled' if enabled else 'disabled'}")
+        print(f"[Aria] Auto-send {'enabled' if enabled else 'disabled'}")
 
     def get_auto_send(self) -> bool:
         """Check if auto-send is enabled."""
@@ -575,9 +575,9 @@ class VoiceTypeApp:
             # FunASR (Paraformer/SenseVoice)
             self._asr_engine_type = "funasr"
             # Check for pre-loaded engine (loaded before Qt to avoid conflict)
-            import voicetype
+            import aria
 
-            preloaded = getattr(voicetype, "_preloaded_asr_engine", None)
+            preloaded = getattr(aria, "_preloaded_asr_engine", None)
             if preloaded is not None:
                 print("Using pre-loaded FunASR engine")
                 self.asr_engine = preloaded
@@ -597,9 +597,9 @@ class VoiceTypeApp:
             # Whisper (faster-whisper, supports English hotwords via initial_prompt)
             self._asr_engine_type = "whisper"
             # Check for pre-loaded engine (loaded before Qt to avoid conflict)
-            import voicetype
+            import aria
 
-            preloaded = getattr(voicetype, "_preloaded_asr_engine", None)
+            preloaded = getattr(aria, "_preloaded_asr_engine", None)
             if preloaded is not None and isinstance(preloaded, WhisperEngine):
                 print("Using pre-loaded Whisper engine")
                 self.asr_engine = preloaded
@@ -621,9 +621,9 @@ class VoiceTypeApp:
             firered_cfg = asr_cfg.get("fireredasr", {})
             model_type = firered_cfg.get("model_type", "aed")
             # Check for pre-loaded engine
-            import voicetype
+            import aria
 
-            preloaded = getattr(voicetype, "_preloaded_asr_engine", None)
+            preloaded = getattr(aria, "_preloaded_asr_engine", None)
             if preloaded is not None and preloaded.name.startswith("FireRedASR"):
                 print("Using pre-loaded FireRedASR engine")
                 self.asr_engine = preloaded
@@ -1630,11 +1630,11 @@ class VoiceTypeApp:
         but does not block. Use with Qt event loop.
         """
         if self._running:
-            logger.warning("VoiceTypeApp already running")
+            logger.warning("AriaApp already running")
             return
 
         print("=" * 60)
-        print("  VoiceType - Starting...")
+        print("  Aria - Starting...")
         print("=" * 60)
         print()
 
@@ -1673,7 +1673,7 @@ class VoiceTypeApp:
             print("Ready! Waiting for hotkey...")
 
         except Exception as e:
-            logger.error(f"Failed to start VoiceTypeApp: {e}")
+            logger.error(f"Failed to start AriaApp: {e}")
             self._emit_error(str(e))
             raise
 
@@ -1684,7 +1684,7 @@ class VoiceTypeApp:
         if not self._running:
             return
 
-        print("\nStopping VoiceTypeApp...")
+        print("\nStopping AriaApp...")
 
         # Stop recording if active
         if self.audio_capture and self.audio_capture.is_recording:
@@ -1698,7 +1698,7 @@ class VoiceTypeApp:
 
         self._running = False
         self._emit_state("IDLE")
-        print("VoiceTypeApp stopped.")
+        print("AriaApp stopped.")
 
     def toggle_recording(self) -> None:
         """
@@ -1840,7 +1840,7 @@ class VoiceTypeApp:
 
     def set_enabled(self, enabled: bool) -> None:
         """
-        Enable or disable VoiceType (hotkey listening).
+        Enable or disable Aria (hotkey listening).
 
         When disabled, hotkey listening is paused but all components
         (ASR, audio capture) remain initialized for quick re-enable.
@@ -1852,17 +1852,17 @@ class VoiceTypeApp:
             if self._running:
                 # Already running, just restart hotkey listener
                 self.hotkey_manager.start()
-                print("[VoiceType] Hotkey listening resumed")
+                print("[Aria] Hotkey listening resumed")
             else:
                 # Not running at all, full start
                 self.start()
-            logger.info("VoiceType enabled")
+            logger.info("Aria enabled")
         else:
             if self._running:
                 # Stop hotkey listening but keep app alive
                 self.hotkey_manager.stop()
-                print("[VoiceType] Hotkey listening paused")
-                logger.info("VoiceType disabled (hotkey listening paused)")
+                print("[Aria] Hotkey listening paused")
+                logger.info("Aria disabled (hotkey listening paused)")
 
     def set_polish_mode(self, mode: str) -> None:
         """
@@ -1950,12 +1950,12 @@ class VoiceTypeApp:
             )
 
             logger.info(f"Hotkey changed: {old_hotkey} -> {hotkey}")
-            print(f"[VoiceType] Hotkey changed to: {hotkey}")
+            print(f"[Aria] Hotkey changed to: {hotkey}")
             return True
 
         except Exception as e:
             logger.error(f"Failed to change hotkey: {e}")
-            print(f"[VoiceType] Failed to change hotkey: {e}")
+            print(f"[Aria] Failed to change hotkey: {e}")
             # Try to restore old hotkey
             try:
                 self.hotkey_manager.register(
@@ -1972,7 +1972,7 @@ class VoiceTypeApp:
     def run(self) -> None:
         """Run the application (blocking mode for CLI)."""
         print("=" * 60)
-        print("  VoiceType - Local AI Voice Dictation")
+        print("  Aria - Local AI Voice Dictation")
         print("=" * 60)
         print()
 
@@ -2030,7 +2030,7 @@ def main():
     """Entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="VoiceType - Local AI Voice Dictation")
+    parser = argparse.ArgumentParser(description="Aria - Local AI Voice Dictation")
     parser.add_argument(
         "--hotkey",
         "-k",
@@ -2080,7 +2080,7 @@ def main():
             print(f"  {d['id']}: {d['name']}{default}")
         return
 
-    app = VoiceTypeApp(hotkey=args.hotkey)
+    app = AriaApp(hotkey=args.hotkey)
     app.run()
 
 

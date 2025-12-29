@@ -1,5 +1,5 @@
 # popup_menu.py
-# Styled popup menu for VoiceType floating ball
+# Styled popup menu for Aria floating ball
 # Left-click menu with enable toggle, polish modes, and settings
 
 from PySide6.QtCore import (
@@ -180,7 +180,7 @@ class PopupMenu(QWidget):
 
         # --- Enable Toggle Row ---
         enable_row = QHBoxLayout()
-        enable_label = QLabel("VoiceType-Dev")
+        enable_label = QLabel("Aria-Dev")
         enable_label.setStyleSheet(
             """
             QLabel {

@@ -39,7 +39,7 @@ class DownloadWorker(QThread):
     def run(self):
         """Run download in background."""
         try:
-            from voicetype.core.model_manager import ModelDownloader, get_missing_models
+            from aria.core.model_manager import ModelDownloader, get_missing_models
 
             missing = get_missing_models()
             if not missing:
@@ -90,7 +90,7 @@ class ModelDownloadDialog(QDialog):
         self._download_started = False
         self._download_complete = False
 
-        self.setWindowTitle("VoiceType - 首次运行配置")
+        self.setWindowTitle("Aria - 首次运行配置")
         self.setMinimumSize(500, 400)
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
 
@@ -110,7 +110,7 @@ class ModelDownloadDialog(QDialog):
         # Description
         total_size = sum(m.size_mb for m in self.missing_models)
         desc = QLabel(
-            f"VoiceType 需要下载 {len(self.missing_models)} 个模型文件 "
+            f"Aria 需要下载 {len(self.missing_models)} 个模型文件 "
             f"(共约 {total_size}MB) 才能正常工作。\n"
             "模型将从 ModelScope 下载并缓存到本地。"
         )
@@ -205,7 +205,7 @@ class ModelDownloadDialog(QDialog):
             reply = QMessageBox.question(
                 self,
                 "取消下载",
-                "确定要取消下载吗？VoiceType 需要这些模型才能正常工作。",
+                "确定要取消下载吗？Aria 需要这些模型才能正常工作。",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -259,7 +259,7 @@ def show_download_dialog_if_needed() -> bool:
         False if user cancelled or download failed
     """
     try:
-        from voicetype.core.model_manager import get_missing_models
+        from aria.core.model_manager import get_missing_models
 
         missing = get_missing_models()
         if not missing:
@@ -284,7 +284,7 @@ def show_download_dialog_if_needed() -> bool:
 
 # For testing
 if __name__ == "__main__":
-    from voicetype.core.model_manager import REQUIRED_MODELS
+    from aria.core.model_manager import REQUIRED_MODELS
 
     app = QApplication(sys.argv)
 

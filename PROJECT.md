@@ -1,8 +1,8 @@
-# VoiceType 项目文档
+# Aria 项目文档
 
 > Windows 本地 AI 语音听写工具
 > 版本: v1.0 (2025-12)
-> 路径: `G:\AIBOX\voicetype`
+> 路径: `G:\AIBOX\aria`
 
 ---
 
@@ -23,7 +23,7 @@
 ## 目录结构
 
 ```
-voicetype/
+aria/
 ├── app.py                 # 主应用 (69KB) - 核心逻辑、状态机、ASR流程
 ├── launcher.py            # 启动器 - 环境检测、splash、异常处理
 ├── config/
@@ -98,7 +98,7 @@ voicetype/
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                      VoiceType 处理流水线                        │
+│                      Aria 处理流水线                        │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  [热键触发] ──► [录音] ──► [VAD检测] ──► [ASR识别]              │
@@ -133,7 +133,7 @@ voicetype/
 
 ```json
 {
-  "hotwords": ["claude", "github", "voicetype", ...],
+  "hotwords": ["claude", "github", "aria", ...],
   "replacements": {"scale": "skill"},
   "domain_context": "AI工具、编程",
 
@@ -222,13 +222,13 @@ voicetype/
 
 ```bash
 # 方式1: 双击启动
-VoiceType.bat
+Aria.bat
 
 # 方式2: Python 启动
-python -m voicetype
+python -m aria
 
 # 方式3: 调试模式
-VoiceType_debug.bat
+Aria_debug.bat
 ```
 
 ---
@@ -238,7 +238,7 @@ VoiceType_debug.bat
 - Windows 10/11
 - Python 3.10+ (建议 3.12)
 - CUDA 12.4+ (RTX 5090 支持)
-- 独立 conda 环境: `voicetype`
+- 独立 conda 环境: `aria`
 
 ---
 
@@ -246,7 +246,7 @@ VoiceType_debug.bat
 
 | 文件 | 用途 |
 |------|------|
-| `VoiceType.bat` | 主启动脚本 |
+| `Aria.bat` | 主启动脚本 |
 | `launcher.py` | Python 启动器 |
 | `app.py` | 主应用逻辑 |
 | `config/hotwords.json` | 用户配置 |

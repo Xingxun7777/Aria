@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from voicetype.core.hotword.polish import AIPolisher
+    from aria.core.hotword.polish import AIPolisher
 
 from .commands import SelectionCommand, CommandType
 

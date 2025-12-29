@@ -1,7 +1,7 @@
 """
 Action Module
 =============
-Action-driven architecture for VoiceType v1.1 UI interactions.
+Action-driven architecture for Aria v1.1 UI interactions.
 """
 
 from .types import (

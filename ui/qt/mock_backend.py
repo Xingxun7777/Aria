@@ -24,14 +24,14 @@ class MockBackend:
             print('[MockBackend] Starting recording, emitting RECORDING state')
             self.bridge.emit_state('RECORDING')
             # Simulate streaming text
-            QTimer.singleShot(500, lambda: self.bridge.emit_text('VoiceType', False))
-            QTimer.singleShot(1000, lambda: self.bridge.emit_text('VoiceType demo', False))
-            QTimer.singleShot(1500, lambda: self.bridge.emit_text('VoiceType demo mode', False))
+            QTimer.singleShot(500, lambda: self.bridge.emit_text('Aria', False))
+            QTimer.singleShot(1000, lambda: self.bridge.emit_text('Aria demo', False))
+            QTimer.singleShot(1500, lambda: self.bridge.emit_text('Aria demo mode', False))
         else:
             print('[MockBackend] Stopping recording, emitting TRANSCRIBING state')
             self.bridge.emit_state('TRANSCRIBING')
             # Simulate polishing
-            QTimer.singleShot(800, lambda: self.bridge.emit_text('VoiceType Demo Mode is working.', True))
+            QTimer.singleShot(800, lambda: self.bridge.emit_text('Aria Demo Mode is working.', True))
             QTimer.singleShot(1500, lambda: self._finish_transcription())
 
     def _finish_transcription(self):

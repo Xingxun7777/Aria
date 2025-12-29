@@ -1,4 +1,4 @@
-# VoiceType v1.1 调试会话归档
+# Aria v1.1 调试会话归档
 
 **日期**: 2024-12-19
 **分支**: dev/v1.1-voice-commands
@@ -8,7 +8,7 @@
 
 ## 问题概述
 
-VoiceType 在 pythonw.exe 下运行时出现多个致命问题：
+Aria 在 pythonw.exe 下运行时出现多个致命问题：
 1. 热键按下后无任何反应（波形动画正常但无文字输出）
 2. "翻译成日文"等翻译命令导致程序闪退
 
@@ -126,7 +126,7 @@ if sys.stdout is not None:
 
 ### 日志文件位置
 ```
-voicetype-v1.1-dev/DebugLog/
+aria-v1.1-dev/DebugLog/
 ├── funasr_debug.log      # FunASR 引擎日志
 ├── hotkey_debug.log      # 热键注册/触发日志
 ├── pipeline_debug.log    # 完整流水线日志

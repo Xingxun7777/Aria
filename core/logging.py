@@ -1,6 +1,6 @@
 """
-VoiceType Logging System
-========================
+Aria Logging System
+===================
 Centralized logging for all modules.
 """
 
@@ -18,10 +18,10 @@ def setup_logging(
     level: int = logging.INFO,
     log_file: bool = True,
     console: bool = True,
-    name: str = "voicetype"
+    name: str = "aria",
 ) -> logging.Logger:
     """
-    Setup logging for VoiceType.
+    Setup logging for Aria.
 
     Args:
         level: Logging level (default INFO)
@@ -40,8 +40,7 @@ def setup_logging(
 
     # Format
     formatter = logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
     # Console handler
@@ -56,7 +55,7 @@ def setup_logging(
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"{name}_{datetime.now().strftime('%Y%m%d')}.log"
 
-        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
@@ -64,7 +63,7 @@ def setup_logging(
     return logger
 
 
-def get_logger(name: str = "voicetype") -> logging.Logger:
+def get_logger(name: str = "aria") -> logging.Logger:
     """Get a logger instance."""
     return logging.getLogger(name)
 
@@ -72,24 +71,24 @@ def get_logger(name: str = "voicetype") -> logging.Logger:
 # Module-specific loggers
 def get_system_logger() -> logging.Logger:
     """Get logger for system integration module."""
-    return logging.getLogger("voicetype.system")
+    return logging.getLogger("aria.system")
 
 
 def get_scheduler_logger() -> logging.Logger:
     """Get logger for scheduler module."""
-    return logging.getLogger("voicetype.scheduler")
+    return logging.getLogger("aria.scheduler")
 
 
 def get_asr_logger() -> logging.Logger:
     """Get logger for ASR module."""
-    return logging.getLogger("voicetype.asr")
+    return logging.getLogger("aria.asr")
 
 
 def get_audio_logger() -> logging.Logger:
     """Get logger for audio module."""
-    return logging.getLogger("voicetype.audio")
+    return logging.getLogger("aria.audio")
 
 
 def get_ui_logger() -> logging.Logger:
     """Get logger for UI module."""
-    return logging.getLogger("voicetype.ui")
+    return logging.getLogger("aria.ui")

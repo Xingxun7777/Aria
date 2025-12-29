@@ -265,9 +265,58 @@ dist_portable/VoiceType/ (6.8GB)
 
 ---
 
+## Session: 2025-12-29 19:30
+
+### Completed
+- [x] 审查热加载系统（API Key、唤醒词、替换规则等）
+- [x] 验证 reload_config() 流程（manager.reload() → polisher 重建）
+- [x] 创建并执行热加载验证脚本（_verify_hot_reload.py）
+- [x] 确认所有热加载测试通过
+
+### Key Changes
+| File | Change |
+|------|--------|
+| (审查，无修改) | 确认热加载系统已正确实现 |
+
+### Key Decisions
+- **热加载验证策略**: 创建独立测试脚本，模拟配置修改 → reload → 验证新实例
+
+### Technical Findings
+1. **API Key 热加载流程**:
+   - UI 保存 → hotwords.json 写入
+   - settingsSaved 信号 → on_settings_saved()
+   - backend.reload_config() → hotword_manager.reload()
+   - reload() 设置 _polisher = None → 强制重建
+   - get_active_polisher() 用新配置创建新实例
+
+2. **热加载覆盖范围**:
+   - ✅ API Key/URL/Model/Timeout
+   - ✅ 润色提示词 (prompt_template)
+   - ✅ 热词列表 + 权重
+   - ✅ 替换规则
+   - ✅ 唤醒词
+   - ✅ VAD 参数
+   - ✅ 热键
+   - ❌ ASR 引擎/模型（需重启）
+   - ❌ 音频设备（需重启）
+
+3. **验证结果**: 所有热加载测试通过
+   - Polisher 实例 ID 确实变化（强制重建）
+   - 新 Polisher 使用新 API Key
+
+### Pending Tasks
+1. [ ] 分发测试（让真实用户使用）
+2. [ ] 收集用户反馈
+3. [ ] 考虑购买代码签名证书
+
+### Known Issues
+- 无新问题
+
+---
+
 ## Warmup Hints
 <!-- 预热系统读取此区块 -->
 focus: dist_portable/VoiceType/
 mode: standard
 pending_research: 无
-note: 便携版 v1.1 已准备好分发，等待用户反馈
+note: 便携版 v1.1 已就绪，热加载系统验证通过

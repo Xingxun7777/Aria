@@ -1,14 +1,14 @@
 @echo off
-cd /d G:\AIBOX
-echo VoiceType Starting...
+cd /d "%~dp0"
+echo Aria Starting...
 echo =====================
 echo Hotkey: ` (grave/backtick)
 echo Mode: Toggle (press to start, press again to stop)
 echo.
 
 set PYTHONUNBUFFERED=1
-F:\anaconda\python.exe -u -m voicetype --hotkey grave
+".venv\Scripts\python.exe" -u -m aria --hotkey grave
 
 echo.
-echo VoiceType exited.
+echo Aria exited.
 pause

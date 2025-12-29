@@ -14,7 +14,7 @@ from ..logging import get_system_logger
 
 logger = get_system_logger()
 
-# Default model path relative to voicetype package
+# Default model path relative to aria package
 DEFAULT_MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
 

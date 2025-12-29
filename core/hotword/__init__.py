@@ -1,7 +1,7 @@
 """
 HotWord System
 ==============
-Four-layer hotword correction for VoiceType.
+Four-layer hotword correction for Aria.
 
 Layer 1: ASR initial_prompt (zero latency) - bias Whisper output
 Layer 2: Regex replacement (zero latency) - exact pattern fixes

@@ -10,7 +10,7 @@ from queue import Queue
 from PySide6.QtCore import QObject, Signal, Slot, QMetaObject, Qt, Q_ARG
 
 if TYPE_CHECKING:
-    from voicetype.core.action import UIAction
+    from aria.core.action import UIAction
 
 # Debug log for bridge signals
 _BRIDGE_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
