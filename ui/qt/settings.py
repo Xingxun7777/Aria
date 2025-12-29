@@ -1199,6 +1199,8 @@ class SettingsWindow(QMainWindow):
         # === API settings ===
         if "polish" not in self.config:
             self.config["polish"] = {}
+        # Auto-enable API polish when quality mode is selected
+        self.config["polish"]["enabled"] = self.radio_quality.isChecked()
         self.config["polish"]["api_url"] = self.api_url.text()
         self.config["polish"]["api_key"] = self.api_key.text()
         self.config["polish"]["model"] = self.model.text()
