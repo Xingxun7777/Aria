@@ -153,13 +153,40 @@ class WhisperEngine(ASREngine):
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
+        # Minimum audio duration check - skip very short audio (hallucination risk)
+        # 27136 samples @ 16kHz = 1.7s caused "字幕志愿者 赵宜" hallucination (11s processing)
+        MIN_AUDIO_DURATION = 0.3  # seconds
+        audio_duration = len(audio) / self.config.sample_rate
+        if audio_duration < MIN_AUDIO_DURATION:
+            logger.warning(
+                f"Audio too short ({audio_duration:.2f}s < {MIN_AUDIO_DURATION}s), skipping"
+            )
+            return ASRResult(
+                text="",
+                type=TranscriptType.FINAL,
+                confidence=0.0,
+                start_time=0.0,
+                end_time=audio_duration,
+                language="zh",
+                language_confidence=0.0,
+            )
+
         try:
             # Build transcribe kwargs
             transcribe_kwargs = {
                 "language": self.config.language,
                 "task": "transcribe",
                 "beam_size": self.config.beam_size,
-                "vad_filter": True,  # Filter out silence
+                # temperature=0.0 for deterministic output (less hallucination)
+                # Fallback to higher temperatures if quality thresholds not met
+                "temperature": [0.0, 0.2, 0.4],
+                # VAD filter with aggressive parameters to remove silence/noise
+                "vad_filter": True,
+                "vad_parameters": {
+                    "threshold": 0.5,  # Speech probability threshold (default 0.5)
+                    "min_speech_duration_ms": 250,  # Discard speech < 250ms (likely noise)
+                    "min_silence_duration_ms": 300,  # Min silence to separate chunks
+                },
                 # Disable conditioning on previous text to prevent hallucination loops
                 # When True (default), ASR errors can propagate to subsequent segments
                 "condition_on_previous_text": False,

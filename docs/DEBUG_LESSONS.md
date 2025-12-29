@@ -385,3 +385,45 @@ transcribe_kwargs = {
 - Whisper 的 decoder 可能陷入重复生成循环
 - `compression_ratio_threshold` 是检测 "嘟嘟嘟..." 这类重复的关键
 - **不要使用 `max_new_tokens`**：Whisper max_length=448，initial_prompt 可能占用 196 tokens，设置 max_new_tokens 会导致超限报错
+
+---
+
+## Issue: Claude Code 编辑 hotwords.json 时崩溃
+
+**Date**: 2025-12-28
+
+**Symptom**:
+- 使用 Claude Code 的 Edit 工具编辑 `config/hotwords.json` 时，整个 Claude Code 崩溃
+- Rust panic 错误：`byte index X is not a char boundary; it is inside '点' (bytes X..Y)`
+- 只有编辑这个包含大量中文的 JSON 文件时发生
+
+**Root Cause**:
+- Claude Code 的 Rust 实现在处理多字节 UTF-8 字符（中文）时有 bug
+- Edit 工具在计算字符串边界时，使用字节索引而非字符索引
+- 中文字符占 3 字节（UTF-8），索引计算错误会落在字符中间
+- 这是 Claude Code 本身的 bug，无法在用户代码中修复
+
+**Workaround**:
+**永远不要用 Edit 工具编辑 hotwords.json！使用 Python 代替：**
+
+```python
+# 安全的 hotwords.json 编辑方法
+import json
+
+with open('config/hotwords.json', 'r', encoding='utf-8') as f:
+    config = json.load(f)
+
+# 修改配置...
+config['some_key'] = 'new_value'
+
+with open('config/hotwords.json', 'w', encoding='utf-8') as f:
+    json.dump(config, f, ensure_ascii=False, indent=2)
+```
+
+**Key Learning**:
+- Claude Code Edit 工具对包含大量中文的 JSON 文件不安全
+- 遇到中文密集的配置文件，优先使用 Python/Bash 间接编辑
+- 这个问题已报告给 Anthropic，等待官方修复
+- 在 CLAUDE.md 中添加规则提醒未来会话避免此操作
+
+---
