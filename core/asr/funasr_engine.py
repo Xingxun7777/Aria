@@ -49,6 +49,65 @@ rich_transcription_postprocess = None
 FUNASR_AVAILABLE = None  # Will be set on first check
 
 
+def check_cuda_available() -> tuple[bool, str]:
+    """
+    Check if CUDA is available and compatible with current GPU.
+
+    Returns:
+        (is_available, reason) tuple
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False, "CUDA not available (no GPU or driver issue)"
+
+        # Try a simple CUDA operation to verify kernel compatibility
+        try:
+            # This will fail if GPU architecture is not supported
+            x = torch.zeros(1, device="cuda")
+            del x
+            torch.cuda.empty_cache()
+            return True, "CUDA OK"
+        except RuntimeError as e:
+            error_msg = str(e).lower()
+            if "no kernel image" in error_msg:
+                return False, "GPU architecture not supported by PyTorch build"
+            elif "out of memory" in error_msg:
+                return False, "GPU out of memory"
+            else:
+                return False, f"CUDA runtime error: {e}"
+
+    except ImportError:
+        return False, "PyTorch not installed"
+    except Exception as e:
+        return False, f"CUDA check failed: {e}"
+
+
+def get_optimal_device(preferred: str = "cuda") -> tuple[str, str]:
+    """
+    Get the optimal device for inference, with automatic fallback.
+
+    Args:
+        preferred: User's preferred device ("cuda" or "cpu")
+
+    Returns:
+        (actual_device, reason) tuple
+    """
+    if preferred == "cpu":
+        return "cpu", "User selected CPU mode"
+
+    # User wants CUDA, check if available
+    cuda_ok, reason = check_cuda_available()
+
+    if cuda_ok:
+        return "cuda", "CUDA available"
+    else:
+        logger.warning(f"CUDA unavailable ({reason}), falling back to CPU")
+        _funasr_log(f"[DEVICE] CUDA fallback to CPU: {reason}")
+        return "cpu", f"Auto-fallback: {reason}"
+
+
 def check_funasr_installation() -> bool:
     """Check if FunASR is available (lazy check)."""
     global AutoModel, rich_transcription_postprocess, FUNASR_AVAILABLE
@@ -111,6 +170,9 @@ class FunASREngine(ASREngine):
         self._model = None
         self._lock = threading.Lock()
         self._is_sensevoice = "sensevoice" in self.config.model_name.lower()
+        # Track actual device used (may differ from config if fallback occurred)
+        self._actual_device: str = self.config.device
+        self._device_reason: str = ""
 
     @property
     def name(self) -> str:
@@ -121,8 +183,23 @@ class FunASREngine(ASREngine):
         """Check if model is loaded."""
         return self._model is not None
 
+    @property
+    def actual_device(self) -> str:
+        """Get the actual device being used (may be CPU if CUDA fallback occurred)."""
+        return self._actual_device
+
+    @property
+    def device_info(self) -> str:
+        """Get human-readable device info for UI display."""
+        if self._actual_device == "cuda":
+            return "GPU (CUDA)"
+        elif self._device_reason:
+            return f"CPU ({self._device_reason})"
+        else:
+            return "CPU"
+
     def load(self) -> None:
-        """Load the FunASR model."""
+        """Load the FunASR model with automatic CUDA fallback."""
         # Ensure installation check is done first
         check_funasr_installation()
         if not FUNASR_AVAILABLE:
@@ -132,10 +209,32 @@ class FunASREngine(ASREngine):
             logger.info("Model already loaded")
             return
 
-        logger.info(f"Loading FunASR model: {self.config.model_name}")
+        # Auto-detect optimal device with fallback
+        self._actual_device, self._device_reason = get_optimal_device(
+            self.config.device
+        )
+
+        if self._actual_device != self.config.device:
+            _funasr_log(
+                f"[DEVICE] Requested: {self.config.device}, Using: {self._actual_device}"
+            )
+            logger.info(
+                f"Device fallback: {self.config.device} -> {self._actual_device} ({self._device_reason})"
+            )
+
+        logger.info(
+            f"Loading FunASR model: {self.config.model_name} on {self._actual_device}"
+        )
         start_time = time.time()
 
         try:
+            # Use actual device (may be fallback from CUDA to CPU)
+            device_str = (
+                f"{self._actual_device}:0"
+                if self._actual_device == "cuda"
+                else self._actual_device
+            )
+
             if self._is_sensevoice:
                 # SenseVoice model
                 self._model = AutoModel(
@@ -145,20 +244,11 @@ class FunASREngine(ASREngine):
                     vad_kwargs={
                         "max_single_segment_time": self.config.max_single_segment_time
                     },
-                    device=(
-                        f"{self.config.device}:0"
-                        if self.config.device == "cuda"
-                        else self.config.device
-                    ),
+                    device=device_str,
                 )
             else:
                 # Paraformer model
-                # Device format: cuda -> cuda:0
-                device = (
-                    f"{self.config.device}:0"
-                    if self.config.device == "cuda"
-                    else self.config.device
-                )
+                device = device_str
 
                 model_kwargs = {
                     "model": self.config.model_name,

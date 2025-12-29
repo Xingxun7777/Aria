@@ -202,8 +202,72 @@ Wakeword "遥遥记一下" + content
 ### Known Issues
 - Whisper 偶发性处理变慢（可能是模型状态问题，但 compression_ratio 等参数已提供防护）
 
+---
+
+## Session: 2025-12-29 17:45
+
+### Completed
+- [x] 清理便携版用户数据（InsightStore、Session 文件、Debug 日志、音频、API keys）
+- [x] Codex 安全审计（发现并清理残留日志：launch_error.log, splash_error.log）
+- [x] 创建 README.txt 完整使用说明（含 SmartScreen 绕过指南）
+- [x] 增强 build.py step_clean_sensitive_data()（自动清理所有敏感数据）
+- [x] 创建 EXE 启动器（launcher_stub.py + build_launcher_exe.py）
+- [x] 更换唤醒词：遥遥 → 小助手
+- [x] 更换图标：托盘风格（深色圆 + 橙色声波条）
+- [x] 清理 __pycache__ 目录（14个）
+- [x] 最终验证：所有敏感数据已清除，便携版可分发
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `dist_portable/VoiceType/README.txt` | 创建完整使用说明 |
+| `build_portable/build.py` | step_clean_sensitive_data() 增强 - 清理所有用户数据 |
+| `build_portable/launcher_stub.py` | EXE 启动器源码（调用 pythonw.exe） |
+| `build_portable/build_launcher_exe.py` | PyInstaller 构建脚本 |
+| `config/wakeword.json` (portable) | wakeword: 遥遥 → 小助手 |
+| `assets/voicetype.ico` | 新图标（托盘样式：深色圆 + 橙色声波） |
+
+### Key Decisions
+- **EXE vs VBS**: 选择 EXE 启动器，VBS 容易被安全软件/企业策略拦截
+- **图标一致性**: 使用托盘图标样式，保持视觉统一
+- **唤醒词**: "遥遥"改"小助手"，对普通用户更友好
+
+### Technical Findings
+1. **托盘图标是代码生成的**: `main.py:create_tray_icon()` 用 QPainter 动态绘制
+2. **ICO 转换**: PySide6 QPixmap → PIL Image → 多尺寸 ICO
+3. **Windows 图标缓存**: 必须删除快捷方式重建才能刷新
+4. **PyInstaller**: launcher_stub.py 编译后 ~6.1MB，带图标
+
+### 便携版最终状态
+```
+dist_portable/VoiceType/ (6.8GB)
+├── VoiceType.exe ★       推荐启动
+├── VoiceType.cmd          备选
+├── VoiceType.vbs          静默启动
+├── VoiceType_debug.bat    调试
+├── README.txt             使用说明
+├── voicetype.ico          新图标
+└── _internal/             程序文件
+    - API Key: YOUR_API_KEY_HERE ✓
+    - DebugLog: 空 ✓
+    - InsightStore: 空 ✓
+    - __pycache__: 已清理 ✓
+    - 唤醒词: 小助手 ✓
+```
+
+### Pending Tasks
+1. [ ] 分发测试（让真实用户使用）
+2. [ ] 收集用户反馈
+3. [ ] 考虑购买代码签名证书（消除 SmartScreen 警告）
+
+### Known Issues
+- Windows SmartScreen 首次运行会警告（未签名 EXE，需用户点"更多信息→仍要运行"）
+
+---
+
 ## Warmup Hints
 <!-- 预热系统读取此区块 -->
-focus: build.py
+focus: dist_portable/VoiceType/
 mode: standard
 pending_research: 无
+note: 便携版 v1.1 已准备好分发，等待用户反馈
