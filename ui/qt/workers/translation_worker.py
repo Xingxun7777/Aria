@@ -7,9 +7,32 @@ Uses QThreadPool to avoid blocking the main UI thread.
 
 import httpx
 import time
+import sys
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+
+
+# Debug logging for pythonw.exe compatibility
+_DEBUG_LOG = (
+    Path(__file__).parent.parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+)
+
+
+def _worker_log(msg: str):
+    """Write translation worker debug message (pythonw.exe safe)."""
+    import datetime
+
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] [TWORKER] {msg}\n"
+    if sys.stdout is not None:
+        print(line.strip())
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 class TranslationSignals(QObject):
@@ -125,17 +148,23 @@ class TranslationWorker(QRunnable):
     @Slot()
     def run(self):
         """Execute translation request."""
+        _worker_log(
+            f"run() START: request_id={self.request_id}, text_len={len(self.source_text)}"
+        )
         try:
             # Validate input
             if not self.source_text or len(self.source_text.strip()) < 1:
+                _worker_log("run() ERROR: empty text")
                 self.signals.error.emit(self.request_id, "文本为空")
                 return
 
             if not self.api_url or not self.api_key:
+                _worker_log("run() ERROR: missing API config")
                 self.signals.error.emit(self.request_id, "API 配置缺失")
                 return
 
             # Build request
+            _worker_log("run() building prompt...")
             prompt = self._build_prompt()
 
             headers = {
@@ -157,11 +186,19 @@ class TranslationWorker(QRunnable):
             else:
                 full_url = f"{base_url}/v1/chat/completions"
 
+            _worker_log(
+                f"run() making request to {full_url[:50]}... model={self.model}"
+            )
+
             # Make request
             with httpx.Client(timeout=self.timeout) as client:
                 start_time = time.time()
+                _worker_log("run() sending POST request...")
                 response = client.post(full_url, headers=headers, json=payload)
                 elapsed = time.time() - start_time
+                _worker_log(
+                    f"run() got response: status={response.status_code}, elapsed={elapsed:.2f}s"
+                )
 
                 if response.status_code != 200:
                     error_msg = f"API 错误 ({response.status_code})"
@@ -173,32 +210,41 @@ class TranslationWorker(QRunnable):
                             error_msg = f"{error_msg}: {error_detail[:100]}"
                     except Exception:
                         pass
+                    _worker_log(f"run() API error: {error_msg}")
                     self.signals.error.emit(self.request_id, error_msg)
                     return
 
                 result = response.json()
                 translated = result["choices"][0]["message"]["content"].strip()
+                _worker_log(f"run() translated: {len(translated)} chars")
 
                 if not translated:
+                    _worker_log("run() ERROR: empty translation result")
                     self.signals.error.emit(self.request_id, "翻译结果为空")
                     return
 
-                # Guard print for pythonw.exe compatibility (sys.stdout is None)
-                import sys
-
-                if sys.stdout is not None:
-                    print(
-                        f"[TranslationWorker] Completed in {elapsed:.2f}s: "
-                        f"{self.source_text[:30]}... -> {translated[:30]}..."
-                    )
-                self.signals.finished.emit(self.request_id, translated)
+                _worker_log(f"run() emitting finished signal...")
+                try:
+                    self.signals.finished.emit(self.request_id, translated)
+                    _worker_log(f"run() finished signal emitted OK")
+                except Exception as emit_e:
+                    _worker_log(f"run() SIGNAL EMIT ERROR: {emit_e}")
+                    raise
 
         except httpx.TimeoutException:
+            _worker_log(f"run() TIMEOUT after {self.timeout}s")
             self.signals.error.emit(self.request_id, "请求超时")
-        except httpx.ConnectError:
+        except httpx.ConnectError as ce:
+            _worker_log(f"run() CONNECT ERROR: {ce}")
             self.signals.error.emit(self.request_id, "无法连接到 API")
         except Exception as e:
+            _worker_log(f"run() EXCEPTION: {type(e).__name__}: {e}")
+            import traceback
+
+            _worker_log(f"run() TRACEBACK: {traceback.format_exc()}")
             self.signals.error.emit(self.request_id, f"翻译失败: {str(e)[:100]}")
+        finally:
+            _worker_log(f"run() END: request_id={self.request_id}")
 
 
 class TranslationWorkerFactory:

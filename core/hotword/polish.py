@@ -60,16 +60,25 @@ class PolishConfig:
     timeout: float = 10.0
 
     # Prompt template - supports {text}, {domain_context}, {hotwords}
+    # Also supports {hotwords_critical} and {hotwords_context} for tiered system
     # Uses the shared DEFAULT_POLISH_PROMPT constant
     prompt_template: str = DEFAULT_POLISH_PROMPT
 
     # Domain context and hotwords for intelligent correction
     domain_context: str = ""
-    hotwords: list = None  # List of hotword strings
+    hotwords: list = None  # List of hotword strings (all weight >= 0.5)
+
+    # Tiered hotwords (set by HotWordManager)
+    hotwords_critical: list = None  # weight >= 1.0: mandatory vocabulary
+    hotwords_context: list = None  # 0.5 <= weight < 1.0: context hints
 
     def __post_init__(self):
         if self.hotwords is None:
             self.hotwords = []
+        if self.hotwords_critical is None:
+            self.hotwords_critical = []
+        if self.hotwords_context is None:
+            self.hotwords_context = []
         # Validate api_url format
         self._validate_api_url()
 
@@ -119,10 +128,34 @@ class AIPolisher:
         """Build the full prompt with hotwords and domain context."""
         template = self.config.prompt_template
 
-        # Format hotwords (limit to 30 for prompt length)
-        hotwords_str = (
-            ", ".join(self.config.hotwords[:30]) if self.config.hotwords else "无"
-        )
+        # Format hotwords - use tiered system if available
+        if self.config.hotwords_critical or self.config.hotwords_context:
+            # Tiered hotwords: separate critical (must use) from context (hints)
+            critical_str = (
+                ", ".join(self.config.hotwords_critical[:20])
+                if self.config.hotwords_critical
+                else ""
+            )
+            context_str = (
+                ", ".join(self.config.hotwords_context[:15])
+                if self.config.hotwords_context
+                else ""
+            )
+
+            # Build combined hotwords string with tier markers
+            if critical_str and context_str:
+                hotwords_str = f"【必须】{critical_str}；【参考】{context_str}"
+            elif critical_str:
+                hotwords_str = critical_str
+            elif context_str:
+                hotwords_str = f"【参考】{context_str}"
+            else:
+                hotwords_str = "无"
+        else:
+            # Fallback: use flat hotwords list (backward compatible)
+            hotwords_str = (
+                ", ".join(self.config.hotwords[:30]) if self.config.hotwords else "无"
+            )
 
         # Format domain context
         domain_context = self.config.domain_context or "通用"
@@ -130,7 +163,19 @@ class AIPolisher:
         # Replace placeholders (format() ignores extra keys, but catch unknown placeholders)
         try:
             return template.format(
-                text=text, hotwords=hotwords_str, domain_context=domain_context
+                text=text,
+                hotwords=hotwords_str,
+                domain_context=domain_context,
+                hotwords_critical=(
+                    ", ".join(self.config.hotwords_critical[:20])
+                    if self.config.hotwords_critical
+                    else "无"
+                ),
+                hotwords_context=(
+                    ", ".join(self.config.hotwords_context[:15])
+                    if self.config.hotwords_context
+                    else "无"
+                ),
             )
         except KeyError as e:
             logger.warning(f"Template has unknown placeholder {e}, using simple format")
@@ -337,7 +382,9 @@ class AIPolisher:
             original_len = len(text)
             polished_len = len(polished)
             if polished_len < original_len * 0.8:
-                debug_info["error"] = f"Removed {100 - polished_len * 100 // original_len}% content"
+                debug_info["error"] = (
+                    f"Removed {100 - polished_len * 100 // original_len}% content"
+                )
                 logger.warning(
                     f"Polish rejected: removed too much content "
                     f"({original_len} -> {polished_len} chars)"

@@ -67,6 +67,10 @@ def main():
     # Thread pool for background workers
     thread_pool = QThreadPool.globalInstance()
 
+    # Container to keep signal objects alive until delivery
+    # (QRunnable with autoDelete=True can delete signals before delivery)
+    _active_signals = []
+
     # Create minimal system tray for unlock and quit
     tray = QSystemTrayIcon()
     # Custom tray icon (don't rely on fromTheme - unreliable on Windows)
@@ -385,10 +389,27 @@ def main():
                     source_lang=action.source_lang,
                     target_lang=action.target_lang,
                 )
-                worker.signals.finished.connect(on_translation_finished)
-                worker.signals.error.connect(on_translation_error)
+                # CRITICAL: Keep signals reference alive until delivery
+                # (QRunnable autoDelete can destroy signals before async delivery)
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_signals(sig_ref):
+                    """Remove signals reference after delivery."""
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+                        _log(
+                            f"[MAIN] Cleaned up signals ref, remaining: {len(_active_signals)}"
+                        )
+
+                signals_ref.finished.connect(on_translation_finished)
+                signals_ref.finished.connect(lambda *_: cleanup_signals(signals_ref))
+                signals_ref.error.connect(on_translation_error)
+                signals_ref.error.connect(lambda *_: cleanup_signals(signals_ref))
                 thread_pool.start(worker)
-                _log("[MAIN] TranslationWorker started")
+                _log(
+                    f"[MAIN] TranslationWorker started, active_signals: {len(_active_signals)}"
+                )
             except Exception as e:
                 _log(f"[MAIN] ERROR in SHOW_TRANSLATION: {e}")
                 import traceback
@@ -440,8 +461,22 @@ def main():
                     source_lang="auto",
                     target_lang=action.target_lang,
                 )
-                worker.signals.finished.connect(on_clipboard_translation_finished)
-                worker.signals.error.connect(on_clipboard_translation_error)
+                # CRITICAL: Keep signals reference alive until delivery
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_clipboard_signals(sig_ref):
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+
+                signals_ref.finished.connect(on_clipboard_translation_finished)
+                signals_ref.finished.connect(
+                    lambda *_: cleanup_clipboard_signals(signals_ref)
+                )
+                signals_ref.error.connect(on_clipboard_translation_error)
+                signals_ref.error.connect(
+                    lambda *_: cleanup_clipboard_signals(signals_ref)
+                )
                 thread_pool.start(worker)
                 _log("[MAIN] Clipboard TranslationWorker started")
             except Exception as e:
@@ -477,13 +512,31 @@ def main():
 
     def on_translation_finished(request_id: str, translated_text: str):
         """Handle translation completion."""
-        _log(f"[UI] Translation finished: {request_id}")
-        translation_popup.show_result(translated_text, request_id)
+        _log(
+            f"[UI] Translation finished CALLBACK: request_id={request_id}, text_len={len(translated_text)}"
+        )
+        try:
+            translation_popup.show_result(translated_text, request_id)
+            _log(f"[UI] Translation show_result completed OK")
+        except Exception as e:
+            _log(f"[UI] Translation show_result ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
 
     def on_translation_error(request_id: str, error_msg: str):
         """Handle translation error."""
-        _log(f"[UI] Translation error: {request_id} - {error_msg}")
-        translation_popup.show_error(error_msg, request_id)
+        _log(
+            f"[UI] Translation error CALLBACK: request_id={request_id}, error={error_msg}"
+        )
+        try:
+            translation_popup.show_error(error_msg, request_id)
+            _log(f"[UI] Translation show_error completed OK")
+        except Exception as e:
+            _log(f"[UI] Translation show_error ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
 
     def on_copy_translation(text: str):
         """Handle copy request from translation popup."""

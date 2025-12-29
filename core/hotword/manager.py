@@ -266,34 +266,70 @@ class HotWordManager:
         """Get replacement rules for post-processing."""
         return self.config.replacements.copy()
 
+    def get_polish_hotwords_tiered(self) -> Dict[str, List[str]]:
+        """
+        Get hotwords for Polish, split into tiers by weight.
+
+        Tier system (based on Gemini tri-party analysis):
+        - critical (weight >= 1.0): Mandatory vocabulary, LLM must use these spellings
+        - context (0.5 <= weight < 1.0): Context hints, use if phonetically similar
+        - passive (0.1 <= weight < 0.5): NOT sent to LLM (prevents hallucination)
+        - disabled (weight = 0): Completely excluded
+
+        Returns:
+            {"critical": [...], "context": [...]}
+        """
+        weights = self._load_weights()
+
+        critical = []
+        context = []
+
+        for word in self.config.prompt_words:
+            w = weights.get(word, 1.0)
+            if w >= 1.0:
+                critical.append(word)
+            elif w >= 0.5:
+                context.append(word)
+            # weight < 0.5: NOT included (passive/disabled)
+            # This is the KEY fix: low-weight words don't trigger LLM hallucination
+
+        logger.debug(
+            f"Polish tiers: critical={len(critical)}, context={len(context)}, "
+            f"excluded={len(self.config.prompt_words) - len(critical) - len(context)} (weight < 0.5)"
+        )
+        return {"critical": critical, "context": context}
+
+    def _load_weights(self) -> Dict[str, float]:
+        """Load hotword weights from config file."""
+        weights = {}
+        if self.config.config_path:
+            try:
+                with open(self.config.config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                weights = data.get("hotword_weights", {})
+            except Exception:
+                pass
+        return weights
+
     def get_polisher(self) -> Optional[AIPolisher]:
         """Get AI polisher instance for quality mode (lazy init)."""
         if self.config.polish_config and self.config.polish_config.enabled:
             if self._polisher is None:
-                # Load weights to filter disabled hotwords (weight=0)
-                weights = {}
-                if self.config.config_path:
-                    try:
-                        with open(self.config.config_path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        weights = data.get("hotword_weights", {})
-                    except Exception:
-                        pass
+                # Get tiered hotwords (weight >= 0.5 only)
+                tiers = self.get_polish_hotwords_tiered()
 
-                # Filter: exclude weight=0 (disabled) from polish hotwords
-                # weight > 0 goes to DeepSeek (even low weights like 0.3)
-                # This allows "soft disable" for Whisper while keeping DeepSeek correction
-                filtered_hotwords = [
-                    word
-                    for word in self.config.prompt_words
-                    if weights.get(word, 1.0) > 0
-                ]
+                # Pass tiered structure to polisher config
+                # Polish will use critical + context, excluding low-weight words
+                all_polish_hotwords = tiers["critical"] + tiers["context"]
 
-                self.config.polish_config.hotwords = filtered_hotwords
+                self.config.polish_config.hotwords = all_polish_hotwords
+                self.config.polish_config.hotwords_critical = tiers["critical"]
+                self.config.polish_config.hotwords_context = tiers["context"]
                 self.config.polish_config.domain_context = self.config.domain_context
                 self._polisher = AIPolisher(self.config.polish_config)
                 logger.debug(
-                    f"Polish hotwords: {len(filtered_hotwords)}/{len(self.config.prompt_words)} (excluded weight=0)"
+                    f"Polish hotwords: {len(all_polish_hotwords)}/{len(self.config.prompt_words)} "
+                    f"(critical={len(tiers['critical'])}, context={len(tiers['context'])})"
                 )
             return self._polisher
         return None
