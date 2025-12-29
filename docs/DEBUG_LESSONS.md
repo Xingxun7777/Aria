@@ -427,3 +427,57 @@ with open('config/hotwords.json', 'w', encoding='utf-8') as f:
 - 在 CLAUDE.md 中添加规则提醒未来会话避免此操作
 
 ---
+
+## Issue: Whisper 中文 YouTube 字幕幻觉（训练数据污染）
+
+**Date**: 2025-12-29
+
+**Symptom**:
+- Whisper 输出与用户语音完全无关的固定文本
+- 典型幻觉：`请不吝点赞 订阅 转发 打赏支持明镜与点点栏目`
+- 其他变体：`字幕志愿者 杨茜茜优优独播剧场`、`欢迎订阅我的频道`
+- 还有怪字符：`．﹏﹏﹏﹏`（全角句号+波浪线）
+- 通常在音频质量差或背景噪声时触发
+
+**Root Cause**:
+- **Whisper 训练数据污染**：模型训练数据大量来自 YouTube 视频字幕
+- 中文 YouTube 视频常见片尾语被模型"记住"
+- 当音频不清晰时，模型倾向于输出这些高频训练模式
+- 这是 OpenAI 官方已知问题：https://huggingface.co/openai/whisper-large-v3/discussions/165
+
+**日志证据**:
+```
+[14:31:19.856] Transcription done: '请不吝点赞 订阅 转发 打赏支持明镜与点点栏目' (2202ms)
+[14:31:26.852] Transcription done: '请不吝点赞 订阅 转发 打赏支持明镜与点点栏目' (2200ms)
+```
+
+**Solution**:
+在 `whisper_engine.py` 添加幻觉黑名单过滤器：
+
+```python
+# Known Whisper hallucination patterns (Chinese YouTube subtitle contamination)
+HALLUCINATION_PATTERNS = [
+    r"请不吝点赞.*?订阅.*?转发.*?打赏",
+    r"明镜与点点栏目",
+    r"字幕志愿者.*",
+    r"[．。][﹏~～]{2,}",  # 全角波浪符
+]
+
+_hallucination_regex = re.compile("|".join(HALLUCINATION_PATTERNS), re.IGNORECASE)
+
+def is_hallucination(text: str) -> bool:
+    return bool(_hallucination_regex.search(text))
+
+# 在 transcribe() 中：
+if is_hallucination(full_text):
+    logger.warning(f"Hallucination detected and filtered: '{full_text[:50]}...'")
+    return ASRResult(text="", ...)  # 返回空结果
+```
+
+**Key Learning**:
+- Whisper 中文幻觉是训练数据问题，无法通过参数调优解决
+- 必须用黑名单正则表达式后处理过滤
+- 常见幻觉模式都是 YouTube 视频的片尾语/字幕署名
+- 幻觉通常在音频质量差时触发，也可能是 VAD 阈值问题（噪声被当成语音）
+
+---

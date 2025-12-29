@@ -18,10 +18,51 @@ from dataclasses import dataclass
 from typing import Optional, Generator
 import threading
 
+import re
 from .base import ASREngine, ASRResult, TranscriptType
 from ..logging import get_asr_logger
 
 logger = get_asr_logger()
+
+# Known Whisper hallucination patterns (Chinese YouTube subtitle contamination)
+# Reference: https://huggingface.co/openai/whisper-large-v3/discussions/165
+HALLUCINATION_PATTERNS = [
+    # YouTube subscription phrases (most common)
+    r"请不吝点赞.*?订阅.*?转发.*?打赏",
+    r"点赞.*?订阅.*?转发.*?打赏",
+    r"明镜与点点栏目",
+    r"欢迎订阅我的频道",
+    r"订阅.*?点赞.*?转发",
+    # Subtitle volunteer credits
+    r"字幕志愿者.*",
+    r"字幕.*?社区.*?Amara",
+    # Weird character patterns (fullwidth punctuation spam)
+    r"[．。][﹏~～]{2,}",  # ．﹏﹏﹏ or similar
+    # Thank you spam
+    r"(谢谢|thank you)[,，\s]*(谢谢|thank you)[,，\s]*(谢谢|thank you)",
+]
+
+# Compile patterns for efficiency
+_hallucination_regex = re.compile("|".join(HALLUCINATION_PATTERNS), re.IGNORECASE)
+
+
+def is_hallucination(text: str) -> bool:
+    """Check if text matches known hallucination patterns."""
+    if not text:
+        return False
+    return bool(_hallucination_regex.search(text))
+
+
+def clean_hallucination(text: str) -> str:
+    """Remove hallucination patterns from text, return cleaned text."""
+    if not text:
+        return text
+    # Remove matched patterns
+    cleaned = _hallucination_regex.sub("", text)
+    # Clean up extra punctuation/whitespace left behind
+    cleaned = re.sub(r"[。，,\s]+$", "", cleaned)  # Trailing punctuation
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()  # Multiple spaces
+    return cleaned
 
 
 @dataclass
@@ -211,6 +252,29 @@ class WhisperEngine(ASREngine):
                 texts.append(segment.text)
 
             full_text = "".join(texts).strip()
+
+            # Filter known hallucination patterns (YouTube subtitle contamination)
+            if is_hallucination(full_text):
+                original_text = full_text
+                full_text = clean_hallucination(full_text)
+                if not full_text:
+                    # Entire output was hallucination, return empty
+                    logger.warning(
+                        f"Hallucination detected and filtered: '{original_text[:50]}...'"
+                    )
+                    return ASRResult(
+                        text="",
+                        type=TranscriptType.FINAL,
+                        confidence=0.0,
+                        start_time=0.0,
+                        end_time=len(audio) / self.config.sample_rate,
+                        language="zh",
+                        language_confidence=0.0,
+                    )
+                else:
+                    logger.info(
+                        f"Partial hallucination cleaned: '{original_text[:30]}' -> '{full_text[:30]}'"
+                    )
 
             end_time = time.time()
             transcribe_time = (end_time - start_time) * 1000
