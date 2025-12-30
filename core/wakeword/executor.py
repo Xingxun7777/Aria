@@ -96,6 +96,7 @@ class WakewordExecutor:
             "set_sleeping": self._set_sleeping,
             "selection_process": self._selection_process,
             "translate_popup": self._translate_popup,
+            "summarize_popup": self._summarize_popup,
             "ask_ai": self._ask_ai,
             "save_highlight": self._save_highlight,
         }
@@ -461,9 +462,90 @@ class WakewordExecutor:
             _debug(traceback.format_exc())
             return False
 
+    def _summarize_popup(self, _value) -> bool:
+        """
+        Show summary popup for selected text (v1.1 feature).
+
+        Flow mirrors translate_popup:
+        1. Detect selected text
+        2. Restore clipboard immediately
+        3. Emit SummaryAction to UI (non-blocking)
+        4. UI worker handles summarization
+
+        Returns:
+            True if action emitted successfully
+        """
+        _debug("_summarize_popup() called")
+
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("No selection_detector available")
+            return False
+
+        _debug("Detecting selection for summary popup...")
+        detection = self.app.selection_detector.detect()
+
+        try:
+            if not detection.has_selection or not detection.selected_text:
+                _debug("No text selected for summary popup")
+                print("[SUMMARY_POPUP] 未检测到选中文本")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("未检测到选中文本，请先选中要总结的内容")
+                return False
+
+            selected_text = detection.selected_text.strip()
+            text_len = len(selected_text)
+            _debug(f"Found text for summary: {text_len} chars")
+
+            MIN_SUMMARY_LEN = 20
+            MAX_SUMMARY_LEN = 20000
+
+            if text_len < MIN_SUMMARY_LEN:
+                _debug(f"Text too short for summary: {text_len} chars")
+                print(f"[SUMMARY_POPUP] 选中文本过短 ({text_len} 字符)")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("选中文本过短，请选择更多内容")
+                return False
+
+            if text_len > MAX_SUMMARY_LEN:
+                _debug(
+                    f"Text too long for summary: {text_len} > {MAX_SUMMARY_LEN}"
+                )
+                print(f"[SUMMARY_POPUP] 选中文本过长 ({text_len} 字符)")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error(
+                        f"选中文本过长，请控制在 {MAX_SUMMARY_LEN} 字符以内"
+                    )
+                return False
+
+        finally:
+            if detection.original_clipboard is not None:
+                self.app.selection_detector.restore_clipboard(
+                    detection.original_clipboard
+                )
+                _debug("Clipboard restored")
+
+        try:
+            from ..action import SummaryAction
+
+            action = SummaryAction(source_text=selected_text)
+            if self.bridge and hasattr(self.bridge, "emit_action"):
+                self.bridge.emit_action(action)
+                _debug(f"SummaryAction emitted: {action.request_id}")
+                print(f"[SUMMARY] 已发送总结请求 ({len(selected_text)} 字符)")
+                return True
+            else:
+                _debug("No bridge.emit_action available")
+                return False
+        except Exception as e:
+            _debug(f"ERROR in _summarize_popup: {e}")
+            return False
+
     def _ask_ai(self, _value) -> bool:
         """
-        Open AI chat dialog with selected text as context (v1.1 feature).
+        Open AI chat dialog with selected text as context (v1.1 feature).  
 
         Unlike selection_process which replaces text, this:
         1. Detects selected text

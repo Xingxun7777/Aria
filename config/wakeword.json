@@ -149,12 +149,22 @@
       "triggers": [
         "缩写",
         "缩写一下",
-        "总结",
-        "总结一下",
         "精简",
         "精简一下"
       ],
       "response": "正在缩写..."
+    },
+    "summary_popup": {
+      "action": "summarize_popup",
+      "value": null,
+      "triggers": [
+        "总结一下",
+        "总结",
+        "帮我总结",
+        "概括一下",
+        "提炼一下"
+      ],
+      "response": "正在总结..."
     },
     "selection_rewrite": {
       "action": "selection_process",

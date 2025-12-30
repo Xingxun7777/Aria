@@ -17,6 +17,7 @@ class ActionType(Enum):
 
     REPLACE_TEXT = auto()  # Original behavior: replace selected text
     SHOW_TRANSLATION = auto()  # Translation popup (don't replace original)
+    SHOW_SUMMARY = auto()  # Summary popup (don't replace original)
     CLIPBOARD_TRANSLATION = auto()  # Translate and copy to clipboard
     OPEN_CHAT = auto()  # AI chat dialog
 
@@ -63,6 +64,28 @@ class TranslationAction(UIAction):
     def __post_init__(self):
         # Ensure type is correct even if explicitly passed
         object.__setattr__(self, "type", ActionType.SHOW_TRANSLATION)
+
+
+@dataclass
+class SummaryAction(UIAction):
+    """
+    Action to show summary in a popup.
+
+    Flow:
+    1. Backend creates SummaryAction with source_text
+    2. QtBridge emits actionTriggered signal
+    3. UI receives action, shows loading popup
+    4. SummaryWorker performs summarization
+    5. Worker signals completion, UI updates popup with result
+    """
+
+    type: ActionType = field(default=ActionType.SHOW_SUMMARY, init=False)
+    source_text: str = ""
+    summary_text: Optional[str] = None
+    error: Optional[str] = None
+
+    def __post_init__(self):
+        object.__setattr__(self, "type", ActionType.SHOW_SUMMARY)
 
 
 @dataclass

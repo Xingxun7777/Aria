@@ -19,7 +19,7 @@ from .sound import play_sound
 from .history import HistoryWindow
 from .translation_popup import TranslationPopup
 from .ai_chat_window import AIChatWindow
-from .workers import TranslationWorker, LLMWorker
+from .workers import TranslationWorker, SummaryWorker, LLMWorker
 
 # Debug log for main.py
 _DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
@@ -62,6 +62,7 @@ def main():
     settings = SettingsWindow()
     history = HistoryWindow()
     translation_popup = TranslationPopup()
+    summary_popup = TranslationPopup()
     ai_chat_window = AIChatWindow()
 
     # Thread pool for background workers
@@ -70,6 +71,8 @@ def main():
     # Container to keep signal objects alive until delivery
     # (QRunnable with autoDelete=True can delete signals before delivery)
     _active_signals = []
+    _active_dialogs = []
+    _quit_in_progress = False
 
     # Create minimal system tray for unlock and quit
     tray = QSystemTrayIcon()
@@ -168,7 +171,33 @@ def main():
     bridge.highlightSaved.connect(
         ball.on_highlight_saved
     )  # Gold flash for highlight save
-    bridge.error.connect(lambda msg: QMessageBox.warning(None, "Aria Error", msg))
+    def show_error_dialog(msg: str) -> None:
+        """Show non-blocking error dialog to avoid trapping the event loop."""
+        try:
+            box = QMessageBox(QMessageBox.Warning, "Aria Error", msg)
+            box.setWindowModality(Qt.NonModal)
+            box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            box.setAttribute(Qt.WA_DeleteOnClose, True)
+            _active_dialogs.append(box)
+
+            def _cleanup_dialog(_result):
+                if box in _active_dialogs:
+                    _active_dialogs.remove(box)
+
+            box.finished.connect(_cleanup_dialog)
+            box.show()
+            box.raise_()
+            box.activateWindow()
+        except Exception as e:
+            _log(f"[UI] Failed to show error dialog: {e}")
+
+        # Also show tray notification if available
+        try:
+            tray.showMessage("Aria 错误", msg, QSystemTrayIcon.MessageIcon.Warning, 3000)
+        except Exception:
+            pass
+
+    bridge.error.connect(show_error_dialog)
 
     # Handle setting changes from backend (e.g., via wakeword commands)
     def on_setting_changed(setting: str, value: bool):
@@ -323,6 +352,7 @@ def main():
         from aria.core.action import (
             ActionType,
             TranslationAction,
+            SummaryAction,
             ChatAction,
             ClipboardTranslationAction,
         )
@@ -412,6 +442,65 @@ def main():
                 )
             except Exception as e:
                 _log(f"[MAIN] ERROR in SHOW_TRANSLATION: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+        elif action.type == ActionType.SHOW_SUMMARY:
+            try:
+                _log(
+                    f"[MAIN] Summary popup: {len(action.source_text)} chars"
+                )
+                summary_popup.show_loading(
+                    action.source_text,
+                    action.request_id,
+                    title_prefix="总结",
+                    title_done="摘要",
+                    loading_text="正在总结...",
+                    error_prefix="总结失败",
+                )
+
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if hasattr(backend, "polisher") and backend.polisher:
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+                    _log(f"[MAIN] Got API config: url={api_url[:30]}..., model={model}")
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured for summary")
+                    summary_popup.show_error("API 未配置", action.request_id)
+                    return
+
+                worker = SummaryWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                )
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_summary_signals(sig_ref):
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+
+                signals_ref.finished.connect(on_summary_finished)
+                signals_ref.finished.connect(
+                    lambda *_: cleanup_summary_signals(signals_ref)
+                )
+                signals_ref.error.connect(on_summary_error)
+                signals_ref.error.connect(
+                    lambda *_: cleanup_summary_signals(signals_ref)
+                )
+                thread_pool.start(worker)
+                _log("[MAIN] SummaryWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in SHOW_SUMMARY: {e}")
                 import traceback
 
                 _log(traceback.format_exc())
@@ -538,6 +627,34 @@ def main():
 
             _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
 
+    def on_summary_finished(request_id: str, summary_text: str):
+        """Handle summary completion."""
+        _log(
+            f"[UI] Summary finished CALLBACK: request_id={request_id}, text_len={len(summary_text)}"
+        )
+        try:
+            summary_popup.show_result(summary_text, request_id)
+            _log(f"[UI] Summary show_result completed OK")
+        except Exception as e:
+            _log(f"[UI] Summary show_result ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_summary_error(request_id: str, error_msg: str):
+        """Handle summary error."""
+        _log(
+            f"[UI] Summary error CALLBACK: request_id={request_id}, error={error_msg}"
+        )
+        try:
+            summary_popup.show_error(error_msg, request_id)
+            _log(f"[UI] Summary show_error completed OK")
+        except Exception as e:
+            _log(f"[UI] Summary show_error ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
     def on_copy_translation(text: str):
         """Handle copy request from translation popup."""
         clipboard = QApplication.clipboard()
@@ -617,6 +734,7 @@ def main():
     # Connect action signals
     bridge.actionTriggered.connect(on_action_triggered)
     translation_popup.copyRequested.connect(on_copy_translation)
+    summary_popup.copyRequested.connect(on_copy_translation)
 
     # Connect mute action to backend
     def on_mute_toggled():
@@ -730,7 +848,13 @@ def main():
         """Cleanup backend before quitting."""
         import threading
         import os
+        import time
+        from PySide6.QtCore import QCoreApplication
 
+        nonlocal _quit_in_progress
+        if _quit_in_progress:
+            return
+        _quit_in_progress = True
         _log("[Aria] Cleaning up and quitting...")
 
         # Step 1: Hide tray icon first to prevent ghost icons on Windows
@@ -739,7 +863,27 @@ def main():
         except Exception as e:
             _log(f"[Aria] Tray hide error (ignored): {e}")
 
-        # Step 2: Stop backend (ASR, audio capture, hotkey listener)
+        # Step 2: Close any active dialogs and windows to avoid modal traps
+        try:
+            for dlg in list(_active_dialogs):
+                try:
+                    dlg.close()
+                except Exception:
+                    pass
+            _active_dialogs.clear()
+        except Exception as e:
+            _log(f"[Aria] Dialog cleanup error (ignored): {e}")
+
+        try:
+            for w in app.topLevelWidgets():
+                try:
+                    w.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            _log(f"[Aria] Window cleanup error (ignored): {e}")
+
+        # Step 3: Stop backend (ASR, audio capture, hotkey listener)
         if hasattr(backend, "stop"):
             try:
                 backend.stop()
@@ -747,12 +891,10 @@ def main():
             except Exception as e:
                 _log(f"[Aria] Backend stop error: {e}")
 
-        # Step 3: Wait briefly for threads to terminate
-        import time
-
+        # Step 4: Wait briefly for threads to terminate
         time.sleep(0.3)
 
-        # Step 4: Check for remaining non-daemon threads
+        # Step 5: Check for remaining non-daemon threads
         remaining = [
             t for t in threading.enumerate() if not t.daemon and t.name != "MainThread"
         ]
@@ -761,28 +903,27 @@ def main():
                 f"[Aria] Warning: {len(remaining)} non-daemon threads still running: {[t.name for t in remaining]}"
             )
 
-        # Step 5: Quit Qt application
+        # Step 6: Try to drain thread pool tasks
+        try:
+            if thread_pool:
+                thread_pool.waitForDone(1000)
+        except Exception as e:
+            _log(f"[Aria] Thread pool wait error (ignored): {e}")
+
+        # Step 7: Quit Qt application
         try:
             app.quit()
+            QCoreApplication.exit(0)
         except Exception as e:
             _log(f"[Aria] App quit error (ignored): {e}")
 
         _log("[Aria] Cleanup complete")
 
-        # Step 6: Force exit if still running after 1 second
-        # (handles stubborn threads that don't respond to app.quit)
+        # Step 8: Force exit if still running after timeout (covers modal traps)
         def force_exit():
-            time.sleep(1.0)
-            remaining_final = [
-                t
-                for t in threading.enumerate()
-                if not t.daemon and t.name != "MainThread"
-            ]
-            if remaining_final:
-                _log(
-                    f"[Aria] Force exiting due to stuck threads: {[t.name for t in remaining_final]}"
-                )
-                os._exit(0)
+            time.sleep(2.0)
+            _log("[Aria] Force exiting due to timeout")
+            os._exit(0)
 
         force_thread = threading.Thread(target=force_exit, daemon=True)
         force_thread.start()

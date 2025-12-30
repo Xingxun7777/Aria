@@ -103,13 +103,18 @@ class TranslationPopup(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
 
-        self._init_ui()
-        self._init_animations()
-
         # State
         self._current_request_id: Optional[str] = None
         self._translated_text: str = ""
         self._is_loading: bool = False
+        self._title_prefix: str = "翻译"
+        self._title_done: str = "译文"
+        self._loading_text: str = "正在翻译..."
+        self._error_prefix: str = "翻译失败"
+        self._copy_hint: str = "点击复制"
+
+        self._init_ui()
+        self._init_animations()
 
         # Auto-dismiss timer (1.5s after mouse leaves)
         self._dismiss_timer = QTimer(self)
@@ -133,7 +138,7 @@ class TranslationPopup(QWidget):
         header_layout.setSpacing(8)
 
         # Title label
-        self._title_label = QLabel("译文")
+        self._title_label = QLabel(self._title_done)
         self._title_label.setStyleSheet(
             f"""
             QLabel {{
@@ -363,7 +368,16 @@ class TranslationPopup(QWidget):
         except Exception as e:
             _tlog(f"_apply_win32_styles: EXCEPTION: {e}")
 
-    def show_loading(self, source_text: str, request_id: str):
+    def show_loading(
+        self,
+        source_text: str,
+        request_id: str,
+        title_prefix: str = "翻译",
+        title_done: str = "译文",
+        loading_text: str = "正在翻译...",
+        error_prefix: str = "翻译失败",
+        copy_hint: str = "点击复制",
+    ):
         """
         Show popup in loading state.
 
@@ -385,11 +399,16 @@ class TranslationPopup(QWidget):
             self._current_request_id = request_id
             self._is_loading = True
             self._translated_text = ""
+            self._title_prefix = title_prefix
+            self._title_done = title_done
+            self._loading_text = loading_text
+            self._error_prefix = error_prefix
+            self._copy_hint = copy_hint
             _tlog("show_loading: state vars set")
 
             # Update title with character count
             text_len = len(source_text)
-            self._title_label.setText(f"翻译 ({text_len}字)")
+            self._title_label.setText(f"{self._title_prefix} ({text_len}字)")
             _tlog("show_loading: title set")
 
             # Truncate long source text for display
@@ -402,7 +421,7 @@ class TranslationPopup(QWidget):
             _tlog("show_loading: source label set")
 
             # Show loading state
-            self._result_label.setText("正在翻译...")
+            self._result_label.setText(self._loading_text)
             _tlog("show_loading: result label text set")
             self._result_label.setStyleSheet(
                 f"""
@@ -458,7 +477,7 @@ class TranslationPopup(QWidget):
         self._translated_text = translated_text
 
         # Update title to show completion
-        self._title_label.setText("译文")
+        self._title_label.setText(self._title_done)
 
         # Update display
         self._result_label.setText(translated_text)
@@ -473,6 +492,7 @@ class TranslationPopup(QWidget):
             }}
         """
         )
+        self._hint_label.setText(self._copy_hint)
         self._hint_label.show()
 
         # Reposition after content change
@@ -493,7 +513,7 @@ class TranslationPopup(QWidget):
         self._is_loading = False
         self._translated_text = ""
 
-        self._result_label.setText(f"翻译失败: {error_msg}")
+        self._result_label.setText(f"{self._error_prefix}: {error_msg}")
         self._result_label.setStyleSheet(
             f"""
             QLabel {{
@@ -621,4 +641,4 @@ class TranslationPopup(QWidget):
         self._is_loading = False
         self._source_label.clear()
         self._result_label.clear()
-        self._hint_label.setText("点击复制")
+        self._hint_label.setText(self._copy_hint)
