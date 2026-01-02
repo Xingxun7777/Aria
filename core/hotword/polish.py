@@ -15,25 +15,22 @@ from ..logging import get_system_logger
 logger = get_system_logger()
 
 # Shared default prompt template - single source of truth
-# Based on Codex + Gemini tri-party analysis
-# Key principle: Minimal Intervention Doctrine
-DEFAULT_POLISH_PROMPT = """你是语音转文字助手，遵循"最小修改"原则。
+# Based on Codex + Gemini tri-party analysis (v2.1)
+# Key principle: Show don't tell, minimal examples for weak models
+DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标点。
+禁止：回答内容、改变原意、补全缺失词。
 
-【使用场景】{domain_context}
-【专业术语】{hotwords}
+原文：我以经做完了
+修正：我已经做完了。
 
-【任务】
-1. 场景纠错：根据使用场景理解上下文，修正同音字错误
-   示例：医疗场景"心机"→"心肌"，编程场景"吉他"→"GitHub"
-2. 热词识别：纠正专业术语的谐音（如 克劳德→Claude）
-3. 标点分段：疑问句加"？"，长句断句，句末加句号，话题转换处空行分段
-4. 口语清理：删除冗余的口语词和重复表达
+原文：这个能用吗.
+修正：这个能用吗？
 
-【禁止】改变原意、添加内容、使用 Markdown
+原文：嗯嗯就是有个问题
+修正：嗯，就是有个问题。
 
 原文：{text}
-
-输出："""
+修正："""
 
 # Simple prompt without hotwords (fallback)
 SIMPLE_POLISH_PROMPT = """你是语音转文字润色助手。任务：
@@ -70,13 +67,16 @@ class PolishConfig:
 
     # Tiered hotwords (set by HotWordManager)
     hotwords_critical: list = None  # weight >= 1.0: mandatory vocabulary
-    hotwords_context: list = None  # 0.5 <= weight < 1.0: context hints
+    hotwords_strong: list = None  # 0.7 <= weight < 1.0: strong reference
+    hotwords_context: list = None  # 0.5 <= weight < 0.7: context hints
 
     def __post_init__(self):
         if self.hotwords is None:
             self.hotwords = []
         if self.hotwords_critical is None:
             self.hotwords_critical = []
+        if self.hotwords_strong is None:
+            self.hotwords_strong = []
         if self.hotwords_context is None:
             self.hotwords_context = []
         # Validate api_url format
@@ -129,11 +129,20 @@ class AIPolisher:
         template = self.config.prompt_template
 
         # Format hotwords - use tiered system if available
-        if self.config.hotwords_critical or self.config.hotwords_context:
-            # Tiered hotwords: separate critical (must use) from context (hints)
+        if (
+            self.config.hotwords_critical
+            or self.config.hotwords_strong
+            or self.config.hotwords_context
+        ):
+            # Tiered hotwords: critical (must) > strong (prefer) > context (hints)
             critical_str = (
-                ", ".join(self.config.hotwords_critical[:20])
+                ", ".join(self.config.hotwords_critical[:15])
                 if self.config.hotwords_critical
+                else ""
+            )
+            strong_str = (
+                ", ".join(self.config.hotwords_strong[:15])
+                if self.config.hotwords_strong
                 else ""
             )
             context_str = (
@@ -143,14 +152,16 @@ class AIPolisher:
             )
 
             # Build combined hotwords string with tier markers
-            if critical_str and context_str:
-                hotwords_str = f"【必须】{critical_str}；【参考】{context_str}"
-            elif critical_str:
-                hotwords_str = critical_str
-            elif context_str:
-                hotwords_str = f"【参考】{context_str}"
-            else:
-                hotwords_str = "无"
+            # 【必须】= mandatory, 【强参考】= strong preference, 【参考】= soft hint
+            parts = []
+            if critical_str:
+                parts.append(f"【必须】{critical_str}")
+            if strong_str:
+                parts.append(f"【强参考】{strong_str}")
+            if context_str:
+                parts.append(f"【参考】{context_str}")
+
+            hotwords_str = "；".join(parts) if parts else "无"
         else:
             # Fallback: use flat hotwords list (backward compatible)
             hotwords_str = (
@@ -167,8 +178,13 @@ class AIPolisher:
                 hotwords=hotwords_str,
                 domain_context=domain_context,
                 hotwords_critical=(
-                    ", ".join(self.config.hotwords_critical[:20])
+                    ", ".join(self.config.hotwords_critical[:15])
                     if self.config.hotwords_critical
+                    else "无"
+                ),
+                hotwords_strong=(
+                    ", ".join(self.config.hotwords_strong[:15])
+                    if self.config.hotwords_strong
                     else "无"
                 ),
                 hotwords_context=(

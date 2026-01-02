@@ -462,7 +462,9 @@ class SettingsWindow(QMainWindow):
         list_header = QLabel("<b>词汇列表</b>")
         layout.addWidget(list_header)
 
-        guide_label = QLabel("权重: 0=Off, 0.3=Min, 0.5=Low, 1=Normal, 1.5=High, 2=Max")
+        guide_label = QLabel(
+            "权重: 0=禁用, 0.3=提示, 0.5=参考, 0.7=强参考, 0.9=极强, 1=锁定"
+        )
         guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
         layout.addWidget(guide_label)
 
@@ -564,17 +566,19 @@ class SettingsWindow(QMainWindow):
         self.vocab_table.setItem(row, 0, word_item)
 
         # Weight options: value -> display text
+        # Aligned with FunASR tiered system (v2.0):
+        # - 0: disabled, 0.3: hint only, 0.5: context, 0.7: strong, 0.9: very strong, 1.0: lock
         weight_options = [
-            (0, "0 - Off"),
-            (0.3, "0.3 - Min"),
-            (0.5, "0.5 - Low"),
-            (1.0, "1 - Normal"),
-            (1.5, "1.5 - High"),
-            (2.0, "2 - Max"),
+            (0, "0 - 禁用"),
+            (0.3, "0.3 - 提示"),
+            (0.5, "0.5 - 参考"),
+            (0.7, "0.7 - 强参考"),
+            (0.9, "0.9 - 极强"),
+            (1.0, "1 - 锁定"),
         ]
 
         # Find closest weight option
-        closest_idx = 3  # Default to "1 - 正常"
+        closest_idx = 5  # Default to "1 - 锁定" (index 5 in new options)
         min_diff = float("inf")
         for i, (val, _) in enumerate(weight_options):
             diff = abs(val - weight)

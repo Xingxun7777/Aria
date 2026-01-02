@@ -314,9 +314,97 @@ dist_portable/VoiceType/ (6.8GB)
 
 ---
 
+## Session: 2026-01-02 (热词权重分层系统)
+
+### Completed
+- [x] 诊断 LLM 润色层过度替换问题（OPUS→ComfyUI, 米薯→ComfyUI, tram上→GitHub上）
+- [x] 三方会谈（Codex + Gemini）设计热词权重分层系统
+- [x] 实现 `manager.py` 新方法：`get_hotwords_by_layer()`, `get_asr_hotwords_with_score()`
+- [x] 实现 `funasr_engine.py` 新方法：`set_hotwords_with_score()`
+- [x] 修改 `app.py` 使用新的分层 API（初始化 + 热重载两处）
+- [x] 验证 FunASR hotword 参数确实生效（generate() 调用成功）
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `core/hotword/manager.py` | 添加 `get_hotwords_by_layer()` + `get_asr_hotwords_with_score()` |
+| `core/asr/funasr_engine.py` | 添加 `set_hotwords_with_score()` 方法 |
+| `app.py:668-677` | FunASR 初始化使用 score 映射 |
+| `app.py:713-720` | 拼音匹配只用 weight>=1.0 热词 |
+| `app.py:1728-1740` | 热重载同步更新 |
+| `config/hotwords.json` | prompt_template 移除 {hotwords}，默认权重 0.5 |
+
+### Key Decisions
+- **权重分层设计**（三方会谈共识）:
+  | 权重 | Layer 1 (ASR) | Layer 2 (正则) | Layer 2.5 (拼音) |
+  |------|---------------|----------------|------------------|
+  | 0    | ❌ | ❌ | ❌ |
+  | 0.3  | ✅ score=20 (hint) | ❌ | ❌ |
+  | 0.5  | ✅ score=50 (standard) | ✅ | ❌ |
+  | 1.0  | ✅ score=80 (lock) | ✅ | ✅ |
+
+- **LLM 不再接收热词列表**：避免过拟合，只做同音字纠错和标点
+
+### Technical Findings
+1. **过度替换根因**：所有热词默认权重 1.0 → LLM 视为"必须使用" → 激进替换
+2. **FunASR hotword 格式**：换行分隔的 "word score" 对，score 影响解码偏置
+3. **seaco_paraformer**：FunASR v1.2.7 的 paraformer-zh 自动使用 seaco 变体（原生支持 hotword）
+
+### Pending Tasks
+1. [ ] 实际运行测试识别效果
+2. [ ] 根据测试结果调整个别热词权重
+3. [ ] 便携版重新打包
+
+### Known Issues
+- 当前没有 weight=1.0 的热词，拼音匹配层为空（预期行为，保守策略）
+
+---
+
+## Session: 2026-01-02 (FunASR 热词分数优化)
+
+### Completed
+- [x] 终极分析 FunASR 热词系统参数配置
+- [x] 诊断 weight=0.5 热词完全无法识别问题（FunASR score=30 太低）
+- [x] 重新设计 weight→score 映射（Aggressive v2.0）
+- [x] 添加 LLM Polish 三层系统（必须/强参考/参考）
+- [x] 更新前端 UI 权重选项（添加 0.7、0.9）
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `core/hotword/manager.py` | weight_to_score() 分数提升到 50/70/85/100；添加 strong tier |
+| `core/hotword/polish.py` | PolishConfig 添加 hotwords_strong；_build_prompt() 支持【强参考】 |
+| `ui/qt/settings.py` | 权重选项：0/0.3/0.5/0.7/0.9/1.0（移除 1.5/2.0） |
+
+### Key Decisions
+- **Aggressive 分数策略**：FunASR baseline=20 但实测 <40 几乎无效，新策略用 50-100
+- **移除 1.5/2.0 权重**：过高权重导致过度校正（ultrathink 事件），1.0 已是最大值
+- **三层 LLM 提示**：【必须】≥1.0 / 【强参考】0.7-0.99 / 【参考】0.5-0.69
+
+### Technical Findings
+1. **根因**：FunASR score=30（weight 0.5）低于有效激活阈值，SeACo-Paraformer 需要更高分数
+2. **新映射**：
+   | Weight | FunASR Score | LLM Tier |
+   |--------|--------------|----------|
+   | 0 | skip | 禁用 |
+   | 0.3 | 15 | 仅提示 |
+   | 0.5 | 50 | 【参考】 |
+   | 0.7 | 70 | 【强参考】 |
+   | 0.9 | 85 | 【强参考】 |
+   | 1.0 | 100 | 【必须】 |
+
+### Pending Tasks
+1. [ ] 测试新分数是否修复 0.5 权重热词识别问题
+2. [ ] 根据测试结果微调个别热词权重
+
+### Known Issues
+- 待验证：新 Aggressive 分数是否导致误激活
+
+---
+
 ## Warmup Hints
 <!-- 预热系统读取此区块 -->
-focus: dist_portable/VoiceType/
+focus: ui/qt/settings.py
 mode: standard
 pending_research: 无
-note: 便携版 v1.1 已就绪，热加载系统验证通过
+note: FunASR 热词分数优化完成，待用户测试验证效果

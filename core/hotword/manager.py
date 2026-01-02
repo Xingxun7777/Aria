@@ -270,34 +270,38 @@ class HotWordManager:
         """
         Get hotwords for Polish, split into tiers by weight.
 
-        Tier system (based on Gemini tri-party analysis):
+        Tier system (based on Gemini tri-party analysis + v2 refinement):
         - critical (weight >= 1.0): Mandatory vocabulary, LLM must use these spellings
-        - context (0.5 <= weight < 1.0): Context hints, use if phonetically similar
+        - strong (0.7 <= weight < 1.0): Strong reference, LLM should prefer these
+        - context (0.5 <= weight < 0.7): Context hints, use if phonetically similar
         - passive (0.1 <= weight < 0.5): NOT sent to LLM (prevents hallucination)
         - disabled (weight = 0): Completely excluded
 
         Returns:
-            {"critical": [...], "context": [...]}
+            {"critical": [...], "strong": [...], "context": [...]}
         """
         weights = self._load_weights()
 
         critical = []
+        strong = []
         context = []
 
         for word in self.config.prompt_words:
-            w = weights.get(word, 1.0)
+            w = weights.get(word, 0.5)  # Default to context tier, not critical
             if w >= 1.0:
                 critical.append(word)
+            elif w >= 0.7:
+                strong.append(word)
             elif w >= 0.5:
                 context.append(word)
             # weight < 0.5: NOT included (passive/disabled)
             # This is the KEY fix: low-weight words don't trigger LLM hallucination
 
         logger.debug(
-            f"Polish tiers: critical={len(critical)}, context={len(context)}, "
-            f"excluded={len(self.config.prompt_words) - len(critical) - len(context)} (weight < 0.5)"
+            f"Polish tiers: critical={len(critical)}, strong={len(strong)}, context={len(context)}, "
+            f"excluded={len(self.config.prompt_words) - len(critical) - len(strong) - len(context)} (weight < 0.5)"
         )
-        return {"critical": critical, "context": context}
+        return {"critical": critical, "strong": strong, "context": context}
 
     def _load_weights(self) -> Dict[str, float]:
         """Load hotword weights from config file."""
@@ -311,6 +315,90 @@ class HotWordManager:
                 pass
         return weights
 
+    def get_hotwords_by_layer(self) -> Dict[str, List[str]]:
+        """
+        Get hotwords filtered by layer based on weight.
+
+        Weight-to-layer mapping (based on tri-party analysis):
+        - weight >= 0.3: Layer 1 (ASR) - hint to ASR
+        - weight >= 0.5: Layer 2 (Regex) - deterministic replacement
+        - weight >= 1.0: Layer 2.5 (Pinyin) - fuzzy matching allowed
+
+        Returns:
+            {"layer1_asr": [...], "layer2_regex": [...], "layer2_5_pinyin": [...]}
+        """
+        weights = self._load_weights()
+
+        layer1_asr = []  # weight >= 0.3
+        layer2_regex = []  # weight >= 0.5
+        layer2_5_pinyin = []  # weight >= 1.0
+
+        for word in self.config.prompt_words:
+            w = weights.get(word, 0.5)  # Default 0.5
+
+            if w >= 0.3:
+                layer1_asr.append(word)
+            if w >= 0.5:
+                layer2_regex.append(word)
+            if w >= 1.0:
+                layer2_5_pinyin.append(word)
+
+        logger.debug(
+            f"Hotwords by layer: ASR={len(layer1_asr)}, "
+            f"Regex={len(layer2_regex)}, Pinyin={len(layer2_5_pinyin)}"
+        )
+        return {
+            "layer1_asr": layer1_asr,
+            "layer2_regex": layer2_regex,
+            "layer2_5_pinyin": layer2_5_pinyin,
+        }
+
+    def get_asr_hotwords_with_score(self) -> List[tuple]:
+        """
+        Get hotwords with FunASR score based on weight.
+
+        Score mapping (Aggressive v2.0 - fixes 0.5 weight not triggering):
+        - weight <= 0 → skip (disabled)
+        - weight < 0.3 → score 15 (minimal hint)
+        - weight 0.3-0.49 → score 25 (low, ASR hint only)
+        - weight 0.5-0.69 → score 50 (standard, reliable recognition)
+        - weight 0.7-0.89 → score 70 (strong)
+        - weight 0.9-0.99 → score 85 (very strong)
+        - weight >= 1.0 → score 100 (lock/maximum)
+
+        Note: FunASR baseline is 20, but SeACo-Paraformer needs higher scores
+        for reliable hotword activation. These scores are 2-3x more aggressive
+        than the official baseline recommendation.
+
+        Returns:
+            List of (word, score) tuples for FunASR hotword parameter
+        """
+        weights = self._load_weights()
+        result = []
+
+        for word in self.config.prompt_words:
+            w = weights.get(word, 0.5)
+
+            if w <= 0:
+                continue  # Disabled
+            elif w < 0.3:
+                score = 15  # Minimal hint
+            elif w < 0.5:
+                score = 25  # Low (ASR hint only)
+            elif w < 0.7:
+                score = 50  # Standard (same as FunASR example "阿里巴巴 20" x2.5)
+            elif w < 0.9:
+                score = 70  # Strong
+            elif w < 1.0:
+                score = 85  # Very strong
+            else:
+                score = 100  # Lock (maximum)
+
+            result.append((word, score))
+
+        logger.debug(f"FunASR hotwords: {len(result)} words with scores")
+        return result
+
     def get_polisher(self) -> Optional[AIPolisher]:
         """Get AI polisher instance for quality mode (lazy init)."""
         if self.config.polish_config and self.config.polish_config.enabled:
@@ -319,17 +407,20 @@ class HotWordManager:
                 tiers = self.get_polish_hotwords_tiered()
 
                 # Pass tiered structure to polisher config
-                # Polish will use critical + context, excluding low-weight words
-                all_polish_hotwords = tiers["critical"] + tiers["context"]
+                # Polish will use critical + strong + context, excluding low-weight words
+                all_polish_hotwords = (
+                    tiers["critical"] + tiers["strong"] + tiers["context"]
+                )
 
                 self.config.polish_config.hotwords = all_polish_hotwords
                 self.config.polish_config.hotwords_critical = tiers["critical"]
+                self.config.polish_config.hotwords_strong = tiers["strong"]
                 self.config.polish_config.hotwords_context = tiers["context"]
                 self.config.polish_config.domain_context = self.config.domain_context
                 self._polisher = AIPolisher(self.config.polish_config)
                 logger.debug(
                     f"Polish hotwords: {len(all_polish_hotwords)}/{len(self.config.prompt_words)} "
-                    f"(critical={len(tiers['critical'])}, context={len(tiers['context'])})"
+                    f"(critical={len(tiers['critical'])}, strong={len(tiers['strong'])}, context={len(tiers['context'])})"
                 )
             return self._polisher
         return None
@@ -425,20 +516,24 @@ class HotWordManager:
                 pass
 
         # Weight to FunASR score mapping (supports float values)
-        # 0=disabled, 0.3=minimal(3), 0.5=low(5), 1.0=normal(10), 1.5=higher(15), 2.0=high(20)
+        # FunASR official recommendation: score 20 is baseline, higher = stronger boost
+        # Aggressive mapping for reliable hotword recognition
+        # New mapping: 0=disabled, 0.3=hint(25), 0.5=standard(50), 0.8=strong(70), 1.0=lock(100)
         def weight_to_score(w: float) -> int:
             if w <= 0:
                 return 0  # Disabled
-            elif w <= 0.3:
-                return 3  # Minimal
-            elif w <= 0.5:
-                return 5  # Low
-            elif w <= 1.0:
-                return 10  # Normal
-            elif w <= 1.5:
-                return 15  # Higher
+            elif w < 0.3:
+                return 15  # Minimal hint
+            elif w < 0.5:
+                return 25  # Low (ASR hint only)
+            elif w < 0.7:
+                return 50  # Standard (reliable recognition)
+            elif w < 0.9:
+                return 70  # Strong (better recognition)
+            elif w < 1.0:
+                return 85  # Very strong
             else:
-                return 20  # High
+                return 100  # Lock (maximum recognition priority)
 
         result = []
         for word in self.config.hotwords:
