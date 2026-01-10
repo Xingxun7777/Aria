@@ -285,15 +285,59 @@ class INPUT(ctypes.Structure):
 user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = wintypes.UINT
 
-
-# Fix types for 64-bit Windows
+# Fix types for 64-bit Windows - handle-returning functions need explicit types
+# Without these, 64-bit handles may be truncated to 32-bit (Codex review finding)
 kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
 kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
 kernel32.GlobalLock.restype = ctypes.c_void_p
 kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.restype = wintypes.BOOL
+kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+kernel32.GlobalFree.restype = ctypes.c_void_p
+
+# Clipboard functions
 user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 user32.SetClipboardData.restype = ctypes.c_void_p
+user32.GetClipboardData.argtypes = [ctypes.c_uint]
 user32.GetClipboardData.restype = ctypes.c_void_p
+user32.OpenClipboard.argtypes = [wintypes.HWND]
+user32.OpenClipboard.restype = wintypes.BOOL
+user32.CloseClipboard.argtypes = []
+user32.CloseClipboard.restype = wintypes.BOOL
+user32.EmptyClipboard.argtypes = []
+user32.EmptyClipboard.restype = wintypes.BOOL
+
+# Window/Process functions - critical for handle correctness
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetWindowThreadProcessId.argtypes = [
+    wintypes.HWND,
+    ctypes.POINTER(wintypes.DWORD),
+]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+# Process/Token functions for elevation detection
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.GetCurrentProcessId.argtypes = []
+kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+advapi32.OpenProcessToken.argtypes = [
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.HANDLE),
+]
+advapi32.OpenProcessToken.restype = wintypes.BOOL
+advapi32.GetTokenInformation.argtypes = [
+    wintypes.HANDLE,  # TokenHandle
+    ctypes.c_int,  # TokenInformationClass
+    ctypes.c_void_p,  # TokenInformation
+    wintypes.DWORD,  # TokenInformationLength
+    ctypes.POINTER(wintypes.DWORD),  # ReturnLength
+]
+advapi32.GetTokenInformation.restype = wintypes.BOOL
 
 
 @dataclass
@@ -360,7 +404,16 @@ class OutputInjector:
             return None
 
     def _set_clipboard_text(self, text: str) -> bool:
-        """Set clipboard text content."""
+        """
+        Set clipboard text content.
+
+        Memory management notes (from Codex/Gemini review):
+        - GlobalAlloc allocates memory that we own
+        - If SetClipboardData succeeds, clipboard takes ownership (don't free)
+        - If SetClipboardData fails, we must free the handle ourselves
+        - If GlobalLock fails, we must free the handle ourselves
+        """
+        handle = None  # Track handle for cleanup on failure
         try:
             if not user32.OpenClipboard(None):
                 logger.error("Failed to open clipboard")
@@ -381,6 +434,9 @@ class OutputInjector:
                 ptr = kernel32.GlobalLock(handle)
                 if not ptr:
                     logger.error("Failed to lock memory")
+                    # Memory leak fix: free handle if lock fails
+                    kernel32.GlobalFree(handle)
+                    handle = None
                     return False
 
                 try:
@@ -388,17 +444,28 @@ class OutputInjector:
                 finally:
                     kernel32.GlobalUnlock(handle)
 
-                # Set clipboard data
+                # Set clipboard data - if successful, clipboard owns the handle
                 result = user32.SetClipboardData(CF_UNICODETEXT, handle)
                 if not result:
                     logger.error("Failed to set clipboard data")
+                    # Memory leak fix: free handle if SetClipboardData fails
+                    kernel32.GlobalFree(handle)
+                    handle = None
                     return False
 
+                # Success - clipboard now owns handle, don't free it
+                handle = None
                 return True
             finally:
                 user32.CloseClipboard()
         except Exception as e:
             logger.error(f"Failed to set clipboard: {e}")
+            # Memory leak fix: ensure cleanup on exception
+            if handle:
+                try:
+                    kernel32.GlobalFree(handle)
+                except Exception:
+                    pass
             return False
 
     def _send_paste(self) -> None:
@@ -434,6 +501,29 @@ class OutputInjector:
                 f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
             )
 
+    def _send_vk_key(self, vk_code: int) -> bool:
+        """Send a single virtual key press (down + up)."""
+        inputs = (INPUT * 2)()
+
+        # Key down
+        inputs[0].type = INPUT_KEYBOARD
+        inputs[0].union.ki.wVk = vk_code
+        inputs[0].union.ki.wScan = 0
+        inputs[0].union.ki.dwFlags = 0
+        inputs[0].union.ki.time = 0
+        inputs[0].union.ki.dwExtraInfo = 0
+
+        # Key up
+        inputs[1].type = INPUT_KEYBOARD
+        inputs[1].union.ki.wVk = vk_code
+        inputs[1].union.ki.wScan = 0
+        inputs[1].union.ki.dwFlags = KEYEVENTF_KEYUP
+        inputs[1].union.ki.time = 0
+        inputs[1].union.ki.dwExtraInfo = 0
+
+        result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+        return result == 2
+
     def _insert_text_typewriter(self, text: str) -> bool:
         """
         Insert text character-by-character using KEYEVENTF_UNICODE.
@@ -444,6 +534,8 @@ class OutputInjector:
         - Handles surrogate pairs (emoji) correctly
         - Detects focus loss and aborts
         - Fixed delay (random delay is security theater)
+        - Control characters mapped to VK keys (Gemini review)
+        - Aborts on SendInput failure (Codex/Gemini review)
 
         Limitations (by design, not bugs):
         - Does NOT work with DirectInput/RawInput games
@@ -452,6 +544,14 @@ class OutputInjector:
         """
         if not text:
             return True
+
+        # Control characters that should be sent as VK keys, not Unicode
+        # (Gemini review: some apps don't interpret Unicode control chars)
+        CONTROL_CHAR_TO_VK = {
+            "\n": VK_CODES["enter"],  # 0x0D - VK_RETURN
+            "\r": VK_CODES["enter"],  # 0x0D - VK_RETURN
+            "\t": VK_CODES["tab"],  # 0x09 - VK_TAB
+        }
 
         # Record initial window for focus loss detection
         initial_hwnd = user32.GetForegroundWindow()
@@ -468,6 +568,19 @@ class OutputInjector:
                     f"Focus lost after {chars_sent} chars, aborting typewriter input"
                 )
                 return False
+
+            # Check for control characters that need VK key handling
+            if char in CONTROL_CHAR_TO_VK:
+                vk_code = CONTROL_CHAR_TO_VK[char]
+                if not self._send_vk_key(vk_code):
+                    logger.error(
+                        f"SendInput failed for control char '\\x{ord(char):02x}' "
+                        f"after {chars_sent} chars, aborting"
+                    )
+                    return False
+                chars_sent += 1
+                time.sleep(delay_s)
+                continue
 
             codepoint = ord(char)
 
@@ -503,10 +616,12 @@ class OutputInjector:
 
                 result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
                 if result != 2:
-                    logger.warning(
-                        f"SendInput returned {result}/2 for char '{char}', "
-                        f"error={ctypes.get_last_error()}"
+                    # Abort on failure instead of continuing (Codex/Gemini review)
+                    logger.error(
+                        f"SendInput failed ({result}/2) for char '{char}' "
+                        f"after {chars_sent} chars, error={ctypes.get_last_error()}, aborting"
                     )
+                    return False
 
             chars_sent += 1
             time.sleep(delay_s)
