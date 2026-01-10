@@ -976,6 +976,48 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(vad_group)
 
+        # Output settings (typewriter mode for game compatibility)
+        output_group = QGroupBox("输出设置")
+        output_layout = QVBoxLayout(output_group)
+
+        self.chk_typewriter_mode = QCheckBox("打字机模式 (逐字符输入)")
+        self.chk_typewriter_mode.setToolTip(
+            "适用于不支持 Ctrl+V 粘贴的应用程序\n"
+            "开启后将逐字符发送，速度较慢但兼容性更好"
+        )
+        output_layout.addWidget(self.chk_typewriter_mode)
+
+        # Warning about limitations
+        typewriter_hint = QLabel("⚠️ 此模式适用于不支持 Ctrl+V 的普通应用")
+        typewriter_hint.setStyleSheet(
+            "color: #ff8c00; font-size: 11px; margin-left: 20px;"
+        )
+        output_layout.addWidget(typewriter_hint)
+
+        typewriter_warn1 = QLabel("❌ 对使用 DirectInput 的游戏（大多数 3D 游戏）无效")
+        typewriter_warn1.setStyleSheet(
+            "color: #888; font-size: 11px; margin-left: 20px;"
+        )
+        output_layout.addWidget(typewriter_warn1)
+
+        typewriter_warn2 = QLabel("⛔ 在反作弊游戏中使用可能导致账号封禁！")
+        typewriter_warn2.setStyleSheet(
+            "color: #dc3545; font-size: 11px; margin-left: 20px;"
+        )
+        output_layout.addWidget(typewriter_warn2)
+
+        output_layout.addSpacing(10)
+
+        self.chk_elevation_check = QCheckBox("权限检测 (检测高权限窗口)")
+        self.chk_elevation_check.setToolTip(
+            "检测目标窗口是否以管理员权限运行\n"
+            "如果 Aria 权限低于目标窗口，会提示用户"
+        )
+        self.chk_elevation_check.setChecked(True)  # Default enabled
+        output_layout.addWidget(self.chk_elevation_check)
+
+        layout.addWidget(output_group)
+
         # Local polish model
         local_group = QGroupBox("本地润色模型")
         local_layout = QFormLayout(local_group)
@@ -1134,6 +1176,11 @@ class SettingsWindow(QMainWindow):
         # Local polish
         local_polish = self.config.get("local_polish", {})
         self.local_model_path.setText(local_polish.get("model_path", ""))
+
+        # === Output settings ===
+        output_cfg = self.config.get("output", {})
+        self.chk_typewriter_mode.setChecked(output_cfg.get("typewriter_mode", False))
+        self.chk_elevation_check.setChecked(output_cfg.get("check_elevation", True))
 
         # === Translation settings ===
         translation = self.config.get("translation", {})
@@ -1355,6 +1402,15 @@ class SettingsWindow(QMainWindow):
         self.config["local_polish"]["model_path"] = self.local_model_path.text()
         # Auto-enable local polish when fast mode is selected
         self.config["local_polish"]["enabled"] = self.radio_fast.isChecked()
+
+        # === Output settings ===
+        if "output" not in self.config:
+            self.config["output"] = {}
+        self.config["output"]["typewriter_mode"] = self.chk_typewriter_mode.isChecked()
+        self.config["output"]["check_elevation"] = self.chk_elevation_check.isChecked()
+        # Keep existing typewriter_delay_ms if set, otherwise use default
+        if "typewriter_delay_ms" not in self.config["output"]:
+            self.config["output"]["typewriter_delay_ms"] = 15
 
         # === Translation settings ===
         self.config["translation"] = {"output_mode": self.translate_mode.currentData()}

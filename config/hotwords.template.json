@@ -96,5 +96,10 @@
   "vad": {
     "threshold": 0.2,
     "min_silence_ms": 1200
+  },
+  "output": {
+    "typewriter_mode": false,
+    "typewriter_delay_ms": 15,
+    "check_elevation": true
   }
 }

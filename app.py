@@ -86,7 +86,7 @@ from .core.selection import (
 )
 from .core.action import TranslationAction, ChatAction
 from .system.hotkey import HotkeyManager
-from .system.output import OutputInjector
+from .system.output import OutputInjector, OutputConfig
 from .ui.streaming_display import DisplayBuffer, DisplayState
 from .core.logging import get_system_logger
 from .core.utils import get_config_path, get_models_path
@@ -153,7 +153,9 @@ class AriaApp:
         self.hotkey_manager = HotkeyManager()
         self.audio_capture: AudioCapture = None
         self.asr_engine: WhisperEngine = None
-        self.output_injector = OutputInjector()
+        # Output injector with config (supports typewriter mode for game compatibility)
+        output_config = self._load_output_config()
+        self.output_injector = OutputInjector(output_config)
         self._clipboard_lock = threading.Lock()  # Thread-safe clipboard access
         self.output_injector.set_clipboard_lock(self._clipboard_lock)
         self._asr_engine_type: str = "whisper"  # "whisper" or "funasr"
@@ -448,6 +450,54 @@ class AriaApp:
             i += 2 if punct else 1
 
         return "".join(result)
+
+    def _load_output_config(self) -> OutputConfig:
+        """Load output configuration from hotwords.json.
+
+        Supports typewriter mode for game/app compatibility where Ctrl+V doesn't work.
+        Also enables permission detection to warn users about elevated windows.
+        """
+        import json
+
+        config_path = get_config_path("hotwords.json")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            output_cfg = data.get("output", {})
+
+            # Create config with values from file (or defaults)
+            config = OutputConfig(
+                typewriter_mode=output_cfg.get("typewriter_mode", False),
+                typewriter_delay_ms=output_cfg.get("typewriter_delay_ms", 15),
+                check_elevation=output_cfg.get("check_elevation", True),
+                # Elevation callback will show warning via UI bridge
+                elevation_callback=self._on_elevation_warning,
+            )
+
+            if config.typewriter_mode:
+                logger.info(
+                    "[OUTPUT] Typewriter mode enabled (for apps without Ctrl+V support)"
+                )
+
+            return config
+
+        except Exception as e:
+            logger.warning(f"Failed to load output config: {e}, using defaults")
+            return OutputConfig(elevation_callback=self._on_elevation_warning)
+
+    def _on_elevation_warning(self, target_info: str) -> None:
+        """Called when trying to input to an elevated (admin) window.
+
+        Shows warning to user that they need to run Aria as admin.
+        """
+        warning_msg = (
+            f"无法向高权限窗口输入文字。请以管理员身份运行 Aria。\n目标: {target_info}"
+        )
+        logger.warning(f"[ELEVATION] {warning_msg}")
+        print(f"[ELEVATION] ⚠️ {warning_msg}")
+
+        # Emit error to UI if bridge available
+        self._emit_error(warning_msg)
 
     def _load_asr_config(self) -> dict:
         """Load ASR configuration from hotwords.json."""
@@ -1800,7 +1850,21 @@ class AriaApp:
                 except Exception as e:
                     print(f"[HOT-RELOAD] VAD update failed: {e}")
 
-            logger.info("Configuration hot-reloaded (all 4 layers + VAD)")
+            # Update output settings (typewriter mode, elevation check)
+            if self.output_injector:
+                try:
+                    new_output_config = self._load_output_config()
+                    self.output_injector.config = new_output_config
+                    mode_str = (
+                        "typewriter"
+                        if new_output_config.typewriter_mode
+                        else "clipboard"
+                    )
+                    print(f"[HOT-RELOAD] Updated output: mode={mode_str}")
+                except Exception as e:
+                    print(f"[HOT-RELOAD] Output config update failed: {e}")
+
+            logger.info("Configuration hot-reloaded (all 4 layers + VAD + output)")
             print("[HOT-RELOAD] Config reloaded successfully!")
 
     def _config_watcher(self) -> None:

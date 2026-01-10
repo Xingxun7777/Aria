@@ -3,24 +3,135 @@ Output Injection Module
 =======================
 Handles inserting transcribed text into the active application.
 
-Strategy:
-1. Backup current clipboard content
-2. Set transcribed text to clipboard
-3. SendInput Ctrl+V to paste
-4. Restore original clipboard content
+Strategy (Layered):
+- Layer 0: Permission check (detect elevated target windows)
+- Layer 1: Clipboard + Ctrl+V (default, fast)
+- Layer 2: Typewriter mode (Unicode character-by-character, for apps that don't support paste)
+- Layer 3: Fallback (copy to clipboard + prompt user to paste manually)
 
-Based on POC#1 validation.
+Based on POC#1 validation + Game Input Compatibility Fix (2026-01).
 """
 
 import ctypes
 from ctypes import wintypes
 import time
-from typing import Optional
-from dataclasses import dataclass
+from typing import Optional, Tuple, Callable
+from dataclasses import dataclass, field
 
 from ..core.logging import get_system_logger
 
 logger = get_system_logger()
+
+# ============================================================================
+# Layer 0: Permission Detection (using ctypes to avoid pywin32 dependency)
+# ============================================================================
+
+advapi32 = ctypes.windll.advapi32
+
+# Process access rights
+PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# Token access rights
+TOKEN_QUERY = 0x0008
+
+# Token information class
+TokenElevation = 20
+
+
+class TOKEN_ELEVATION(ctypes.Structure):
+    _fields_ = [("TokenIsElevated", wintypes.DWORD)]
+
+
+def is_process_elevated(pid: int) -> bool:
+    """
+    Check if a process is running with elevated (admin) privileges.
+    Uses ctypes directly to avoid pywin32 dependency.
+    """
+    kernel32 = ctypes.windll.kernel32
+
+    # Try to open the process
+    hProcess = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not hProcess:
+        # Can't open process, assume not elevated (or we don't have permission)
+        return False
+
+    try:
+        # Open the process token
+        hToken = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(hProcess, TOKEN_QUERY, ctypes.byref(hToken)):
+            return False
+
+        try:
+            # Query token elevation
+            elevation = TOKEN_ELEVATION()
+            cbSize = wintypes.DWORD(ctypes.sizeof(TOKEN_ELEVATION))
+            if not advapi32.GetTokenInformation(
+                hToken,
+                TokenElevation,
+                ctypes.byref(elevation),
+                cbSize,
+                ctypes.byref(cbSize),
+            ):
+                return False
+
+            return elevation.TokenIsElevated != 0
+        finally:
+            kernel32.CloseHandle(hToken)
+    finally:
+        kernel32.CloseHandle(hProcess)
+
+
+def is_current_process_elevated() -> bool:
+    """Check if the current process (Aria) is running elevated."""
+    kernel32 = ctypes.windll.kernel32
+    return is_process_elevated(kernel32.GetCurrentProcessId())
+
+
+def get_foreground_window_pid() -> Tuple[int, int]:
+    """
+    Get the foreground window handle and its process ID.
+    Returns (hwnd, pid).
+    """
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return hwnd, pid.value
+
+
+def is_target_elevated() -> bool:
+    """
+    Check if the current foreground window's process is elevated.
+    Used to warn user when Aria can't inject into elevated apps.
+    """
+    try:
+        _, pid = get_foreground_window_pid()
+        return is_process_elevated(pid)
+    except Exception as e:
+        logger.debug(f"Failed to check target elevation: {e}")
+        return False  # Assume not elevated on error
+
+
+# Cache for elevation status (avoid repeated checks)
+_aria_elevated: Optional[bool] = None
+
+
+def is_aria_elevated() -> bool:
+    """Check if Aria is running with elevated privileges (cached)."""
+    global _aria_elevated
+    if _aria_elevated is None:
+        _aria_elevated = is_current_process_elevated()
+        if _aria_elevated:
+            logger.info("Aria is running with elevated privileges")
+        else:
+            logger.debug("Aria is running without elevation")
+    return _aria_elevated
+
+
+# ============================================================================
+# Original constants and structures
+# ============================================================================
 
 # Windows API
 user32 = ctypes.windll.user32
@@ -189,9 +300,20 @@ user32.GetClipboardData.restype = ctypes.c_void_p
 class OutputConfig:
     """Output injection configuration."""
 
+    # Layer 1: Clipboard mode settings
     paste_delay_ms: int = 50  # Delay between clipboard set and paste
     restore_clipboard: bool = True  # Restore original clipboard after paste
     restore_delay_ms: int = 100  # Delay before restoring clipboard
+
+    # Layer 2: Typewriter mode settings
+    typewriter_mode: bool = False  # Use character-by-character input instead of paste
+    typewriter_delay_ms: int = 15  # Delay between characters (fixed, not random)
+
+    # Layer 0: Permission handling
+    check_elevation: bool = True  # Check if target window is elevated
+    elevation_callback: Optional[Callable[[str], None]] = (
+        None  # Callback to show warning
+    )
 
 
 class OutputInjector:
@@ -312,21 +434,90 @@ class OutputInjector:
                 f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
             )
 
-    def insert_text(self, text: str) -> bool:
+    def _insert_text_typewriter(self, text: str) -> bool:
         """
-        Insert text into the active application.
+        Insert text character-by-character using KEYEVENTF_UNICODE.
 
-        Args:
-            text: Text to insert
+        This is Layer 2 - for applications that don't support Ctrl+V paste.
 
-        Returns:
-            True if successful, False otherwise
+        Features:
+        - Handles surrogate pairs (emoji) correctly
+        - Detects focus loss and aborts
+        - Fixed delay (random delay is security theater)
+
+        Limitations (by design, not bugs):
+        - Does NOT work with DirectInput/RawInput games
+        - Does NOT bypass anti-cheat (LLKHF_INJECTED flag is kernel-level)
+        - Slower than clipboard paste
         """
         if not text:
             return True
 
-        logger.info(f"Inserting text: {text[:50]}{'...' if len(text) > 50 else ''}")
+        # Record initial window for focus loss detection
+        initial_hwnd = user32.GetForegroundWindow()
+        delay_s = self.config.typewriter_delay_ms / 1000
+        chars_sent = 0
 
+        logger.info(f"Typewriter mode: sending {len(text)} chars")
+
+        for char in text:
+            # Focus loss detection (every character for safety)
+            current_hwnd = user32.GetForegroundWindow()
+            if current_hwnd != initial_hwnd:
+                logger.warning(
+                    f"Focus lost after {chars_sent} chars, aborting typewriter input"
+                )
+                return False
+
+            codepoint = ord(char)
+
+            # Handle BMP and non-BMP characters differently
+            # SendInput's wScan is 16-bit, so characters outside BMP need surrogate pairs
+            if codepoint > 0xFFFF:
+                # Convert to UTF-16 surrogate pair
+                high_surrogate = 0xD800 + ((codepoint - 0x10000) >> 10)
+                low_surrogate = 0xDC00 + ((codepoint - 0x10000) & 0x3FF)
+                scancodes = [high_surrogate, low_surrogate]
+            else:
+                scancodes = [codepoint]
+
+            # Send each scancode
+            for scan in scancodes:
+                inputs = (INPUT * 2)()
+
+                # Key down
+                inputs[0].type = INPUT_KEYBOARD
+                inputs[0].union.ki.wVk = 0
+                inputs[0].union.ki.wScan = scan
+                inputs[0].union.ki.dwFlags = KEYEVENTF_UNICODE
+                inputs[0].union.ki.time = 0
+                inputs[0].union.ki.dwExtraInfo = 0
+
+                # Key up
+                inputs[1].type = INPUT_KEYBOARD
+                inputs[1].union.ki.wVk = 0
+                inputs[1].union.ki.wScan = scan
+                inputs[1].union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                inputs[1].union.ki.time = 0
+                inputs[1].union.ki.dwExtraInfo = 0
+
+                result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+                if result != 2:
+                    logger.warning(
+                        f"SendInput returned {result}/2 for char '{char}', "
+                        f"error={ctypes.get_last_error()}"
+                    )
+
+            chars_sent += 1
+            time.sleep(delay_s)
+
+        logger.info(f"Typewriter mode: successfully sent {chars_sent} chars")
+        return True
+
+    def _insert_text_clipboard(self, text: str) -> bool:
+        """
+        Insert text using clipboard + Ctrl+V (Layer 1 - default fast mode).
+        """
         # Backup clipboard
         original_clipboard = None
         if self.config.restore_clipboard:
@@ -348,8 +539,60 @@ class OutputInjector:
             self._set_clipboard_text(original_clipboard)
             logger.debug("Clipboard restored")
 
-        logger.info("Text inserted successfully")
         return True
+
+    def insert_text(self, text: str) -> bool:
+        """
+        Insert text into the active application using layered strategy.
+
+        Layer 0: Permission check - warn if target is elevated but Aria isn't
+        Layer 1: Clipboard + Ctrl+V (default, fast)
+        Layer 2: Typewriter mode (character-by-character, for apps without paste)
+        Layer 3: Fallback - copy to clipboard and let user paste manually
+
+        Args:
+            text: Text to insert
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not text:
+            return True
+
+        logger.info(f"Inserting text: {text[:50]}{'...' if len(text) > 50 else ''}")
+
+        # ========================================
+        # Layer 0: Permission check
+        # ========================================
+        if self.config.check_elevation:
+            if is_target_elevated() and not is_aria_elevated():
+                warning_msg = (
+                    "目标窗口以管理员权限运行，但 Aria 没有。\n"
+                    "输入可能失败。请尝试以管理员身份运行 Aria。"
+                )
+                logger.warning(
+                    "Target window is elevated but Aria is not - input may fail"
+                )
+                if self.config.elevation_callback:
+                    self.config.elevation_callback(warning_msg)
+                # Continue anyway - might work for some apps
+
+        # ========================================
+        # Layer 1 or 2: Choose input method
+        # ========================================
+        if self.config.typewriter_mode:
+            # Layer 2: Typewriter mode
+            success = self._insert_text_typewriter(text)
+        else:
+            # Layer 1: Clipboard mode (default)
+            success = self._insert_text_clipboard(text)
+
+        if success:
+            logger.info("Text inserted successfully")
+        else:
+            logger.warning("Text insertion may have failed")
+
+        return success
 
     def send_key(self, key: str, modifiers: list = None) -> bool:
         """
