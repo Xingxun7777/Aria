@@ -26,7 +26,7 @@ logger = get_system_logger()
 # Layer 0: Permission Detection (using ctypes to avoid pywin32 dependency)
 # ============================================================================
 
-advapi32 = ctypes.windll.advapi32
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
 # Process access rights
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -133,9 +133,9 @@ def is_aria_elevated() -> bool:
 # Original constants and structures
 # ============================================================================
 
-# Windows API
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+# Windows API - use_last_error=True for accurate ctypes.get_last_error() (Codex R2 review)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 # Clipboard formats
 CF_UNICODETEXT = 13
@@ -307,6 +307,8 @@ user32.CloseClipboard.argtypes = []
 user32.CloseClipboard.restype = wintypes.BOOL
 user32.EmptyClipboard.argtypes = []
 user32.EmptyClipboard.restype = wintypes.BOOL
+user32.GetClipboardSequenceNumber.argtypes = []
+user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
 
 # Window/Process functions - critical for handle correctness
 user32.GetForegroundWindow.argtypes = []
@@ -377,10 +379,38 @@ class OutputInjector:
         """Set a threading lock for thread-safe clipboard operations."""
         self._clipboard_lock = lock
 
+    def _open_clipboard_with_retry(
+        self, max_retries: int = 5, retry_delay_ms: int = 20
+    ) -> bool:
+        """
+        Open clipboard with retry mechanism for contention handling.
+
+        Windows clipboard can fail to open if another application (clipboard
+        managers, RDP, etc.) is momentarily accessing it. This adds a retry
+        loop to handle such transient failures. (Gemini R2 review)
+
+        Args:
+            max_retries: Maximum number of retry attempts
+            retry_delay_ms: Delay between retries in milliseconds
+
+        Returns:
+            True if clipboard opened successfully, False otherwise.
+        """
+        for attempt in range(max_retries):
+            if user32.OpenClipboard(None):
+                return True
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay_ms / 1000)
+        logger.warning(f"Failed to open clipboard after {max_retries} attempts")
+        return False
+
     def _get_clipboard_text(self) -> Optional[str]:
         """Get current clipboard text content."""
+        # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
+        if self._clipboard_lock:
+            self._clipboard_lock.acquire()
         try:
-            if not user32.OpenClipboard(None):
+            if not self._open_clipboard_with_retry():
                 return None
 
             try:
@@ -402,6 +432,9 @@ class OutputInjector:
         except Exception as e:
             logger.error(f"Failed to get clipboard: {e}")
             return None
+        finally:
+            if self._clipboard_lock:
+                self._clipboard_lock.release()
 
     def _set_clipboard_text(self, text: str) -> bool:
         """
@@ -413,9 +446,13 @@ class OutputInjector:
         - If SetClipboardData fails, we must free the handle ourselves
         - If GlobalLock fails, we must free the handle ourselves
         """
+        # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
+        if self._clipboard_lock:
+            self._clipboard_lock.acquire()
+
         handle = None  # Track handle for cleanup on failure
         try:
-            if not user32.OpenClipboard(None):
+            if not self._open_clipboard_with_retry():
                 logger.error("Failed to open clipboard")
                 return False
 
@@ -467,9 +504,17 @@ class OutputInjector:
                 except Exception:
                     pass
             return False
+        finally:
+            if self._clipboard_lock:
+                self._clipboard_lock.release()
 
-    def _send_paste(self) -> None:
-        """Send Ctrl+V keystroke using SendInput."""
+    def _send_paste(self) -> bool:
+        """
+        Send Ctrl+V keystroke using SendInput.
+
+        Returns:
+            True if all 4 inputs were sent successfully, False otherwise.
+        """
         inputs = (INPUT * 4)()
 
         # Initialize all inputs
@@ -500,6 +545,8 @@ class OutputInjector:
             logger.warning(
                 f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
             )
+            return False
+        return True
 
     def _send_vk_key(self, vk_code: int) -> bool:
         """Send a single virtual key press (down + up)."""
@@ -632,6 +679,9 @@ class OutputInjector:
     def _insert_text_clipboard(self, text: str) -> bool:
         """
         Insert text using clipboard + Ctrl+V (Layer 1 - default fast mode).
+
+        Returns:
+            True if paste was sent successfully, False if clipboard or SendInput failed.
         """
         # Backup clipboard
         original_clipboard = None
@@ -642,19 +692,35 @@ class OutputInjector:
         if not self._set_clipboard_text(text):
             return False
 
+        # Record clipboard sequence number after we set it (Codex R2 review)
+        # This allows us to detect if user changed clipboard during paste
+        seq_after_set = user32.GetClipboardSequenceNumber()
+
         # Small delay to ensure clipboard is ready
         time.sleep(self.config.paste_delay_ms / 1000)
 
-        # Send Ctrl+V
-        self._send_paste()
+        # Send Ctrl+V - check result (Codex/Gemini R2 review)
+        paste_success = self._send_paste()
+        if not paste_success:
+            logger.error("Failed to send Ctrl+V paste command")
+            # Still try to restore clipboard even on paste failure
 
-        # Restore original clipboard
+        # Restore original clipboard (with sequence number check)
         if self.config.restore_clipboard and original_clipboard is not None:
             time.sleep(self.config.restore_delay_ms / 1000)
-            self._set_clipboard_text(original_clipboard)
-            logger.debug("Clipboard restored")
 
-        return True
+            # Check if clipboard was modified by user/other app during paste (Codex R2)
+            seq_before_restore = user32.GetClipboardSequenceNumber()
+            if seq_before_restore != seq_after_set:
+                # User or another app changed clipboard - don't overwrite their data
+                logger.debug(
+                    "Clipboard modified by user during paste, skipping restore"
+                )
+            else:
+                self._set_clipboard_text(original_clipboard)
+                logger.debug("Clipboard restored")
+
+        return paste_success
 
     def insert_text(self, text: str) -> bool:
         """
@@ -674,7 +740,10 @@ class OutputInjector:
         if not text:
             return True
 
-        logger.info(f"Inserting text: {text[:50]}{'...' if len(text) > 50 else ''}")
+        # Log text length only at INFO, content at DEBUG to avoid sensitive data exposure
+        # (Codex/Claude R2 review: sensitive data logging concern)
+        logger.info(f"Inserting text ({len(text)} chars)")
+        logger.debug(f"Text preview: {text[:50]}{'...' if len(text) > 50 else ''}")
 
         # ========================================
         # Layer 0: Permission check
