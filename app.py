@@ -665,12 +665,15 @@ class AriaApp:
         self.hotword_manager = HotWordManager.from_default()
 
         # Set hotwords based on engine type
-        if engine_type == "funasr" and hasattr(self.asr_engine, "set_hotwords"):
-            # FunASR: use weighted hotwords (high weight = repeated for emphasis)
-            weighted_hotwords = self.hotword_manager.get_weighted_hotwords()
-            self.asr_engine.set_hotwords(weighted_hotwords)
+        if engine_type == "funasr" and hasattr(
+            self.asr_engine, "set_hotwords_with_score"
+        ):
+            # FunASR: use layer-aware hotwords with score (weight->score mapping)
+            # 0.3->20(hint), 0.5->50(standard), 1.0->80(lock)
+            hotwords_with_score = self.hotword_manager.get_asr_hotwords_with_score()
+            self.asr_engine.set_hotwords_with_score(hotwords_with_score)
             print(
-                f"[HOTWORD] FunASR hotwords: {len(weighted_hotwords)} words (with weight repetition)"
+                f"[HOTWORD] FunASR hotwords: {len(hotwords_with_score)} words (weight->score mapped)"
             )
         elif engine_type == "fireredasr":
             # FireRedASR: NO native hotword support, rely on Layer 2/3 post-processing
@@ -710,16 +713,16 @@ class AriaApp:
             f"[HOTWORD] {len(self.hotword_manager.config.prompt_words)} words, {len(self.hotword_manager.config.replacements)} replacements"
         )
 
-        # Layer 2.5: Pinyin fuzzy matching
-        fuzzy_hotwords = self.hotword_manager.config.prompt_words + list(
-            self.hotword_manager.config.replacements.values()
-        )
-        fuzzy_hotwords = list(set(fuzzy_hotwords))  # Deduplicate
+        # Layer 2.5: Pinyin fuzzy matching (only weight >= 1.0 hotwords)
+        layer_hotwords = self.hotword_manager.get_hotwords_by_layer()
+        fuzzy_hotwords = layer_hotwords["layer2_5_pinyin"]
         self.fuzzy_matcher = PinyinFuzzyMatcher(
             fuzzy_hotwords,
             FuzzyMatchConfig(enabled=True, threshold=0.7, min_word_length=2),
         )
-        print(f"[FUZZY] Pinyin matcher enabled with {len(fuzzy_hotwords)} hotwords")
+        print(
+            f"[FUZZY] Pinyin matcher enabled with {len(fuzzy_hotwords)} hotwords (weight>=1.0 only)"
+        )
 
         # Layer 3: Polish (optional, mode-based)
         self.polisher = self.hotword_manager.get_active_polisher()
@@ -1725,13 +1728,15 @@ class AriaApp:
             # Update Layer 1: ASR engine hotwords
             if self.asr_engine:
                 if self._asr_engine_type == "funasr" and hasattr(
-                    self.asr_engine, "set_hotwords"
+                    self.asr_engine, "set_hotwords_with_score"
                 ):
-                    # FunASR: update weighted hotwords
-                    weighted_hotwords = self.hotword_manager.get_weighted_hotwords()
-                    self.asr_engine.set_hotwords(weighted_hotwords)
+                    # FunASR: update hotwords with score mapping
+                    hotwords_with_score = (
+                        self.hotword_manager.get_asr_hotwords_with_score()
+                    )
+                    self.asr_engine.set_hotwords_with_score(hotwords_with_score)
                     print(
-                        f"[HOT-RELOAD] Updated FunASR hotwords: {len(weighted_hotwords)} words"
+                        f"[HOT-RELOAD] Updated FunASR hotwords: {len(hotwords_with_score)} words"
                     )
                 else:
                     # Whisper: update initial_prompt
@@ -1749,15 +1754,13 @@ class AriaApp:
                 self.hotword_processor._build_patterns()
                 print(f"[HOT-RELOAD] Updated {len(new_replacements)} replacement rules")
 
-            # Update Layer 2.5: Fuzzy matcher
+            # Update Layer 2.5: Fuzzy matcher (only weight >= 1.0 hotwords)
             if self.fuzzy_matcher:
-                fuzzy_hotwords = self.hotword_manager.config.prompt_words + list(
-                    self.hotword_manager.config.replacements.values()
-                )
-                fuzzy_hotwords = list(set(fuzzy_hotwords))
+                layer_hotwords = self.hotword_manager.get_hotwords_by_layer()
+                fuzzy_hotwords = layer_hotwords["layer2_5_pinyin"]
                 self.fuzzy_matcher.update_hotwords(fuzzy_hotwords)
                 print(
-                    f"[HOT-RELOAD] Updated fuzzy matcher with {len(fuzzy_hotwords)} hotwords"
+                    f"[HOT-RELOAD] Updated fuzzy matcher with {len(fuzzy_hotwords)} hotwords (weight>=1.0)"
                 )
 
             # Update Layer 3: Polisher

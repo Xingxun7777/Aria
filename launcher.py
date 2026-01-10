@@ -13,6 +13,8 @@ import subprocess
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
+
+
 # === Detect if running from portable build ===
 def _is_portable_build() -> bool:
     """Check if running from dist_portable directory."""
@@ -411,10 +413,16 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+LOG_FILE = os.path.join(os.path.dirname(__file__), "launch_error.log")
+
+
+def log(msg):
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+
+
 # Patch subprocess to hide console windows on Windows (for ffmpeg calls from whisper)
 if sys.platform == "win32":
-    import subprocess
-
     _orig_popen_init = subprocess.Popen.__init__
 
     def _patched_popen_init(self, args, **kwargs):
@@ -429,12 +437,6 @@ if sys.platform == "win32":
 
     subprocess.Popen.__init__ = _patched_popen_init
 
-LOG_FILE = os.path.join(os.path.dirname(__file__), "launch_error.log")
-
-
-def log(msg):
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(msg + "\n")
 
 
 def get_project_python() -> str:

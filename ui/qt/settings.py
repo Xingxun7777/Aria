@@ -468,6 +468,16 @@ class SettingsWindow(QMainWindow):
         guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
         layout.addWidget(guide_label)
 
+        # Threshold note
+        threshold_note = QLabel(
+            "💡 权重 ≥0.5 时生效 | ⚠️ FunASR 仅支持中文热词，英文词依赖 AI 润色修正"
+        )
+        threshold_note.setStyleSheet(
+            "color: #888; font-size: 11px; margin-bottom: 10px;"
+        )
+        threshold_note.setWordWrap(True)
+        layout.addWidget(threshold_note)
+
         # Table widget with word and weight columns
         self.vocab_table = QTableWidget(0, 3)
         self.vocab_table.setHorizontalHeaderLabels(["词汇", "权重", ""])

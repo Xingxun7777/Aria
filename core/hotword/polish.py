@@ -15,19 +15,20 @@ from ..logging import get_system_logger
 logger = get_system_logger()
 
 # Shared default prompt template - single source of truth
-# Based on Codex + Gemini tri-party analysis (v2.1)
+# Based on Codex + Gemini tri-party analysis (v2.2)
 # Key principle: Show don't tell, minimal examples for weak models
+# v2.2: Add hotwords with soft language to avoid over-fitting
 DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标点。
 禁止：回答内容、改变原意、补全缺失词。
+
+参考词汇（仅当发音非常接近时替换）：
+{hotwords}
 
 原文：我以经做完了
 修正：我已经做完了。
 
 原文：这个能用吗.
 修正：这个能用吗？
-
-原文：嗯嗯就是有个问题
-修正：嗯，就是有个问题。
 
 原文：{text}
 修正："""
@@ -128,45 +129,21 @@ class AIPolisher:
         """Build the full prompt with hotwords and domain context."""
         template = self.config.prompt_template
 
-        # Format hotwords - use tiered system if available
-        if (
-            self.config.hotwords_critical
-            or self.config.hotwords_strong
-            or self.config.hotwords_context
-        ):
-            # Tiered hotwords: critical (must) > strong (prefer) > context (hints)
-            critical_str = (
-                ", ".join(self.config.hotwords_critical[:15])
-                if self.config.hotwords_critical
-                else ""
-            )
-            strong_str = (
-                ", ".join(self.config.hotwords_strong[:15])
-                if self.config.hotwords_strong
-                else ""
-            )
-            context_str = (
-                ", ".join(self.config.hotwords_context[:15])
-                if self.config.hotwords_context
-                else ""
-            )
+        # Format hotwords - flat list only, no tier markers
+        # v2.2: Remove tier markers (【必须】etc) to prevent over-fitting
+        # The prompt template itself has soft instruction "仅当发音非常接近时替换"
+        all_hotwords = []
+        if self.config.hotwords_critical:
+            all_hotwords.extend(self.config.hotwords_critical[:10])
+        if self.config.hotwords_strong:
+            all_hotwords.extend(self.config.hotwords_strong[:10])
+        if self.config.hotwords_context:
+            all_hotwords.extend(self.config.hotwords_context[:10])
+        if not all_hotwords and self.config.hotwords:
+            all_hotwords = self.config.hotwords[:30]
 
-            # Build combined hotwords string with tier markers
-            # 【必须】= mandatory, 【强参考】= strong preference, 【参考】= soft hint
-            parts = []
-            if critical_str:
-                parts.append(f"【必须】{critical_str}")
-            if strong_str:
-                parts.append(f"【强参考】{strong_str}")
-            if context_str:
-                parts.append(f"【参考】{context_str}")
-
-            hotwords_str = "；".join(parts) if parts else "无"
-        else:
-            # Fallback: use flat hotwords list (backward compatible)
-            hotwords_str = (
-                ", ".join(self.config.hotwords[:30]) if self.config.hotwords else "无"
-            )
+        # Simple comma-separated list - LLM judges phonetic similarity itself
+        hotwords_str = ", ".join(all_hotwords) if all_hotwords else "无"
 
         # Format domain context
         domain_context = self.config.domain_context or "通用"

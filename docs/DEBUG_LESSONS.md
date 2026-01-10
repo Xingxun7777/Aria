@@ -481,3 +481,108 @@ if is_hallucination(full_text):
 - 幻觉通常在音频质量差时触发，也可能是 VAD 阈值问题（噪声被当成语音）
 
 ---
+
+## Issue: 启动时出现双 Python 进程（Aria Dev + base Python）
+
+**Date**: 2025-12-31  
+**Author**: Codex (GPT-5)
+
+**Symptom**:
+- 启动后任务管理器显示两个进程（AriaDevRuntime.exe + Python）
+- Python 进程路径指向 `G:\AIBOX\Python310\tools\pythonw.exe`
+- 两个进程同时启动，父进程退出后子进程同步结束
+
+**Root Cause**:
+- venv 的 `pyvenv.cfg` 指向 NuGet/嵌入式 Python（`home = G:\AIBOX\Python310\tools`）
+- 该启动器实现会在启动时再拉起 base Python
+- venv 的 `python.exe/pythonw.exe` 是启动器而非解释器本体，导致双进程
+
+**Solution**:
+1. 备份 venv 解释器：`python.exe.bak` / `pythonw.exe.bak`
+2. 用 base Python 替换 venv 解释器，避免二次拉起
+3. 重新生成 `AriaDevRuntime.exe` 与桌面快捷方式
+
+```powershell
+Copy-Item G:\AIBOX\Python310\tools\python.exe  G:\AIBOX\voicetype-v1.1-dev\.venv\Scripts\python.exe
+Copy-Item G:\AIBOX\Python310\tools\pythonw.exe G:\AIBOX\voicetype-v1.1-dev\.venv\Scripts\pythonw.exe
+```
+
+**Key Learning**:
+- venv home 指向 NuGet/嵌入式 Python 时，可能出现"启动器再拉起 base Python"的双进程
+- 任务管理器看到 base Python 路径时，优先检查 `pyvenv.cfg` 的 home
+- 用 base 解释器替换 venv 解释器可恢复单进程行为
+
+---
+
+## Issue: LLM 润色层过度替换（热词过拟合）
+
+**Date**: 2026-01-02
+**Author**: Claude + Codex + Gemini (三方会谈)
+
+**Symptom**:
+- ASR 识别正确，但 LLM 润色后变成完全无关的热词
+- 典型错误：
+  - `OPUS四点五` → `ComfyUI四点五`
+  - `米薯` → `ComfyUI`
+  - `tram上` → `GitHub上`
+  - `鬼车站` → `GitHub上面`
+- 英文被强制替换为中文热词
+- 语义完全不同的词被替换
+
+**Root Cause** (三方会谈共识):
+1. **Prompt 权限过度**：原 prompt 包含"专业术语谐音必须修复"，给 LLM 过度权限
+2. **热词权重形同虚设**：所有词默认权重 1.0，没有真正的分层
+3. **热词传给 LLM 导致过拟合**：LLM 视热词表为"必须使用的词"，激进替换
+
+**日志证据**:
+```
+[ASR] raw: 'OPUS四点五'
+[POLISH] output: 'ComfyUI四点五'  ← 完全无关替换
+```
+
+**Solution**:
+**三层防护策略：权重分层 + LLM 隔离 + 保守替换**
+
+1. **设计权重分层系统**（控制热词在各层的作用）：
+
+| 权重 | Layer 1 (ASR) | Layer 2 (正则) | Layer 2.5 (拼音) |
+|------|---------------|----------------|------------------|
+| 0    | ❌ | ❌ | ❌ |
+| 0.3  | ✅ score=20 (hint) | ❌ | ❌ |
+| 0.5  | ✅ score=50 (standard) | ✅ | ❌ |
+| 1.0  | ✅ score=80 (lock) | ✅ | ✅ |
+
+2. **LLM 完全不接收热词列表**：
+   - 移除 prompt 中的 `{hotwords}` 占位符
+   - LLM 只负责：同音字纠错 + 标点修正
+   - 热词替换交给 Layer 1 (ASR) 和 Layer 2 (正则)
+
+3. **实现代码**：
+
+```python
+# manager.py - 新增方法
+def get_hotwords_by_layer(self) -> Dict[str, List[str]]:
+    """根据权重返回各层热词"""
+    weights = self._load_weights()
+    layer1_asr = [w for w in words if weights.get(w, 0.5) >= 0.3]
+    layer2_regex = [w for w in words if weights.get(w, 0.5) >= 0.5]
+    layer2_5_pinyin = [w for w in words if weights.get(w, 0.5) >= 1.0]
+    return {"layer1_asr": layer1_asr, "layer2_regex": layer2_regex, "layer2_5_pinyin": layer2_5_pinyin}
+
+def get_asr_hotwords_with_score(self) -> List[tuple]:
+    """返回 FunASR 格式的 (word, score) 列表"""
+    # 0.3 → score=20, 0.5 → score=50, 1.0 → score=80
+    ...
+
+# funasr_engine.py - 新增方法
+def set_hotwords_with_score(self, hotwords_with_score: List[tuple]) -> None:
+    """设置带分数的热词，格式：'word score\\n...'"""
+    self.config.hotwords = [f"{word} {score}" for word, score in hotwords_with_score]
+```
+
+**Key Learning**:
+- **LLM + 热词 = 过拟合**：LLM 会把热词当成"必须出现的词"，疯狂替换
+- **分层是关键**：让不同置信度的热词在不同层生效
+- **ASR 原生 hotword 更安全**：FunASR 的 hotword 是解码时的偏置，不会强制替换
+- **保守策略**：默认权重 0.5，只有明确需要的词才设为 1.0
+- **拼音匹配最危险**：只对 weight=1.0 的词开启，否则容易误匹配

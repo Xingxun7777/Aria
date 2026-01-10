@@ -458,12 +458,35 @@ class FunASREngine(ASREngine):
 
     def set_hotwords(self, hotwords: List[str]) -> None:
         """
-        Set hotwords for improved recognition.
+        Set hotwords for improved recognition (default score 50).
 
         Note: Only works with Paraformer, not SenseVoice.
         """
-        self.config.hotwords = hotwords
-        logger.info(f"FunASR hotwords updated: {len(hotwords)} words")
+        # Convert to format with default score
+        self.config.hotwords = [f"{word} 50" for word in hotwords]
+        logger.info(
+            f"FunASR hotwords updated: {len(hotwords)} words (default score=50)"
+        )
+
+    def set_hotwords_with_score(self, hotwords_with_score: List[tuple]) -> None:
+        """
+        Set hotwords with individual scores for FunASR.
+
+        Based on tri-party analysis weight-to-score mapping:
+        - weight 0.3 → score 20 (hint)
+        - weight 0.5 → score 50 (standard)
+        - weight 1.0 → score 80 (lock)
+
+        Args:
+            hotwords_with_score: List of (word, score) tuples
+        """
+        # FunASR format: "word score" per line
+        self.config.hotwords = [
+            f"{word} {score}" for word, score in hotwords_with_score
+        ]
+        logger.info(
+            f"FunASR hotwords updated: {len(hotwords_with_score)} words with scores"
+        )
 
     def unload(self) -> None:
         """Unload the model to free memory."""

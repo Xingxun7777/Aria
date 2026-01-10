@@ -37,6 +37,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 BUILD_DIR = PROJECT_ROOT / "build_portable"
 DIST_DIR = PROJECT_ROOT / "dist_portable" / "Aria"
 CACHE_DIR = BUILD_DIR / ".cache"
+RUNTIME_EXE_NAME = "AriaRuntime.exe"
 
 # Source directories to copy (relative to PROJECT_ROOT)
 SOURCE_DIRS = ["core", "ui", "features", "scheduler", "system", "config"]
@@ -191,6 +192,16 @@ def step_download_python():
     missing = [name for name in required if not (internal_dir / name).exists()]
     if missing:
         raise RuntimeError(f"Embedded Python incomplete, missing: {missing}")
+
+    # Create a runtime alias so Task Manager shows a friendly process name
+    try:
+        pythonw_exe = internal_dir / "pythonw.exe"
+        runtime_exe = internal_dir / RUNTIME_EXE_NAME
+        if pythonw_exe.exists():
+            shutil.copy2(pythonw_exe, runtime_exe)
+            log(f"Created runtime alias: {runtime_exe.name}")
+    except Exception as e:
+        log(f"WARNING: Failed to create runtime alias: {e}")
 
     log("Python embeddable package ready and validated.")
 
@@ -527,20 +538,24 @@ def step_create_launcher():
     """Step 6: Create launcher scripts."""
     log("Step 6: Creating launcher...")
 
+    runtime_exe = f"_internal\\{RUNTIME_EXE_NAME}"
+    if not (DIST_DIR / "_internal" / RUNTIME_EXE_NAME).exists():
+        runtime_exe = "_internal\\pythonw.exe"
+
     # 1. Main CMD launcher
-    cmd_content = """@echo off
+    cmd_content = f"""@echo off
 cd /d "%~dp0"
-start "" "_internal\\pythonw.exe" -s -m aria.launcher
+start "" "{runtime_exe}" -s -m aria.launcher
 """
     (DIST_DIR / "Aria.cmd").write_text(cmd_content, encoding="utf-8")
     log("  Created Aria.cmd")
 
     # 2. VBS silent launcher (robust version with absolute paths)
-    vbs_content = '''Set WshShell = CreateObject("WScript.Shell")
+    vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 base = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = base
-python = base & "\\_internal\\pythonw.exe"
+python = base & "\\{runtime_exe}"
 WshShell.Run """" & python & """ -s -m aria.launcher", 0, False
 '''
     (DIST_DIR / "Aria.vbs").write_text(vbs_content, encoding="utf-8")
@@ -570,6 +585,10 @@ def step_create_shortcut_generator():
     """Step 7: Create a script to generate desktop shortcut."""
     log("Step 7: Creating shortcut generator...")
 
+    runtime_exe = f"_internal\\{RUNTIME_EXE_NAME}"
+    if not (DIST_DIR / "_internal" / RUNTIME_EXE_NAME).exists():
+        runtime_exe = "_internal\\pythonw.exe"
+
     # Copy icon file to dist
     icon_src = PROJECT_ROOT / "assets" / "aria.ico"
     if icon_src.exists():
@@ -580,18 +599,23 @@ def step_create_shortcut_generator():
         log("  Warning: aria.ico not found, shortcut will use default icon")
 
     # PowerShell script with icon support
-    ps_content = """# Run this to create a desktop shortcut
+    ps_content = f"""# Run this to create a desktop shortcut
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\\Desktop\\Aria.lnk")
-$Shortcut.TargetPath = "$PSScriptRoot\\_internal\\pythonw.exe"
+$RuntimeExe = "$PSScriptRoot\\{runtime_exe}"
+if (Test-Path $RuntimeExe) {{
+    $Shortcut.TargetPath = $RuntimeExe
+}} else {{
+    $Shortcut.TargetPath = "$PSScriptRoot\\_internal\\pythonw.exe"
+}}
 $Shortcut.Arguments = "-s -m aria.launcher"
 $Shortcut.WorkingDirectory = $PSScriptRoot
 $Shortcut.Description = "Aria - Local AI Voice Dictation"
 # Set custom icon
 $IconPath = "$PSScriptRoot\\aria.ico"
-if (Test-Path $IconPath) {
+if (Test-Path $IconPath) {{
     $Shortcut.IconLocation = "$IconPath,0"
-}
+}}
 $Shortcut.Save()
 Write-Host "Desktop shortcut created!"
 """
@@ -616,6 +640,7 @@ def step_verify_build():
     checks = [
         internal_dir / "pythonw.exe",
         internal_dir / "python.exe",
+        internal_dir / RUNTIME_EXE_NAME,
         internal_dir / f"python{PYTHON_MAJOR}{PYTHON_MINOR}.dll",
         internal_dir / "app" / "aria" / "launcher.py",
         internal_dir / "Lib" / "site-packages" / "numpy",

@@ -22,17 +22,19 @@ def main():
 
     # Paths
     internal_dir = exe_dir / "_internal"
+    runtime_exe = internal_dir / "AriaRuntime.exe"
     pythonw = internal_dir / "pythonw.exe"
+    python_exe = runtime_exe if runtime_exe.exists() else pythonw
 
     # Validate
-    if not pythonw.exists():
+    if not python_exe.exists():
         # Try to show error message
         try:
             import ctypes
 
             ctypes.windll.user32.MessageBoxW(
                 0,
-                f"找不到 Python 运行环境:\n{pythonw}\n\n请确保 _internal 文件夹完整。",
+                f"找不到运行环境:\n{python_exe}\n\n请确保 _internal 文件夹完整。",
                 "Aria 启动错误",
                 0x10,  # MB_ICONERROR
             )
@@ -44,7 +46,7 @@ def main():
     # Use pythonw.exe for no console window
     # -s: don't add user site-packages
     # -m aria.launcher: run as module
-    cmd = [str(pythonw), "-s", "-m", "aria.launcher"]
+    cmd = [str(python_exe), "-s", "-m", "aria.launcher"]
 
     try:
         # Start without waiting (detached process)

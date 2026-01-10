@@ -188,11 +188,19 @@ FunASR 更快，Whisper 准确率更高。
 
 ## 许可证
 
-MIT License
+[Apache License 2.0](LICENSE)
 
 ## 致谢
 
-- [FunASR](https://github.com/alibaba-damo-academy/FunASR) - 阿里达摩院语音识别
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) - OpenAI Whisper 优化实现
-- [Silero-VAD](https://github.com/snakers4/silero-vad) - 语音活动检测
-- [PySide6](https://www.qt.io/) - Qt6 Python 绑定
+本项目使用了以下开源软件：
+
+| 项目 | 许可证 | 说明 |
+|------|--------|------|
+| [FunASR](https://github.com/alibaba-damo-academy/FunASR) | MIT | 阿里达摩院语音识别引擎 |
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | MIT | OpenAI Whisper 优化实现 |
+| [Silero-VAD](https://github.com/snakers4/silero-vad) | MIT | 语音活动检测 |
+| [CTranslate2](https://github.com/OpenNMT/CTranslate2) | MIT | 高效推理引擎 |
+| [PySide6](https://www.qt.io/) | LGPL v3 | Qt6 Python 绑定 |
+| [PyTorch](https://pytorch.org/) | BSD-3-Clause | 深度学习框架 |
+| [pypinyin](https://github.com/mozillazg/python-pinyin) | MIT | 汉字拼音转换 |
+| [jieba](https://github.com/fxsjy/jieba) | MIT | 中文分词 |
