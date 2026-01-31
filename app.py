@@ -199,6 +199,9 @@ class AriaApp:
         # Sleeping mode: ignore all input except wakeword commands
         self._is_sleeping = False
 
+        # Disabled mode: hotkey toggles back to enabled (for elevation dialog)
+        self._is_disabled = False
+
         # Config file watcher (hot-reload)
         self._config_path = get_config_path("hotwords.json")
         self._config_mtime = 0.0
@@ -1412,6 +1415,18 @@ class AriaApp:
         """Called when hotkey is pressed - toggle recording."""
         _pipeline_log("HOTKEY", ">>> Hotkey callback triggered!")
 
+        # If disabled, re-enable on hotkey press
+        if self._is_disabled:
+            print("[HOTKEY] Re-enabling from disabled state")
+            _pipeline_log("HOTKEY", "Re-enabling from disabled state")
+            self._is_disabled = False
+            # Notify UI to update toggle
+            try:
+                bridge.emit_setting_changed("enabled", True)
+            except Exception:
+                pass
+            return
+
         # Allow hotkey in sleeping mode - wakeword detection happens BEFORE
         # sleeping check in _asr_worker(), so "瑶瑶醒来" will still work
         with self._lock:
@@ -1909,27 +1924,25 @@ class AriaApp:
         """
         Enable or disable Aria (hotkey listening).
 
-        When disabled, hotkey listening is paused but all components
-        (ASR, audio capture) remain initialized for quick re-enable.
+        When disabled, hotkey still works but only to re-enable.
+        This allows users to press hotkey to resume after elevation dialog.
 
         Args:
             enabled: True to enable, False to disable
         """
         if enabled:
-            if self._running:
-                # Already running, just restart hotkey listener
-                self.hotkey_manager.start()
-                print("[Aria] Hotkey listening resumed")
-            else:
+            self._is_disabled = False
+            if not self._running:
                 # Not running at all, full start
                 self.start()
+            print("[Aria] Enabled")
             logger.info("Aria enabled")
         else:
             if self._running:
-                # Stop hotkey listening but keep app alive
-                self.hotkey_manager.stop()
-                print("[Aria] Hotkey listening paused")
-                logger.info("Aria disabled (hotkey listening paused)")
+                # Set disabled flag but keep hotkey listening (to allow re-enable)
+                self._is_disabled = True
+                print("[Aria] Disabled (press hotkey to re-enable)")
+                logger.info("Aria disabled (hotkey can re-enable)")
 
     def set_polish_mode(self, mode: str) -> None:
         """

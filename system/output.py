@@ -15,7 +15,7 @@ Based on POC#1 validation + Game Input Compatibility Fix (2026-01).
 import ctypes
 from ctypes import wintypes
 import time
-from typing import Optional, Tuple, Callable
+from typing import Dict, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 
 from ..core.logging import get_system_logger
@@ -23,10 +23,17 @@ from ..core.logging import get_system_logger
 logger = get_system_logger()
 
 # ============================================================================
-# Layer 0: Permission Detection (using ctypes to avoid pywin32 dependency)
+# Windows API declarations (MUST be at top - before any functions that use them)
+# use_last_error=True for accurate ctypes.get_last_error() (Codex R2 review)
 # ============================================================================
 
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+
+# ============================================================================
+# Layer 0: Permission Detection (using ctypes to avoid pywin32 dependency)
+# ============================================================================
 
 # Process access rights
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -46,20 +53,29 @@ class TOKEN_ELEVATION(ctypes.Structure):
 def is_process_elevated(pid: int) -> bool:
     """
     Check if a process is running with elevated (admin) privileges.
-    Uses ctypes directly to avoid pywin32 dependency.
+    Uses module-level WinDLL instances with proper argtypes/restype for 64-bit safety.
+    (Gemini R3 review: local ctypes.windll causes 64-bit handle truncation)
     """
-    kernel32 = ctypes.windll.kernel32
+    ERROR_ACCESS_DENIED = 5  # Codex R3: treat access-denied as elevated
 
+    # Use module-level kernel32 (configured with argtypes/restype below)
     # Try to open the process
     hProcess = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not hProcess:
-        # Can't open process, assume not elevated (or we don't have permission)
+        # Codex R3: Access-denied means target is elevated/protected, not "not elevated"
+        last_error = ctypes.get_last_error()
+        if last_error == ERROR_ACCESS_DENIED:
+            return True  # Treat access-denied as elevated
         return False
 
     try:
         # Open the process token
         hToken = wintypes.HANDLE()
         if not advapi32.OpenProcessToken(hProcess, TOKEN_QUERY, ctypes.byref(hToken)):
+            # Codex R3: Access-denied on token also means elevated/protected
+            last_error = ctypes.get_last_error()
+            if last_error == ERROR_ACCESS_DENIED:
+                return True
             return False
 
         try:
@@ -84,7 +100,7 @@ def is_process_elevated(pid: int) -> bool:
 
 def is_current_process_elevated() -> bool:
     """Check if the current process (Aria) is running elevated."""
-    kernel32 = ctypes.windll.kernel32
+    # Use module-level kernel32 for 64-bit safety (Gemini R3 review)
     return is_process_elevated(kernel32.GetCurrentProcessId())
 
 
@@ -92,8 +108,9 @@ def get_foreground_window_pid() -> Tuple[int, int]:
     """
     Get the foreground window handle and its process ID.
     Returns (hwnd, pid).
+    Uses module-level user32 for 64-bit safety (Gemini R3 review).
     """
-    user32 = ctypes.windll.user32
+    # Use module-level user32 (configured with argtypes/restype below)
     hwnd = user32.GetForegroundWindow()
     pid = wintypes.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -130,15 +147,18 @@ def is_aria_elevated() -> bool:
 
 
 # ============================================================================
-# Original constants and structures
+# Constants and structures
 # ============================================================================
-
-# Windows API - use_last_error=True for accurate ctypes.get_last_error() (Codex R2 review)
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# NOTE: user32/kernel32/advapi32 are declared at top of file (lines 30-32)
+# for 64-bit safety - functions defined before argtypes need the configured instances
 
 # Clipboard formats
-CF_UNICODETEXT = 13
+CF_TEXT = 1  # ANSI text
+CF_BITMAP = 2  # Bitmap handle (HBITMAP)
+CF_DIB = 8  # Device Independent Bitmap (packed DIB)
+CF_UNICODETEXT = 13  # Unicode text
+CF_HDROP = 15  # File list (HDROP handle)
+CF_DIBV5 = 17  # BITMAPV5 DIB
 
 # Memory allocation
 GMEM_MOVEABLE = 0x0002
@@ -147,6 +167,22 @@ GMEM_MOVEABLE = 0x0002
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
+KEYEVENTF_EXTENDEDKEY = 0x0001  # For extended keys (Claude R3 review)
+
+# Extended keys that need KEYEVENTF_EXTENDEDKEY flag (Claude R3 review)
+# These keys have 0xE0 prefix in their scan codes
+EXTENDED_VK_CODES = {
+    0x2D,  # VK_INSERT
+    0x2E,  # VK_DELETE
+    0x24,  # VK_HOME
+    0x23,  # VK_END
+    0x21,  # VK_PRIOR (Page Up)
+    0x22,  # VK_NEXT (Page Down)
+    0x25,  # VK_LEFT
+    0x26,  # VK_UP
+    0x27,  # VK_RIGHT
+    0x28,  # VK_DOWN
+}
 
 # Virtual key codes - Basic
 VK_CONTROL = 0x11
@@ -309,6 +345,14 @@ user32.EmptyClipboard.argtypes = []
 user32.EmptyClipboard.restype = wintypes.BOOL
 user32.GetClipboardSequenceNumber.argtypes = []
 user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+user32.EnumClipboardFormats.argtypes = [ctypes.c_uint]
+user32.EnumClipboardFormats.restype = ctypes.c_uint
+user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+
+# GlobalSize for getting clipboard data size
+kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
+kernel32.GlobalSize.restype = ctypes.c_size_t
 
 # Window/Process functions - critical for handle correctness
 user32.GetForegroundWindow.argtypes = []
@@ -406,10 +450,13 @@ class OutputInjector:
 
     def _get_clipboard_text(self) -> Optional[str]:
         """Get current clipboard text content."""
-        # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
-        if self._clipboard_lock:
-            self._clipboard_lock.acquire()
+        # Track if we acquired the lock (Claude R3 review: ensure release in finally)
+        lock_acquired = False
         try:
+            # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
+            if self._clipboard_lock:
+                self._clipboard_lock.acquire()
+                lock_acquired = True
             if not self._open_clipboard_with_retry():
                 return None
 
@@ -433,12 +480,166 @@ class OutputInjector:
             logger.error(f"Failed to get clipboard: {e}")
             return None
         finally:
-            if self._clipboard_lock:
+            if lock_acquired:
                 self._clipboard_lock.release()
 
-    def _set_clipboard_text(self, text: str) -> bool:
+    def _backup_clipboard_all_formats(self) -> Optional[Dict[int, bytes]]:
+        """
+        Backup common clipboard formats (text, images, files).
+
+        Returns:
+            Dict mapping format_id -> raw bytes, or None on failure.
+            Empty dict means clipboard was empty.
+        """
+        # Only backup safe, common formats to avoid crashes from
+        # exotic formats like delayed rendering or OLE objects
+        SAFE_FORMATS = [
+            CF_UNICODETEXT,  # 13: Unicode text (most common)
+            CF_TEXT,  # 1: ANSI text
+            CF_DIB,  # 8: DIB (images)
+            CF_HDROP,  # 15: File list
+        ]
+        # Max size per format (10MB - images can be large)
+        MAX_FORMAT_SIZE = 10 * 1024 * 1024
+
+        lock_acquired = False
+        try:
+            if self._clipboard_lock:
+                self._clipboard_lock.acquire()
+                lock_acquired = True
+
+            if not self._open_clipboard_with_retry():
+                return None
+
+            try:
+                backup: Dict[int, bytes] = {}
+
+                # Only backup safe formats
+                for fmt in SAFE_FORMATS:
+                    try:
+                        if not user32.IsClipboardFormatAvailable(fmt):
+                            continue
+
+                        handle = user32.GetClipboardData(fmt)
+                        if handle:
+                            size = kernel32.GlobalSize(handle)
+                            if size > 0 and size < MAX_FORMAT_SIZE:
+                                ptr = kernel32.GlobalLock(handle)
+                                if ptr:
+                                    try:
+                                        data = ctypes.string_at(ptr, size)
+                                        backup[fmt] = data
+                                    finally:
+                                        kernel32.GlobalUnlock(handle)
+                            elif size >= MAX_FORMAT_SIZE:
+                                logger.debug(f"Skip large format {fmt}: {size}B")
+                    except Exception as e:
+                        logger.debug(f"Skip format {fmt}: {e}")
+
+                if backup:
+                    logger.debug(
+                        f"Clipboard backup: {len(backup)} formats "
+                        f"({list(backup.keys())})"
+                    )
+                else:
+                    logger.debug("Clipboard was empty")
+
+                return backup
+
+            finally:
+                user32.CloseClipboard()
+
+        except Exception as e:
+            logger.error(f"Failed to backup clipboard: {e}")
+            return None
+        finally:
+            if lock_acquired:
+                self._clipboard_lock.release()
+
+    def _restore_clipboard_all_formats(self, backup: Dict[int, bytes]) -> bool:
+        """
+        Restore all clipboard formats from backup.
+
+        Args:
+            backup: Dict mapping format_id -> raw bytes
+
+        Returns:
+            True if restore succeeded, False otherwise.
+        """
+        if not backup:
+            logger.debug("No backup to restore (was empty)")
+            return True
+
+        lock_acquired = False
+        try:
+            if self._clipboard_lock:
+                self._clipboard_lock.acquire()
+                lock_acquired = True
+
+            if not self._open_clipboard_with_retry():
+                return False
+
+            try:
+                # Must empty clipboard before setting new data
+                user32.EmptyClipboard()
+
+                restored_count = 0
+                for fmt, data in backup.items():
+                    try:
+                        # Allocate global memory
+                        size = len(data)
+                        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
+                        if not handle:
+                            logger.warning(f"GlobalAlloc failed for format {fmt}")
+                            continue
+
+                        ptr = kernel32.GlobalLock(handle)
+                        if not ptr:
+                            kernel32.GlobalFree(handle)
+                            logger.warning(f"GlobalLock failed for format {fmt}")
+                            continue
+
+                        try:
+                            # Copy data to global memory
+                            ctypes.memmove(ptr, data, size)
+                        finally:
+                            kernel32.GlobalUnlock(handle)
+
+                        # Set clipboard data - clipboard takes ownership on success
+                        result = user32.SetClipboardData(fmt, handle)
+                        if result:
+                            restored_count += 1
+                        else:
+                            # SetClipboardData failed, we must free the handle
+                            kernel32.GlobalFree(handle)
+                            logger.warning(f"SetClipboardData failed for format {fmt}")
+
+                    except Exception as e:
+                        logger.warning(f"Failed to restore format {fmt}: {e}")
+
+                logger.debug(
+                    f"Clipboard restored: {restored_count}/{len(backup)} formats"
+                )
+                return restored_count > 0
+
+            finally:
+                user32.CloseClipboard()
+
+        except Exception as e:
+            logger.error(f"Failed to restore clipboard: {e}")
+            return False
+        finally:
+            if lock_acquired:
+                self._clipboard_lock.release()
+
+    def _set_clipboard_text(self, text: str) -> Tuple[bool, Optional[int]]:
         """
         Set clipboard text content.
+
+        Returns:
+            Tuple of (success, sequence_number).
+            sequence_number is the clipboard sequence right after SetClipboardData,
+            used for race detection (Codex R3 review).
 
         Memory management notes (from Codex/Gemini review):
         - GlobalAlloc allocates memory that we own
@@ -446,15 +647,17 @@ class OutputInjector:
         - If SetClipboardData fails, we must free the handle ourselves
         - If GlobalLock fails, we must free the handle ourselves
         """
-        # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
-        if self._clipboard_lock:
-            self._clipboard_lock.acquire()
-
+        # Track if we acquired the lock (Claude R3 review: ensure release in finally)
+        lock_acquired = False
         handle = None  # Track handle for cleanup on failure
         try:
+            # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
+            if self._clipboard_lock:
+                self._clipboard_lock.acquire()
+                lock_acquired = True
             if not self._open_clipboard_with_retry():
                 logger.error("Failed to open clipboard")
-                return False
+                return False, None
 
             try:
                 user32.EmptyClipboard()
@@ -466,7 +669,7 @@ class OutputInjector:
                 handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
                 if not handle:
                     logger.error("Failed to allocate memory for clipboard")
-                    return False
+                    return False, None
 
                 ptr = kernel32.GlobalLock(handle)
                 if not ptr:
@@ -474,7 +677,7 @@ class OutputInjector:
                     # Memory leak fix: free handle if lock fails
                     kernel32.GlobalFree(handle)
                     handle = None
-                    return False
+                    return False, None
 
                 try:
                     ctypes.memmove(ptr, text_bytes, size)
@@ -488,11 +691,15 @@ class OutputInjector:
                     # Memory leak fix: free handle if SetClipboardData fails
                     kernel32.GlobalFree(handle)
                     handle = None
-                    return False
+                    return False, None
+
+                # Codex R3: Get sequence number BEFORE CloseClipboard to avoid race
+                # (other app could modify clipboard between Close and GetSequence)
+                seq_number = user32.GetClipboardSequenceNumber()
 
                 # Success - clipboard now owns handle, don't free it
                 handle = None
-                return True
+                return True, seq_number
             finally:
                 user32.CloseClipboard()
         except Exception as e:
@@ -503,9 +710,9 @@ class OutputInjector:
                     kernel32.GlobalFree(handle)
                 except Exception:
                     pass
-            return False
+            return False, None
         finally:
-            if self._clipboard_lock:
+            if lock_acquired:
                 self._clipboard_lock.release()
 
     def _send_paste(self) -> bool:
@@ -545,18 +752,63 @@ class OutputInjector:
             logger.warning(
                 f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
             )
+            # Cleanup stuck keys to prevent modifier state carrying over (Codex R3 review)
+            # Order: [0]=Ctrl down, [1]=V down, [2]=V up, [3]=Ctrl up
+            self._cleanup_stuck_keys(result)
             return False
         return True
+
+    def _cleanup_stuck_keys(self, sent_count: int) -> None:
+        """
+        Send key-up events for any keys that might be stuck after partial SendInput.
+        (Codex R3 review: partial SendInput can leave modifier keys down)
+
+        Args:
+            sent_count: Number of events that were actually sent (0-3 for _send_paste)
+        """
+        cleanup_keys = []
+
+        # Determine which keys need cleanup based on what was sent
+        # _send_paste order: Ctrl down, V down, V up, Ctrl up
+        if sent_count >= 1:  # Ctrl down was sent
+            cleanup_keys.append(VK_CONTROL)
+        if sent_count >= 2:  # V down was sent (V up is at index 2)
+            if sent_count < 3:  # V up was NOT sent
+                cleanup_keys.insert(0, VK_V)  # Release V before Ctrl
+
+        if not cleanup_keys:
+            return
+
+        # Send key-up events for stuck keys
+        cleanup_inputs = (INPUT * len(cleanup_keys))()
+        for i, vk in enumerate(cleanup_keys):
+            cleanup_inputs[i].type = INPUT_KEYBOARD
+            cleanup_inputs[i].union.ki.wVk = vk
+            cleanup_inputs[i].union.ki.wScan = 0
+            cleanup_inputs[i].union.ki.dwFlags = KEYEVENTF_KEYUP
+            cleanup_inputs[i].union.ki.time = 0
+            cleanup_inputs[i].union.ki.dwExtraInfo = 0
+
+        cleanup_result = user32.SendInput(
+            len(cleanup_keys), cleanup_inputs, ctypes.sizeof(INPUT)
+        )
+        if cleanup_result != len(cleanup_keys):
+            logger.error(
+                f"Failed to cleanup stuck keys: {cleanup_result}/{len(cleanup_keys)}"
+            )
 
     def _send_vk_key(self, vk_code: int) -> bool:
         """Send a single virtual key press (down + up)."""
         inputs = (INPUT * 2)()
 
+        # Determine if this is an extended key (Claude R3 review)
+        extended_flag = KEYEVENTF_EXTENDEDKEY if vk_code in EXTENDED_VK_CODES else 0
+
         # Key down
         inputs[0].type = INPUT_KEYBOARD
         inputs[0].union.ki.wVk = vk_code
         inputs[0].union.ki.wScan = 0
-        inputs[0].union.ki.dwFlags = 0
+        inputs[0].union.ki.dwFlags = extended_flag
         inputs[0].union.ki.time = 0
         inputs[0].union.ki.dwExtraInfo = 0
 
@@ -564,7 +816,7 @@ class OutputInjector:
         inputs[1].type = INPUT_KEYBOARD
         inputs[1].union.ki.wVk = vk_code
         inputs[1].union.ki.wScan = 0
-        inputs[1].union.ki.dwFlags = KEYEVENTF_KEYUP
+        inputs[1].union.ki.dwFlags = KEYEVENTF_KEYUP | extended_flag
         inputs[1].union.ki.time = 0
         inputs[1].union.ki.dwExtraInfo = 0
 
@@ -592,11 +844,15 @@ class OutputInjector:
         if not text:
             return True
 
+        # Normalize CRLF to LF to avoid double Enter keypress (Gemini R3 review)
+        # Windows text often has \r\n, but both \r and \n map to VK_RETURN
+        text = text.replace("\r\n", "\n")
+
         # Control characters that should be sent as VK keys, not Unicode
         # (Gemini review: some apps don't interpret Unicode control chars)
         CONTROL_CHAR_TO_VK = {
             "\n": VK_CODES["enter"],  # 0x0D - VK_RETURN
-            "\r": VK_CODES["enter"],  # 0x0D - VK_RETURN
+            "\r": VK_CODES["enter"],  # 0x0D - VK_RETURN (kept for standalone \r)
             "\t": VK_CODES["tab"],  # 0x09 - VK_TAB
         }
 
@@ -683,18 +939,46 @@ class OutputInjector:
         Returns:
             True if paste was sent successfully, False if clipboard or SendInput failed.
         """
-        # Backup clipboard
-        original_clipboard = None
+
+        # Debug: Write directly to pipeline log for visibility
+        def _debug_log(msg: str):
+            import datetime
+            from pathlib import Path
+
+            log_path = Path(__file__).parent.parent / "DebugLog" / "pipeline_debug.log"
+            try:
+                ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] [CLIPBOARD] {msg}\n")
+            except Exception:
+                pass
+
+        _debug_log(f"restore_clipboard={self.config.restore_clipboard}")
+
+        # Backup ALL clipboard formats (text, images, files, etc.)
+        # Fix: Previously only backed up text, causing image/file loss
+        clipboard_backup: Optional[Dict[int, bytes]] = None
         if self.config.restore_clipboard:
-            original_clipboard = self._get_clipboard_text()
+            clipboard_backup = self._backup_clipboard_all_formats()
+            if clipboard_backup is None:
+                _debug_log("Backup FAILED (returned None)")
+                logger.warning("Failed to backup clipboard, will not restore")
+            elif not clipboard_backup:
+                _debug_log("Backup OK but empty (clipboard was empty)")
+                logger.debug("Clipboard was empty before paste")
+            else:
+                _debug_log(
+                    f"Backup OK: {len(clipboard_backup)} formats, keys={list(clipboard_backup.keys())}"
+                )
+                logger.debug(f"Backed up {len(clipboard_backup)} clipboard formats")
+        else:
+            _debug_log("restore_clipboard is DISABLED - skipping backup")
 
-        # Set text to clipboard
-        if not self._set_clipboard_text(text):
+        # Set text to clipboard - returns (success, sequence_number)
+        # Codex R3: sequence captured inside _set_clipboard_text to avoid race
+        set_success, seq_after_set = self._set_clipboard_text(text)
+        if not set_success:
             return False
-
-        # Record clipboard sequence number after we set it (Codex R2 review)
-        # This allows us to detect if user changed clipboard during paste
-        seq_after_set = user32.GetClipboardSequenceNumber()
 
         # Small delay to ensure clipboard is ready
         time.sleep(self.config.paste_delay_ms / 1000)
@@ -705,20 +989,25 @@ class OutputInjector:
             logger.error("Failed to send Ctrl+V paste command")
             # Still try to restore clipboard even on paste failure
 
-        # Restore original clipboard (with sequence number check)
-        if self.config.restore_clipboard and original_clipboard is not None:
-            time.sleep(self.config.restore_delay_ms / 1000)
+        # Restore original clipboard
+        # Note: Removed sequence number check - it was too conservative and blocked
+        # restore when target app (e.g., editors, clipboard managers) touched clipboard
+        if self.config.restore_clipboard and clipboard_backup:
+            # Increase delay to ensure paste is fully processed
+            time.sleep(max(self.config.restore_delay_ms, 200) / 1000)
 
-            # Check if clipboard was modified by user/other app during paste (Codex R2)
-            seq_before_restore = user32.GetClipboardSequenceNumber()
-            if seq_before_restore != seq_after_set:
-                # User or another app changed clipboard - don't overwrite their data
-                logger.debug(
-                    "Clipboard modified by user during paste, skipping restore"
-                )
+            _debug_log(f"Restoring {len(clipboard_backup)} formats...")
+            restore_success = self._restore_clipboard_all_formats(clipboard_backup)
+            if restore_success:
+                _debug_log("RESTORED successfully")
+                logger.info("Clipboard restored successfully (all formats)")
             else:
-                self._set_clipboard_text(original_clipboard)
-                logger.debug("Clipboard restored")
+                _debug_log("RESTORE FAILED")
+                logger.warning("Failed to restore original clipboard")
+        else:
+            _debug_log(
+                f"Restore skipped: restore_clipboard={self.config.restore_clipboard}, has_backup={clipboard_backup is not None and len(clipboard_backup) > 0}"
+            )
 
         return paste_success
 
@@ -804,6 +1093,9 @@ class OutputInjector:
 
         vk_key = VK_CODES[key_lower]
 
+        # Check if main key is extended (Claude R3 review)
+        key_extended_flag = KEYEVENTF_EXTENDEDKEY if vk_key in EXTENDED_VK_CODES else 0
+
         # Validate and collect modifiers
         modifier_vks = []
         for mod in modifiers:
@@ -834,14 +1126,14 @@ class OutputInjector:
             inputs[idx].union.ki.dwFlags = 0
             idx += 1
 
-        # Press key down
+        # Press key down (with extended flag if needed)
         inputs[idx].union.ki.wVk = vk_key
-        inputs[idx].union.ki.dwFlags = 0
+        inputs[idx].union.ki.dwFlags = key_extended_flag
         idx += 1
 
-        # Release key up
+        # Release key up (with extended flag if needed)
         inputs[idx].union.ki.wVk = vk_key
-        inputs[idx].union.ki.dwFlags = KEYEVENTF_KEYUP
+        inputs[idx].union.ki.dwFlags = KEYEVENTF_KEYUP | key_extended_flag
         idx += 1
 
         # Release modifiers up (reverse order)

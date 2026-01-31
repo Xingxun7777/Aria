@@ -20,6 +20,7 @@ from .history import HistoryWindow
 from .translation_popup import TranslationPopup
 from .ai_chat_window import AIChatWindow
 from .workers import TranslationWorker, SummaryWorker, LLMWorker
+from .elevation_dialog import ElevationWarningDialog
 
 # Debug log for main.py
 _DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
@@ -64,6 +65,7 @@ def main():
     translation_popup = TranslationPopup()
     summary_popup = TranslationPopup()
     ai_chat_window = AIChatWindow()
+    elevation_dialog = ElevationWarningDialog()
 
     # Thread pool for background workers
     thread_pool = QThreadPool.globalInstance()
@@ -171,6 +173,7 @@ def main():
     bridge.highlightSaved.connect(
         ball.on_highlight_saved
     )  # Gold flash for highlight save
+
     def show_error_dialog(msg: str) -> None:
         """Show non-blocking error dialog to avoid trapping the event loop."""
         try:
@@ -193,11 +196,58 @@ def main():
 
         # Also show tray notification if available
         try:
-            tray.showMessage("Aria 错误", msg, QSystemTrayIcon.MessageIcon.Warning, 3000)
+            tray.showMessage(
+                "Aria 错误", msg, QSystemTrayIcon.MessageIcon.Warning, 3000
+            )
         except Exception:
             pass
 
-    bridge.error.connect(show_error_dialog)
+    def _is_elevation_error(msg: str) -> bool:
+        """Check if the error message is related to elevation/permission issues."""
+        elevation_keywords = ["权限", "管理员", "elevated", "elevation", "Aria 没有"]
+        msg_lower = msg.lower()
+        return any(kw.lower() in msg_lower for kw in elevation_keywords)
+
+    def on_error(msg: str) -> None:
+        """Handle errors - route to elevation dialog or standard error dialog."""
+        if _is_elevation_error(msg):
+            _log(f"[UI] Elevation warning detected, showing elevation dialog")
+            elevation_dialog.show_warning(msg)
+        else:
+            show_error_dialog(msg)
+
+    bridge.error.connect(on_error)
+
+    # Elevation dialog signal handlers
+    def on_elevation_close_requested():
+        """Handle user clicking 'Close Aria' in elevation dialog."""
+        _log("[UI] User requested to close Aria from elevation dialog")
+        cleanup_and_quit()
+
+    def on_elevation_restart_admin():
+        """Handle user clicking 'Restart as Admin' in elevation dialog."""
+        _log("[UI] User requested admin restart from elevation dialog")
+        try:
+            from aria.system.admin import restart_as_admin
+
+            if restart_as_admin():
+                _log("[UI] Admin restart successful, exiting current instance")
+                # Give the new process time to start before we exit
+                QTimer.singleShot(500, cleanup_and_quit)
+            else:
+                _log("[UI] Admin restart failed or cancelled by user")
+                # Show a brief notification - don't show another dialog
+                tray.showMessage(
+                    "Aria",
+                    "管理员重启已取消或失败",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000,
+                )
+        except Exception as e:
+            _log(f"[UI] Exception during admin restart: {e}")
+            show_error_dialog(f"重启失败: {e}")
+
+    # Connect elevation dialog signals (connected later after cleanup_and_quit is defined)
 
     # Handle setting changes from backend (e.g., via wakeword commands)
     def on_setting_changed(setting: str, value: bool):
@@ -224,6 +274,10 @@ def main():
             # Also update ball visual state as fallback
             # (in case stateChanged signal was missed/reordered)
             ball.on_state_changed("SLEEPING" if value else "IDLE")
+        elif setting == "enabled":
+            # Update popup menu toggle when hotkey re-enables from disabled state
+            if ball._popup_menu:
+                ball._popup_menu.setEnabled(value)
 
     bridge.settingChanged.connect(on_setting_changed)
 
@@ -448,9 +502,7 @@ def main():
 
         elif action.type == ActionType.SHOW_SUMMARY:
             try:
-                _log(
-                    f"[MAIN] Summary popup: {len(action.source_text)} chars"
-                )
+                _log(f"[MAIN] Summary popup: {len(action.source_text)} chars")
                 summary_popup.show_loading(
                     action.source_text,
                     action.request_id,
@@ -588,9 +640,7 @@ def main():
             )
         except Exception as e:
             _log(f"[UI] Failed to copy to clipboard: {e}")
-            tray.showMessage(
-                "Aria", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000
-            )
+            tray.showMessage("Aria", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000)
 
     def on_clipboard_translation_error(request_id: str, error_msg: str):
         """Handle clipboard translation error."""
@@ -643,9 +693,7 @@ def main():
 
     def on_summary_error(request_id: str, error_msg: str):
         """Handle summary error."""
-        _log(
-            f"[UI] Summary error CALLBACK: request_id={request_id}, error={error_msg}"
-        )
+        _log(f"[UI] Summary error CALLBACK: request_id={request_id}, error={error_msg}")
         try:
             summary_popup.show_error(error_msg, request_id)
             _log(f"[UI] Summary show_error completed OK")
@@ -929,6 +977,20 @@ def main():
         force_thread.start()
 
     action_quit.triggered.connect(cleanup_and_quit)
+
+    # Handle elevation dialog disable request - just call on_enable_toggled(False)
+    def on_elevation_disable_requested():
+        """Handle user clicking 'Disable' in elevation dialog."""
+        _log("[UI] User requested to temporarily disable from elevation dialog")
+        on_enable_toggled(False)  # Reuse existing disable logic
+        # Update popup menu UI state
+        if ball._popup_menu:
+            ball._popup_menu.setEnabled(False)
+
+    # Connect elevation dialog signals (cleanup_and_quit is now defined)
+    elevation_dialog.closeRequested.connect(on_elevation_close_requested)
+    elevation_dialog.restartAsAdminRequested.connect(on_elevation_restart_admin)
+    elevation_dialog.disableRequested.connect(on_elevation_disable_requested)
 
     # Register cleanup for signal handling and atexit
     def signal_handler(signum, frame):

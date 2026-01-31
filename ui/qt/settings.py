@@ -11,6 +11,7 @@ from typing import Optional, Callable
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from aria.core.utils import get_config_path
+from aria.core.hotword.utils import is_english_word
 
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -462,15 +463,14 @@ class SettingsWindow(QMainWindow):
         list_header = QLabel("<b>词汇列表</b>")
         layout.addWidget(list_header)
 
-        guide_label = QLabel(
-            "权重: 0=禁用, 0.3=提示, 0.5=参考, 0.7=强参考, 0.9=极强, 1=锁定"
-        )
+        guide_label = QLabel("权重: 0=禁用, 0.3=提示(仅ASR), 0.5=参考, 1=锁定")
         guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
         layout.addWidget(guide_label)
 
-        # Threshold note
+        # Threshold note with weight explanation
         threshold_note = QLabel(
-            "💡 权重 ≥0.5 时生效 | ⚠️ FunASR 仅支持中文热词，英文词依赖 AI 润色修正"
+            "💡 中文热词: 权重≥0.5 时生效\n"
+            "💡 英文热词: 0.5=参考(严格规则), 1.0=锁定(强制替换)，标记为 EN"
         )
         threshold_note.setStyleSheet(
             "color: #888; font-size: 11px; margin-bottom: 10px;"
@@ -480,11 +480,11 @@ class SettingsWindow(QMainWindow):
 
         # Table widget with word and weight columns
         self.vocab_table = QTableWidget(0, 3)
-        self.vocab_table.setHorizontalHeaderLabels(["词汇", "权重", ""])
+        self.vocab_table.setHorizontalHeaderLabels(["词汇", "权重", "类型"])
         self.vocab_table.horizontalHeader().setStretchLastSection(False)
         self.vocab_table.setColumnWidth(0, 200)  # Word column
-        self.vocab_table.setColumnWidth(1, 150)  # Weight dropdown column
-        self.vocab_table.setColumnWidth(2, 10)  # Minimal (unused)
+        self.vocab_table.setColumnWidth(1, 130)  # Weight dropdown column
+        self.vocab_table.setColumnWidth(2, 40)  # EN label column
         self.vocab_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.vocab_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.vocab_table.setMinimumHeight(200)
@@ -564,6 +564,11 @@ class SettingsWindow(QMainWindow):
 
         return w
 
+    def _is_english_word(self, word: str) -> bool:
+        """Check if a word is primarily English (no CJK characters)."""
+        # Use shared utility function (DRY - single source of truth)
+        return is_english_word(word)
+
     def _add_vocab_row(self, word: str, weight: float = 1.0):
         """Add a vocabulary row with word and weight dropdown."""
         row = self.vocab_table.rowCount()
@@ -575,20 +580,25 @@ class SettingsWindow(QMainWindow):
         word_item.setFlags(word_item.flags() & ~Qt.ItemIsEditable)
         self.vocab_table.setItem(row, 0, word_item)
 
-        # Weight options: value -> display text
-        # Aligned with FunASR tiered system (v2.0):
-        # - 0: disabled, 0.3: hint only, 0.5: context, 0.7: strong, 0.9: very strong, 1.0: lock
+        # Simplified 4-tier weight options (v3.0):
+        # - 0: disabled
+        # - 0.3: hint (ASR only, not sent to polish)
+        # - 0.5: reference (sent to polish for Chinese words)
+        # - 1.0: lock (mandatory, always sent to polish)
         weight_options = [
             (0, "0 - 禁用"),
             (0.3, "0.3 - 提示"),
             (0.5, "0.5 - 参考"),
-            (0.7, "0.7 - 强参考"),
-            (0.9, "0.9 - 极强"),
             (1.0, "1 - 锁定"),
         ]
 
+        # Check if English word (for display hint only)
+        # v3.1: English hotwords at 0.5 now work in polish layer with stricter rules
+        # No longer auto-upgrade to 1.0
+        is_english = self._is_english_word(word)
+
         # Find closest weight option
-        closest_idx = 5  # Default to "1 - 锁定" (index 5 in new options)
+        closest_idx = 3  # Default to "1 - 锁定" (index 3)
         min_diff = float("inf")
         for i, (val, _) in enumerate(weight_options):
             diff = abs(val - weight)
@@ -608,8 +618,17 @@ class SettingsWindow(QMainWindow):
         combo.setProperty("weight_values", [v for v, _ in weight_options])
         self.vocab_table.setCellWidget(row, 1, combo)
 
-        # Empty placeholder for column 2 (previously used for label)
-        self.vocab_table.setCellWidget(row, 2, QLabel(""))
+        # Show hint label for English words
+        hint_label = QLabel("")
+        if is_english:
+            hint_label.setText("EN")
+            hint_label.setStyleSheet(
+                "color: #0d6efd; font-size: 10px; font-weight: bold;"
+            )
+            hint_label.setToolTip(
+                "英文热词：0.5 参考级使用更严格规则，1.0 锁定级强制替换"
+            )
+        self.vocab_table.setCellWidget(row, 2, hint_label)
 
         # Connect dropdown to store weight
         def on_combo_change(index, w=word, opts=weight_options):

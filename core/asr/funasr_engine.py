@@ -378,6 +378,14 @@ class FunASREngine(ASREngine):
                     f">>> generate() starting - audio shape={audio_float.shape}, abs_max={audio_stats['abs_max']:.4f}"
                 )
                 _funasr_log(f"gen_kwargs keys: {list(gen_kwargs.keys())}")
+                # Debug: log actual hotword content
+                if "hotword" in gen_kwargs:
+                    hw_preview = (
+                        gen_kwargs["hotword"][:200]
+                        if len(gen_kwargs["hotword"]) > 200
+                        else gen_kwargs["hotword"]
+                    )
+                    _funasr_log(f"hotword content (preview): {hw_preview}")
 
                 try:
                     # FunASR tries to write to stdout which is None in pythonw.exe

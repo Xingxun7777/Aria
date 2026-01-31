@@ -484,9 +484,9 @@ class FloatingBall(QWidget):
             base_alpha = 40
             highlight_alpha = 8
         elif self._is_locked:
-            # Locked: very transparent, nearly invisible
-            base_alpha = 50
-            highlight_alpha = 10
+            # Locked: almost invisible, minimal alpha to keep hit test working
+            base_alpha = 8
+            highlight_alpha = 0
         elif self._state == self.STATE_TRANSCRIBING:
             base_alpha = 200
             highlight_alpha = 50
@@ -559,8 +559,8 @@ class FloatingBall(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._is_locked:
-            # Squircle border when locked (thicker, more visible)
-            painter.setPen(QPen(QColor(255, 255, 255, 60), 2.5))
+            # Squircle border when locked (subtle, nearly invisible)
+            painter.setPen(QPen(QColor(255, 255, 255, 25), 1.0))
             painter.setBrush(Qt.NoBrush)
             if use_squircle:
                 rect = self.rect().adjusted(6, 6, -6, -6)
@@ -887,14 +887,12 @@ class FloatingBall(QWidget):
             painter.drawEllipse(center, ring_radius, ring_radius)
 
         elif self._is_locked:
-            # Locked: subtle lock icon (more transparent)
-            painter.setPen(QPen(QColor(255, 255, 255, 100), 1.5))
+            # Locked: very subtle lock icon (nearly invisible)
+            painter.setPen(QPen(QColor(255, 255, 255, 35), 1.0))
             painter.setBrush(Qt.NoBrush)
-            # Larger lock icon
-            painter.drawRect(int(center.x() - 5), int(center.y() - 1), 10, 8)
-            painter.drawArc(
-                int(center.x() - 4), int(center.y() - 8), 8, 10, 0, 180 * 16
-            )
+            # Small lock icon
+            painter.drawRect(int(center.x() - 4), int(center.y() - 1), 8, 6)
+            painter.drawArc(int(center.x() - 3), int(center.y() - 6), 6, 8, 0, 180 * 16)
 
         else:
             # Idle: small subtle dot

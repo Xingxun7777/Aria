@@ -402,9 +402,42 @@ dist_portable/VoiceType/ (6.8GB)
 
 ---
 
+## Session: 2026-01-25 (权限弹窗优化)
+
+### Completed
+- [x] 权限弹窗添加"下次不再提醒"勾选框
+- [x] 按钮从"关闭输入法"改为"暂时禁用"（不退出程序）
+- [x] 实现禁用后按热键可重新启用功能
+- [x] 勾选"不再提醒"后自动保存到配置，下次自动禁用不弹窗
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `ui/qt/elevation_dialog.py` | 添加 QCheckBox "下次不再提醒" + disableRequested 信号 + 配置读写 |
+| `ui/qt/main.py` | 连接 disableRequested 信号 + 处理 "enabled" 设置变更 |
+| `app.py` | 添加 _is_disabled 标志 + set_enabled() 不停止热键 + _on_hotkey() 禁用状态重新启用 |
+
+### Key Decisions
+- **热键不停止**: 禁用时设置标志而非停止 hotkey_manager，允许热键重新启用
+- **配置存储**: "不再提醒"设置保存到 hotwords.json 的 elevation_dialog.dont_remind
+
+### Technical Findings
+1. **原问题**: set_enabled(False) 会调用 hotkey_manager.stop()，热键完全无法使用
+2. **解决方案**: 用 _is_disabled 标志替代停止热键，_on_hotkey() 检测到禁用状态时自动重新启用
+3. **UI 同步**: bridge.emit_setting_changed("enabled", True) 通知 popup menu 更新开关状态
+
+### Pending Tasks
+1. [ ] 测试权限弹窗新功能
+2. [ ] 验证"不再提醒"配置持久化
+
+### Known Issues
+- 无
+
+---
+
 ## Warmup Hints
 <!-- 预热系统读取此区块 -->
-focus: ui/qt/settings.py
+focus: ui/qt/elevation_dialog.py
 mode: standard
 pending_research: 无
-note: FunASR 热词分数优化完成，待用户测试验证效果
+note: 权限弹窗优化完成，添加了"暂时禁用"和"下次不再提醒"功能

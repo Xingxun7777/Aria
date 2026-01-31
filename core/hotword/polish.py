@@ -15,20 +15,56 @@ from ..logging import get_system_logger
 logger = get_system_logger()
 
 # Shared default prompt template - single source of truth
-# Based on Codex + Gemini tri-party analysis (v2.2)
-# Key principle: Show don't tell, minimal examples for weak models
-# v2.2: Add hotwords with soft language to avoid over-fitting
+# Based on Codex + Gemini tri-party analysis (v4.0)
+# v4.0: Added phonetic alias table for cross-lingual matching
+# Key insight: LLM needs explicit Chinese-sound → English-term mappings
 DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标点。
-禁止：回答内容、改变原意、补全缺失词。
 
-参考词汇（仅当发音非常接近时替换）：
-{hotwords}
+【判断流程】按顺序检查：
+1. 原文是否包含"无意义乱码"或"中文音译英文"？→ 查音译表替换
+2. 是否有同音字错误？→ 结合语境替换
+3. 都不是？→ 仅修正标点，保留原文
 
-原文：我以经做完了
-修正：我已经做完了。
+【音译对照表】常见中文音译 → 英文术语
+- 咖啡鱼/卡飞UI/康飞 → ComfyUI（AI绘图工具）
+- 克劳德/克老德/cloud code → claude code（AI编程助手）
+- 迪普seek/deep seek → deepseek（AI模型）
+- 吉米奈/杰米尼 → gemini（AI模型）
+- 可德克斯/code x → codex（AI编程助手）
+- 阿尔特拉think/ultra think → ultrathink（思考模式）
+- 威斯帕/威士忌 → whisper（语音识别）
+- 帕特龙/派特on → patreon（创作者平台）
 
-原文：这个能用吗.
-修正：这个能用吗？
+【中文参考词汇】{hotwords_chinese}
+
+【英文参考词汇】{hotwords_english}
+
+【跨语言替换示例 - 应该替换】
+原文：这个咖啡鱼啊，用起来效果还挺好的。
+修正：这个ComfyUI啊，用起来效果还挺好的。
+理由："咖啡鱼"是ComfyUI的中文音译乱码，技术语境
+
+原文：我还是用这个复conu i工作的话
+修正：我还是用这个ComfyUI工作的话，
+理由："复conu i"是无意义乱码，发音近似ComfyUI
+
+原文：我用cloud code来调试bug
+修正：我用claude code来调试bug。
+理由：编程语境 + cloud code 是明显的误识别
+
+【不要替换的情况】
+原文：I will try to think about it
+修正：I will try to think about it。
+理由：正常英语句子，不是ultrathink的误识别
+
+原文：check the cloud service status
+修正：check the cloud service status。
+理由：cloud在这里就是正确的词，讨论云服务
+
+【禁止】
+- 回答或补充内容
+- 改变句子原意
+- 把通顺的表达强行改成专业术语
 
 原文：{text}
 修正："""
@@ -66,10 +102,11 @@ class PolishConfig:
     domain_context: str = ""
     hotwords: list = None  # List of hotword strings (all weight >= 0.5)
 
-    # Tiered hotwords (set by HotWordManager)
-    hotwords_critical: list = None  # weight >= 1.0: mandatory vocabulary
-    hotwords_strong: list = None  # 0.7 <= weight < 1.0: strong reference
-    hotwords_context: list = None  # 0.5 <= weight < 0.7: context hints
+    # Tiered hotwords (set by HotWordManager, v3.1 with English support)
+    hotwords_critical: list = None  # weight = 1.0: mandatory vocabulary (中英文)
+    hotwords_strong: list = None  # weight = 0.5: Chinese reference words
+    hotwords_english: list = None  # weight = 0.5: English reference (stricter rules)
+    hotwords_context: list = None  # unused in v3.1 (kept for backwards compat)
 
     def __post_init__(self):
         if self.hotwords is None:
@@ -78,6 +115,8 @@ class PolishConfig:
             self.hotwords_critical = []
         if self.hotwords_strong is None:
             self.hotwords_strong = []
+        if self.hotwords_english is None:
+            self.hotwords_english = []
         if self.hotwords_context is None:
             self.hotwords_context = []
         # Validate api_url format
@@ -127,32 +166,54 @@ class AIPolisher:
 
     def _build_prompt(self, text: str) -> str:
         """Build the full prompt with hotwords and domain context."""
+        from .utils import is_cjk_word
+
         template = self.config.prompt_template
 
-        # Format hotwords - flat list only, no tier markers
-        # v2.2: Remove tier markers (【必须】etc) to prevent over-fitting
-        # The prompt template itself has soft instruction "仅当发音非常接近时替换"
-        all_hotwords = []
-        if self.config.hotwords_critical:
-            all_hotwords.extend(self.config.hotwords_critical[:10])
-        if self.config.hotwords_strong:
-            all_hotwords.extend(self.config.hotwords_strong[:10])
-        if self.config.hotwords_context:
-            all_hotwords.extend(self.config.hotwords_context[:10])
-        if not all_hotwords and self.config.hotwords:
-            all_hotwords = self.config.hotwords[:30]
+        # v3.1: Separate Chinese and English hotwords
+        # Chinese hotwords = critical (Chinese only) + strong (Chinese reference)
+        # English hotwords = critical (English only) + hotwords_english
 
-        # Simple comma-separated list - LLM judges phonetic similarity itself
+        # Split critical tier into Chinese and English
+        critical_chinese = []
+        critical_english = []
+        if self.config.hotwords_critical:
+            for word in self.config.hotwords_critical[:15]:
+                if is_cjk_word(word):
+                    critical_chinese.append(word)
+                else:
+                    critical_english.append(word)
+
+        # Build Chinese hotwords list
+        chinese_hotwords = critical_chinese[:]
+        if self.config.hotwords_strong:
+            chinese_hotwords.extend(self.config.hotwords_strong[:15])  # Unified limit
+
+        # Build English hotwords list
+        english_hotwords = critical_english[:]
+        if self.config.hotwords_english:
+            english_hotwords.extend(
+                self.config.hotwords_english[:25]
+            )  # Increased limit
+
+        # Combined list for backwards compatibility
+        all_hotwords = chinese_hotwords + english_hotwords
         hotwords_str = ", ".join(all_hotwords) if all_hotwords else "无"
+
+        # Format for new v3.1 template
+        hotwords_chinese_str = ", ".join(chinese_hotwords) if chinese_hotwords else "无"
+        hotwords_english_str = ", ".join(english_hotwords) if english_hotwords else "无"
 
         # Format domain context
         domain_context = self.config.domain_context or "通用"
 
-        # Replace placeholders (format() ignores extra keys, but catch unknown placeholders)
+        # Replace placeholders with graceful fallback chain
         try:
             return template.format(
                 text=text,
-                hotwords=hotwords_str,
+                hotwords=hotwords_str,  # backwards compat
+                hotwords_chinese=hotwords_chinese_str,  # v3.1
+                hotwords_english=hotwords_english_str,  # v3.1
                 domain_context=domain_context,
                 hotwords_critical=(
                     ", ".join(self.config.hotwords_critical[:15])
@@ -171,8 +232,22 @@ class AIPolisher:
                 ),
             )
         except KeyError as e:
-            logger.warning(f"Template has unknown placeholder {e}, using simple format")
-            return f"润色以下文字：\n{text}"
+            # Fallback 1: Try backwards compatible format (v2.x templates with {hotwords} only)
+            logger.warning(
+                f"Template missing placeholder {e}, trying backwards compatible format"
+            )
+            try:
+                return template.format(
+                    text=text,
+                    hotwords=hotwords_str,
+                    domain_context=domain_context,
+                )
+            except KeyError as e2:
+                # Fallback 2: Minimal format that preserves hotwords
+                logger.error(
+                    f"Template also missing {e2}, using minimal format with hotwords"
+                )
+                return f"润色以下文字（参考词汇：{hotwords_str}）：\n\n{text}"
 
     def polish(self, text: str) -> str:
         """

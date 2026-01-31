@@ -14,6 +14,7 @@ from ..logging import get_system_logger
 from ..utils import get_config_path
 from .polish import AIPolisher, PolishConfig
 from .local_polish import LocalPolishEngine, LocalPolishConfig
+from .utils import is_english_word as is_english_hotword
 
 logger = get_system_logger()
 
@@ -270,38 +271,55 @@ class HotWordManager:
         """
         Get hotwords for Polish, split into tiers by weight.
 
-        Tier system (based on Gemini tri-party analysis + v2 refinement):
-        - critical (weight >= 1.0): Mandatory vocabulary, LLM must use these spellings
-        - strong (0.7 <= weight < 1.0): Strong reference, LLM should prefer these
-        - context (0.5 <= weight < 0.7): Context hints, use if phonetically similar
-        - passive (0.1 <= weight < 0.5): NOT sent to LLM (prevents hallucination)
+        Simplified 3-tier system (v3.1):
+        - critical (weight = 1.0): Mandatory vocabulary, LLM must use these spellings
+        - reference (weight = 0.5): Reference words, LLM should prefer if phonetically similar
+        - hint (weight = 0.3): Hint only, sent to ASR but NOT to polish layer
         - disabled (weight = 0): Completely excluded
 
+        v3.1 Change: English hotwords now included in reference tier with separate
+        prompt instructions to prevent over-fitting. The LLM is instructed to be
+        more conservative with English replacements.
+
         Returns:
-            {"critical": [...], "strong": [...], "context": [...]}
+            {"critical": [...], "reference": [...], "english_reference": [...]}
         """
         weights = self._load_weights()
 
         critical = []
-        strong = []
-        context = []
+        reference = []  # Chinese reference
+        english_reference = []  # English reference (new in v3.1)
 
         for word in self.config.prompt_words:
-            w = weights.get(word, 0.5)  # Default to context tier, not critical
+            w = weights.get(word, 0.5)  # Default to reference tier
+
+            # Check if English hotword
+            is_english = is_english_hotword(word)
+
             if w >= 1.0:
+                # Critical tier: both Chinese and English included
                 critical.append(word)
-            elif w >= 0.7:
-                strong.append(word)
             elif w >= 0.5:
-                context.append(word)
-            # weight < 0.5: NOT included (passive/disabled)
-            # This is the KEY fix: low-weight words don't trigger LLM hallucination
+                # Reference tier: separate Chinese and English
+                # v3.1: English now included but with stricter prompt rules
+                if is_english:
+                    english_reference.append(word)
+                else:
+                    reference.append(word)
+            # weight < 0.5: NOT included in polish layer (hint/disabled)
 
         logger.debug(
-            f"Polish tiers: critical={len(critical)}, strong={len(strong)}, context={len(context)}, "
-            f"excluded={len(self.config.prompt_words) - len(critical) - len(strong) - len(context)} (weight < 0.5)"
+            f"Polish tiers: critical={len(critical)}, reference={len(reference)}, "
+            f"english_reference={len(english_reference)}"
         )
-        return {"critical": critical, "strong": strong, "context": context}
+
+        # Return structure with separate English tier
+        # Note: strong/context kept empty for backwards compat with PolishConfig fields
+        return {
+            "critical": critical,
+            "reference": reference,
+            "english_reference": english_reference,  # New in v3.1
+        }
 
     def _load_weights(self) -> Dict[str, float]:
         """Load hotword weights from config file."""
@@ -357,18 +375,14 @@ class HotWordManager:
         """
         Get hotwords with FunASR score based on weight.
 
-        Score mapping (Aggressive v2.0 - fixes 0.5 weight not triggering):
-        - weight <= 0 → skip (disabled)
-        - weight < 0.3 → score 15 (minimal hint)
-        - weight 0.3-0.49 → score 25 (low, ASR hint only)
-        - weight 0.5-0.69 → score 50 (standard, reliable recognition)
-        - weight 0.7-0.89 → score 70 (strong)
-        - weight 0.9-0.99 → score 85 (very strong)
-        - weight >= 1.0 → score 100 (lock/maximum)
+        Simplified 3-tier score mapping (v3.0):
+        - weight = 0 → skip (disabled)
+        - weight = 0.3 → score 30 (hint only, ASR boost)
+        - weight = 0.5 → score 60 (reference, standard recognition)
+        - weight = 1.0 → score 100 (lock/maximum)
 
-        Note: FunASR baseline is 20, but SeACo-Paraformer needs higher scores
-        for reliable hotword activation. These scores are 2-3x more aggressive
-        than the official baseline recommendation.
+        Note: FunASR hotword system works primarily for Chinese.
+        English hotwords may not get proper ASR boost regardless of score.
 
         Returns:
             List of (word, score) tuples for FunASR hotword parameter
@@ -381,18 +395,12 @@ class HotWordManager:
 
             if w <= 0:
                 continue  # Disabled
-            elif w < 0.3:
-                score = 15  # Minimal hint
-            elif w < 0.5:
-                score = 25  # Low (ASR hint only)
-            elif w < 0.7:
-                score = 50  # Standard (same as FunASR example "阿里巴巴 20" x2.5)
-            elif w < 0.9:
-                score = 70  # Strong
-            elif w < 1.0:
-                score = 85  # Very strong
+            elif w < 0.4:
+                score = 30  # Hint tier (0.3)
+            elif w < 0.8:
+                score = 60  # Reference tier (0.5)
             else:
-                score = 100  # Lock (maximum)
+                score = 100  # Critical tier (1.0)
 
             result.append((word, score))
 
@@ -407,20 +415,25 @@ class HotWordManager:
                 tiers = self.get_polish_hotwords_tiered()
 
                 # Pass tiered structure to polisher config
-                # Polish will use critical + strong + context, excluding low-weight words
+                # v3.1: English hotwords now included with separate tier
+                # - critical (1.0): mandatory replacement (Chinese + English)
+                # - reference (0.5): Chinese reference words
+                # - english_reference (0.5): English reference with stricter rules
                 all_polish_hotwords = (
-                    tiers["critical"] + tiers["strong"] + tiers["context"]
+                    tiers["critical"] + tiers["reference"] + tiers["english_reference"]
                 )
 
                 self.config.polish_config.hotwords = all_polish_hotwords
                 self.config.polish_config.hotwords_critical = tiers["critical"]
-                self.config.polish_config.hotwords_strong = tiers["strong"]
-                self.config.polish_config.hotwords_context = tiers["context"]
+                self.config.polish_config.hotwords_strong = tiers["reference"]
+                self.config.polish_config.hotwords_english = tiers["english_reference"]
+                # hotwords_context left as default [] (v3.1 simplified tiers)
                 self.config.polish_config.domain_context = self.config.domain_context
                 self._polisher = AIPolisher(self.config.polish_config)
                 logger.debug(
                     f"Polish hotwords: {len(all_polish_hotwords)}/{len(self.config.prompt_words)} "
-                    f"(critical={len(tiers['critical'])}, strong={len(tiers['strong'])}, context={len(tiers['context'])})"
+                    f"(critical={len(tiers['critical'])}, chinese_ref={len(tiers['reference'])}, "
+                    f"english_ref={len(tiers['english_reference'])})"
                 )
             return self._polisher
         return None
@@ -497,13 +510,16 @@ class HotWordManager:
 
     def get_weighted_hotwords(self) -> List[str]:
         """
-        Get hotwords with weight-based repetition for FunASR.
+        Get hotwords with FunASR score format.
 
-        Higher weight = more repetitions = higher recognition priority.
-        Weight 1.0 = 1 occurrence, 0.5 = 1 occurrence, 2.0 = 2 occurrences.
+        Simplified 3-tier mapping (v3.0):
+        - weight = 0 → disabled
+        - weight = 0.3 → score 30 (hint)
+        - weight = 0.5 → score 60 (reference)
+        - weight = 1.0 → score 100 (lock)
 
         Returns:
-            List of hotwords with repetitions based on weights.
+            List of "word score" strings for FunASR hotword parameter.
         """
         # Load weights from config file
         weights = {}
@@ -515,33 +531,24 @@ class HotWordManager:
             except Exception:
                 pass
 
-        # Weight to FunASR score mapping (supports float values)
-        # FunASR official recommendation: score 20 is baseline, higher = stronger boost
-        # Aggressive mapping for reliable hotword recognition
-        # New mapping: 0=disabled, 0.3=hint(25), 0.5=standard(50), 0.8=strong(70), 1.0=lock(100)
+        # Simplified 3-tier score mapping
         def weight_to_score(w: float) -> int:
             if w <= 0:
                 return 0  # Disabled
-            elif w < 0.3:
-                return 15  # Minimal hint
-            elif w < 0.5:
-                return 25  # Low (ASR hint only)
-            elif w < 0.7:
-                return 50  # Standard (reliable recognition)
-            elif w < 0.9:
-                return 70  # Strong (better recognition)
-            elif w < 1.0:
-                return 85  # Very strong
+            elif w < 0.4:
+                return 30  # Hint tier (0.3)
+            elif w < 0.8:
+                return 60  # Reference tier (0.5)
             else:
-                return 100  # Lock (maximum recognition priority)
+                return 100  # Critical tier (1.0)
 
         result = []
         for word in self.config.hotwords:
-            ui_weight = weights.get(word, 1.0)  # Default to normal(1.0)
+            ui_weight = weights.get(word, 0.5)  # Default to reference tier
             score = weight_to_score(float(ui_weight))
             if score <= 0:
                 continue  # Skip disabled words
-            # FunASR format: "word score" (e.g., "阿里巴巴 20")
+            # FunASR format: "word score" (e.g., "阿里巴巴 60")
             result.append(f"{word} {score}")
 
         return result
