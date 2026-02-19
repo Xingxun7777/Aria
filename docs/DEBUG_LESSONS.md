@@ -586,3 +586,48 @@ def set_hotwords_with_score(self, hotwords_with_score: List[tuple]) -> None:
 - **ASR 原生 hotword 更安全**：FunASR 的 hotword 是解码时的偏置，不会强制替换
 - **保守策略**：默认权重 0.5，只有明确需要的词才设为 1.0
 - **拼音匹配最危险**：只对 weight=1.0 的词开启，否则容易误匹配
+
+---
+
+## Issue: 删除文件后残留 import 导致启动崩溃
+**Date**: 2026-02-12
+**Symptom**: Aria 启动时立即 ImportError 崩溃，完全无法运行
+**Root Cause**: 在项目清理时删除了 `mock_backend.py`, `overlay.py`, `tray.py`，但 `ui/qt/__init__.py` 仍然 `from .mock_backend import MockBackend` 等。`main.py` 也有 `from .mock_backend import MockBackend` 在 demo 模式和 error fallback 中。
+**Solution**:
+1. 从 `ui/qt/__init__.py` 移除 3 个死导入及其 `__all__` 条目
+2. 从 `main.py` 移除 `--demo` 参数和整个 demo 模式分支
+3. 将 MockBackend fallback 改为 `sys.exit(1)` + 中文错误提示
+**Key Learning**:
+- **删除文件后必须全项目 grep `from .{filename}`** — 不能只删文件不清 import
+- 命令: `Grep "from.*mock_backend|from.*overlay|from.*tray" --glob "*.py"`
+- `__init__.py` 的导入尤其容易遗漏，因为它不直接使用这些类
+
+---
+
+## Issue: launcher.py 裸 print() 在便携版崩溃
+**Date**: 2026-02-12
+**Symptom**: 便携版 (AriaRuntime.exe = pythonw.exe) 启动时随机崩溃，无任何错误信息
+**Root Cause**: launcher.py 有 20+ 处裸 `print()` 调用。AriaRuntime.exe 是 pythonw.exe 的副本，sys.stdout 为 None，任何 print() 都会 `AttributeError: 'NoneType' has no attribute 'write'`
+**Solution**: 在 launcher.py imports 之后添加全局 stdout/stderr null 保护：
+```python
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+```
+**Key Learning**:
+- 这比逐个替换 print()→log() 更安全，不会遗漏
+- 只影响 pythonw.exe 环境，python.exe (debug mode) 不受影响
+- 之前已在 main.py、vad.py 修复过相同问题，但 launcher.py 遗漏了
+- **教训**: 新增 print() 前搜索 "pythonw" 或 "stdout" 确认环境安全
+
+---
+
+## Issue: 模板配置键名不匹配导致 FunASR 默认值回退
+**Date**: 2026-02-12
+**Symptom**: hotwords.template.json 中设置的 FunASR 完整模型路径不生效
+**Root Cause**: 模板用 `"model": "iic/speech_seaco_paraformer..."` 但代码读 `funasr_cfg.get("model_name", "paraformer-zh")`。键名不匹配，代码总是用默认值 "paraformer-zh"。
+**Solution**: 模板改为 `"model_name": "paraformer-zh"` 匹配代码读取的键名
+**Key Learning**:
+- **配置模板的键名必须和代码读取的键名完全一致** — 拼错不报错，只是静默用默认值
+- 排查方法: Grep 代码中 `funasr_cfg.get` 或 `config.get` 看实际读取的键名

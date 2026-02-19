@@ -1,95 +1,49 @@
 # Aria 发布审核清单
 
-## 三方会谈审核结果 (2025-12-16)
-审核人: Claude + Codex + Gemini
+> 最后更新: 2026-02-12 (v1.1.1)
 
----
+## 发布前检查
 
-## P0 - 阻断性问题 (必须修复)
+### 安全检查
+- [x] API 密钥不在发布包中 (build.py 使用 template 替换)
+- [x] 用户音频/转录数据已清理 (DebugLog/ 排除)
+- [x] 无绝对路径泄露 (build.py 清理 `[A-Z]:\` 路径)
+- [x] 无 .bak 备份文件 (EXCLUDE_PATTERNS 覆盖)
+- [x] 无 .log 日志文件
+- [x] audio_device 已清空 (自动检测)
+- [x] hotwords/replacements 使用模板默认值
 
-### 1. API 密钥泄露
-- **位置**: `config/hotwords.json`, `config/hotwords.json.bak`
-- **问题**: 包含真实 API 密钥
-- **修复**: build.py 排除 `.bak` 文件，config 使用占位符模板
+### 构建检查
+- [x] Python 版本匹配 (build.py 3.12.4 = .venv 3.12.4)
+- [x] Aria.exe 编译成功 (PyInstaller)
+- [x] AriaRuntime.exe 存在
+- [x] python312.dll 存在
+- [x] site-packages 完整 (torch, PySide6, FunASR, numpy, sounddevice)
+- [x] _pth 文件配置正确
 
-### 2. 用户隐私数据
-- **位置**: `DebugLog/` 目录
-- **问题**: 包含用户音频录音和转录文本
-- **修复**: build.py 排除 `DebugLog/` 目录
+### 功能检查
+- [ ] Aria_debug.bat 能正常启动
+- [ ] Aria.exe 能正常启动
+- [ ] FunASR 引擎正常识别
+- [ ] 热键触发录音正常
+- [ ] 浮动球显示正常
+- [ ] 设置面板能打开
+- [ ] 托盘图标正常
 
-### 3. 硬编码路径
-- **位置**:
-  - `launcher.py:136,175,176,232,245`
-  - `ui/qt/splash_runner.py:16,17`
-  - `core/asr/fireredasr_engine.py:36,58`
-- **问题**: 包含 `G:\AIBOX` 绝对路径，其他机器无法运行
-- **修复**: 使用相对路径或运行时检测
+### 分发检查
+- [ ] 7z 压缩包创建成功
+- [ ] 压缩包可在干净系统解压运行
+- [ ] VirusTotal 检测 Aria.exe (应 0 检出)
 
-### 4. 日志文件泄露
-- **位置**: `launch_error.log`, `splash_error.log`
-- **问题**: 包含开发环境本地路径
-- **修复**: build.py 排除 `*_error.log` 文件
+## Build 命令
 
----
-
-## P1 - 高优先级问题
-
-### 1. 调试系统默认启用
-- **位置**: `core/debug_system.py`
-- **问题**: 生产环境应默认关闭
-- **修复**: 发布版本禁用调试模式
-
-### 2. 静默大文件下载
-- **问题**: 首次启动可能下载 1GB+ 模型文件无提示
-- **修复**: 添加下载进度提示或预置模型
-
----
-
-## P2 - 建议优化
-
-### 1. 热键冲突
-- **问题**: 某些热键可能与系统或其他软件冲突
-- **建议**: 添加热键冲突检测
-
-### 2. FireRedASR 路径
-- **问题**: 硬编码外部依赖路径
-- **建议**: 支持配置或自动检测
-
----
-
-## Build.py 排除清单
-
-```python
-# 源代码复制时排除
-ignore_patterns = [
-    "__pycache__",
-    "*.pyc",
-    "*.pyo",
-    ".git",
-    "*.bak",           # 备份文件
-    "DebugLog",        # 调试日志目录
-    "*_error.log",     # 错误日志
-    "*.log",           # 所有日志
-    ".env",            # 环境变量
-]
-
-# 完全排除的目录
-EXCLUDE_DIRS = ["DebugLog", "logs", ".git", "__pycache__"]
-
-# 需要清理的配置文件
-CONFIG_CLEAN = {
-    "config/hotwords.json": ["api_key", "api_base"],
-}
+```bash
+cd G:\AIBOX\voicetype-v1.1-dev
+build_portable\release.bat
 ```
 
----
+## 压缩命令
 
-## 验证检查项
-
-- [ ] 无 API 密钥在发布包中
-- [ ] 无用户音频/转录数据
-- [ ] 无绝对路径 `G:\AIBOX`
-- [ ] 无 `.bak` 备份文件
-- [ ] 无 `*_error.log` 日志文件
-- [ ] pythonw.exe 来自官方 Python
-- [ ] VirusTotal 检测 0/70+
+```bash
+7z a Aria-v1.1.1.7z dist_portable\Aria\
+```

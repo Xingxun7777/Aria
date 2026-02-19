@@ -48,12 +48,20 @@ builtins.print = _safe_print
 
 # === Centralized Debug Logging (works with pythonw.exe) ===
 import datetime
+import traceback
+import faulthandler
 
 _DEBUG_LOG_PATH = Path(__file__).parent / "DebugLog" / "pipeline_debug.log"
+_CRASH_LOG_PATH = Path(__file__).parent / "DebugLog" / "crash.log"
+
+
+_PIPELINE_LOG_ENABLED = os.environ.get("ARIA_DEBUG", "1") == "1"
 
 
 def _pipeline_log(stage: str, msg: str):
-    """Log to pipeline debug file - works even without console."""
+    """Log to pipeline debug file - works even without console. Gated by ARIA_DEBUG env."""
+    if not _PIPELINE_LOG_ENABLED:
+        return
     ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
     try:
         _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -63,10 +71,58 @@ def _pipeline_log(stage: str, msg: str):
         pass  # Silent fail
 
 
+# === Global Exception Hooks (catch crashes in all threads) ===
+def _global_excepthook(exc_type, exc_value, exc_tb):
+    """Catch uncaught exceptions in main thread and log to crash file."""
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        _CRASH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(_CRASH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\n[{ts}] UNCAUGHT EXCEPTION (main thread)\n{msg}\n")
+    except Exception:
+        pass
+    _pipeline_log("CRASH", f"Uncaught exception: {exc_type.__name__}: {exc_value}")
+
+
+def _thread_excepthook(args):
+    """Catch uncaught exceptions in worker threads."""
+    msg = "".join(
+        traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    )
+    try:
+        _CRASH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        thread_name = args.thread.name if args.thread else "unknown"
+        with open(_CRASH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n{'='*60}\n[{ts}] UNCAUGHT EXCEPTION (thread: {thread_name})\n{msg}\n"
+            )
+    except Exception:
+        pass
+    _pipeline_log(
+        "CRASH",
+        f"Thread exception ({args.thread}): {args.exc_type.__name__}: {args.exc_value}",
+    )
+
+
+sys.excepthook = _global_excepthook
+threading.excepthook = _thread_excepthook
+
+# Enable faulthandler for segfaults/aborts (writes to crash log)
+try:
+    _CRASH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _faulthandler_file = open(_CRASH_LOG_PATH, "a", encoding="utf-8")
+    faulthandler.enable(file=_faulthandler_file)
+except Exception:
+    faulthandler.enable()  # Fallback to stderr
+
+
 from .core.audio.capture import AudioCapture, AudioConfig
 from .core.audio.vad import VADConfig
 from .core.asr.whisper_engine import WhisperEngine, WhisperConfig
 from .core.asr.funasr_engine import FunASREngine, FunASRConfig
+from .core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 from .core.hotword import (
     HotWordManager,
     HotWordProcessor,
@@ -179,6 +235,11 @@ class AriaApp:
         self._asr_queue: queue.Queue = queue.Queue()
         self._asr_thread: threading.Thread = None
         self._stop_event = threading.Event()
+        self._worker_busy = False  # True while worker is processing a segment
+
+        # Hotkey action queue (non-blocking hotkey callback → dedicated action thread)
+        self._hotkey_action_queue: queue.Queue = queue.Queue(maxsize=4)
+        self._hotkey_action_thread: threading.Thread = None
 
         # Stats
         self._session_count = 0
@@ -215,9 +276,11 @@ class AriaApp:
         self._asr_lock = threading.Lock()  # Prevent concurrent ASR calls
 
     def _beep(self, frequency: int, duration: int) -> None:
-        """Play beep if sound is enabled."""
+        """Play beep if sound is enabled (non-blocking)."""
         if self._sound_enabled:
-            winsound.Beep(frequency, duration)
+            threading.Thread(
+                target=winsound.Beep, args=(frequency, duration), daemon=True
+            ).start()
 
     def set_sound_enabled(self, enabled: bool) -> None:
         """Enable or disable sound effects."""
@@ -325,6 +388,7 @@ class AriaApp:
 
     def _emit_state(self, state: str) -> None:
         """Emit state change to UI bridge if available."""
+        _pipeline_log("STATE", f"emit_state('{state}') internal={self.state.name}")
         if self._bridge:
             self._bridge.emit_state(state)
 
@@ -345,6 +409,7 @@ class AriaApp:
 
     def _emit_insert_complete(self) -> None:
         """Emit insert complete notification to UI bridge."""
+        _pipeline_log("STATE", f"emit_insert_complete (bridge={'YES' if self._bridge else 'NO'})")
         if self._bridge:
             self._bridge.emit_insert_complete()
 
@@ -515,6 +580,7 @@ class AriaApp:
                 "engine": data.get("asr_engine", "funasr"),
                 "whisper": data.get("whisper", {}),
                 "funasr": data.get("funasr", {}),
+                "qwen3": data.get("qwen3", {}),
                 "vad": data.get("vad", {}),
                 "audio_device": general.get("audio_device"),  # Device name string
             }
@@ -524,6 +590,7 @@ class AriaApp:
                 "engine": "funasr",
                 "whisper": {},
                 "funasr": {},
+                "qwen3": {},
                 "vad": {},
                 "audio_device": None,
             }
@@ -698,6 +765,39 @@ class AriaApp:
                 self.asr_engine = FireRedASREngine(asr_config)
                 self.asr_engine.load()
             print(f"FireRedASR ready! ({model_type.upper()})")
+        elif engine_type == "qwen3":
+            # Qwen3-ASR (Alibaba's latest, 52 languages, context biasing)
+            self._asr_engine_type = "qwen3"
+            qwen3_cfg = asr_cfg.get("qwen3", {})
+            # Check for pre-loaded engine
+            import aria
+
+            preloaded = getattr(aria, "_preloaded_asr_engine", None)
+            if (
+                preloaded is not None
+                and hasattr(preloaded, "name")
+                and "Qwen3" in preloaded.name
+            ):
+                print("Using pre-loaded Qwen3-ASR engine")
+                self.asr_engine = preloaded
+            else:
+                print("Loading Qwen3-ASR model (this may take a few seconds)...")
+                # Use "auto" defaults - let Qwen3ASREngine detect optimal settings
+                # based on GPU capabilities (VRAM, bfloat16 support, etc.)
+                asr_config = Qwen3Config(
+                    model_name=qwen3_cfg.get(
+                        "model_name", "auto"
+                    ),  # auto-select based on VRAM
+                    device=qwen3_cfg.get("device", "cuda"),
+                    # Don't override torch_dtype - let engine auto-detect bfloat16 support
+                    language=qwen3_cfg.get("language", "Chinese"),
+                )
+                # Only override torch_dtype if explicitly set in config
+                if "torch_dtype" in qwen3_cfg:
+                    asr_config.torch_dtype = qwen3_cfg["torch_dtype"]
+                self.asr_engine = Qwen3ASREngine(asr_config)
+                self.asr_engine.load()
+            print(f"Qwen3-ASR ready!")
         else:
             # Unknown engine type - fall back to FunASR
             logger.warning(
@@ -717,6 +817,10 @@ class AriaApp:
         print("Loading hotword configuration...")
         self.hotword_manager = HotWordManager.from_default()
 
+        # v3.2: Set ASR engine type for polish layer optimization
+        # Qwen3 handles English well at ASR layer, so we reduce English hotwords to LLM
+        self.hotword_manager.config.asr_engine_type = engine_type
+
         # Set hotwords based on engine type
         if engine_type == "funasr" and hasattr(
             self.asr_engine, "set_hotwords_with_score"
@@ -733,6 +837,12 @@ class AriaApp:
             print(
                 f"[HOTWORD] FireRedASR: Using post-processing only (no native hotword support)"
             )
+        elif engine_type == "qwen3":
+            # Qwen3-ASR: use context biasing (text-based, weight->repetition)
+            context_string = self.hotword_manager.to_qwen3_context()
+            if context_string:
+                self.asr_engine.set_context(context_string)
+                print(f"[HOTWORD] Qwen3 context: {len(context_string)} chars")
         else:
             # Whisper: use initial_prompt
             initial_prompt = self.hotword_manager.build_initial_prompt()
@@ -850,8 +960,19 @@ class AriaApp:
         if audio is None or len(audio) < 1600:  # < 0.1s
             return
 
+        # Health check: restart worker if it died (GPU error, uncaught exception, etc.)
+        if self._asr_thread and not self._asr_thread.is_alive():
+            print("[WARN] ASR worker thread died! Restarting...")
+            _pipeline_log("ERROR", "ASR worker thread died, restarting")
+            logger.error("ASR worker thread died, restarting")
+            self._start_asr_worker()
+
+        pending = self._asr_queue.qsize()
         logger.debug(f"Speech ended, {len(audio)} samples, queuing for ASR")
-        print(f"[QUEUE] Audio segment queued ({len(audio)/16000:.1f}s)")
+        print(
+            f"[QUEUE] Audio segment queued ({len(audio)/16000:.1f}s)"
+            f" [pending={pending}, worker_busy={self._worker_busy}]"
+        )
 
         # Non-blocking: just put in queue, let worker thread handle it
         try:
@@ -1022,31 +1143,47 @@ class AriaApp:
             except queue.Empty:
                 continue
 
+            self._worker_busy = True
             _pipeline_log(
                 "ASR",
-                f">>> Got audio from queue: session={session_id}, samples={len(audio)}",
+                f">>> Got audio from queue: session={session_id}, samples={len(audio)}, pending={self._asr_queue.qsize()}",
             )
-            print("[...] Transcribing...")
+            print(f"[...] Transcribing... (queue: {self._asr_queue.qsize()} pending)")
+
+            # === Safety guards for corrupted/empty audio ===
+            if len(audio) == 0:
+                _pipeline_log("ASR", "Empty audio segment, skipping")
+                self._worker_busy = False
+                self._asr_queue.task_done()
+                continue
+
+            if not np.isfinite(audio).all():
+                _pipeline_log("ASR", "Audio contains NaN/Inf, sanitizing")
+                audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Create debug session
             debug = DebugSession(session_id=session_id, enabled=DebugConfig.enabled)
 
-            # Debug: save audio for inspection
+            # Debug: save audio for inspection (only when debug enabled)
             debug_dir = os.path.join(os.path.dirname(__file__), "DebugLog")
-            os.makedirs(debug_dir, exist_ok=True)
-            debug_path = os.path.join(debug_dir, f"audio_{session_id}.wav")
+            debug_path = ""
+
+            # Audio level stats (always compute for logging)
+            audio_level_avg = float(np.abs(audio).mean())
+            audio_level_max = float(np.abs(audio).max())
 
             try:
-                audio_int16 = (audio * 32767).astype("int16")
-                with wave.open(debug_path, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(16000)
-                    wf.writeframes(audio_int16.tobytes())
+                if DebugConfig.enabled and DebugConfig.save_to_file:
+                    os.makedirs(debug_dir, exist_ok=True)
+                    debug_path = os.path.join(debug_dir, f"audio_{session_id}.wav")
+                    audio_int16 = (audio * 32767).astype("int16")
+                    with wave.open(debug_path, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(16000)
+                        wf.writeframes(audio_int16.tobytes())
 
                 # Log audio debug info
-                audio_level_avg = float(np.abs(audio).mean())
-                audio_level_max = float(np.abs(audio).max())
                 debug.log_audio(
                     duration_seconds=len(audio) / 16000,
                     sample_count=len(audio),
@@ -1067,7 +1204,7 @@ class AriaApp:
                     audio_file_path=debug_path,
                 )
                 print(
-                    f"[DEBUG] Audio: {len(audio)/16000:.1f}s, level_avg={audio_level_avg:.4f}, level_max={audio_level_max:.4f}"
+                    f"[DEBUG] Audio: {len(audio) / 16000:.1f}s, level_avg={audio_level_avg:.4f}, level_max={audio_level_max:.4f}"
                 )
 
             except Exception as e:
@@ -1076,18 +1213,55 @@ class AriaApp:
 
             inserted = False
             final_text = ""
+            asr_start = None  # Will be set when transcription starts
+
+            # === Pre-ASR Acoustic Gate ===
+            # Skip ASR entirely if audio energy is near-silence (saves 1-15s of transcription time).
+            # VAD can false-trigger on keyboard clicks, mouse clicks, etc. — this catches those.
+            PRE_ASR_ENERGY_GATE = 0.003  # avg amplitude threshold for float32 [-1,1] audio
+            if audio_level_avg < PRE_ASR_ENERGY_GATE:
+                _pipeline_log(
+                    "ASR",
+                    f"Pre-ASR gate: audio too quiet (avg={audio_level_avg:.5f} < {PRE_ASR_ENERGY_GATE}), skipping ASR",
+                )
+                print(f"[ASR] Skipped: audio too quiet (avg={audio_level_avg:.5f})")
+                self._worker_busy = False
+                self._asr_queue.task_done()
+                continue
 
             try:
                 # Transcribe (Layer 1: initial_prompt already set)
                 import time as time_module
+                import concurrent.futures
 
                 _pipeline_log("ASR", "Starting transcription...")
                 asr_start = time_module.time()
                 # Use lock to prevent concurrent ASR (interim vs final)
+                # Timeout protection: if transcribe hangs (GPU error, model crash),
+                # don't block the worker forever — skip after 30 seconds.
+                ASR_TIMEOUT_S = 30
                 with self._asr_lock:
-                    result = self.asr_engine.transcribe(audio)
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1
+                    ) as executor:
+                        future = executor.submit(
+                            self.asr_engine.transcribe, audio
+                        )
+                        try:
+                            result = future.result(timeout=ASR_TIMEOUT_S)
+                        except concurrent.futures.TimeoutError:
+                            print(
+                                f"[ASR] TIMEOUT: Transcription exceeded {ASR_TIMEOUT_S}s, skipping"
+                            )
+                            _pipeline_log(
+                                "ERROR",
+                                f"ASR timeout after {ASR_TIMEOUT_S}s",
+                            )
+                            result = None
                 asr_time = (time_module.time() - asr_start) * 1000
-                text = result.text.strip()
+                text = (
+                    result.text.strip() if result and result.text else ""
+                )
                 _pipeline_log("ASR", f"Transcription done: '{text}' ({asr_time:.0f}ms)")
 
                 # Get initial prompt info
@@ -1238,6 +1412,7 @@ class AriaApp:
 
                 if text:
                     # Layer 2: Apply regex corrections
+                    _pipeline_log("POST", "Layer 2: HotWord regex starting...")
                     original_text = text
                     layer2_replacements = []
                     import time as time_module
@@ -1278,7 +1453,12 @@ class AriaApp:
                         layer2_time_ms=layer2_time,
                     )
 
+                    _pipeline_log(
+                        "POST", f"Layer 2: HotWord done ({layer2_time:.0f}ms)"
+                    )
+
                     # Layer 2.5: Pinyin fuzzy matching
+                    _pipeline_log("POST", "Layer 2.5: Fuzzy matching starting...")
                     if self.fuzzy_matcher:
                         before_fuzzy = text
                         text, fuzzy_corrections = self.fuzzy_matcher.process_with_info(
@@ -1290,7 +1470,11 @@ class AriaApp:
                                     f"[FUZZY] '{corr['original']}' -> '{corr['corrected']}' (score: {corr['score']})"
                                 )
 
+                    _pipeline_log("POST", "Layer 2.5: Fuzzy matching done")
+
                     # Layer 3: AI Polish (optional)
+                    _pipeline_log("POST", "Layer 3: Polish starting...")
+                    polish_debug = None  # 初始化，防止未定义
                     if self.polisher:
                         before_polish = text
                         polish_debug = self.polisher.polish_with_debug(text)
@@ -1312,16 +1496,31 @@ class AriaApp:
                             http_status=polish_debug["http_status"],
                         )
 
+                        # 显示 API 状态（主/备用）
+                        api_tag = (
+                            "[备用]" if polish_debug.get("using_backup") else "[主]"
+                        )
                         if polish_debug["changed"]:
                             print(
-                                f"[POLISH] '{before_polish}' -> '{text}' ({polish_debug['api_time_ms']:.0f}ms)"
+                                f"[POLISH]{api_tag} '{before_polish}' -> '{text}' ({polish_debug['api_time_ms']:.0f}ms)"
                             )
                         elif polish_debug["error"]:
-                            print(f"[POLISH] ERROR: {polish_debug['error']}")
+                            print(f"[POLISH]{api_tag} ERROR: {polish_debug['error']}")
                     else:
                         # Log that polish is disabled
                         debug.log_polish(enabled=False)
 
+                    # 记录 Polish 完成时间和 API 状态
+                    if self.polisher and polish_debug:
+                        api_status = (
+                            "备用" if polish_debug.get("using_backup") else "主"
+                        )
+                        _pipeline_log(
+                            "POST",
+                            f"Layer 3: Polish done ({polish_debug['api_time_ms']:.0f}ms, {api_status}API)",
+                        )
+                    else:
+                        _pipeline_log("POST", "Layer 3: Polish done (disabled)")
                     final_text = text
                     print(f"[TEXT] {text}")
                     _pipeline_log("OUTPUT", f"Final text: '{text}'")
@@ -1331,10 +1530,14 @@ class AriaApp:
 
                     # Insert into active application
                     _pipeline_log("OUTPUT", "Calling output_injector.insert_text()...")
-                    self.output_injector.insert_text(text)
-                    inserted = True
-                    _pipeline_log("OUTPUT", ">>> Text inserted successfully!")
-                    print("[OK] Inserted!")
+                    insert_ok = self.output_injector.insert_text(text)
+                    inserted = insert_ok
+                    if insert_ok:
+                        _pipeline_log("OUTPUT", ">>> Text inserted successfully!")
+                        print("[OK] Inserted!")
+                    else:
+                        _pipeline_log("OUTPUT", ">>> Text insertion FAILED!")
+                        print("[FAIL] Insert failed! (clipboard/paste error)")
 
                     # Auto-send: press Enter after text insertion if enabled
                     if self._auto_send_enabled:
@@ -1353,12 +1556,29 @@ class AriaApp:
                     debug.log_error("No speech recognized")
 
             except Exception as e:
-                logger.error(f"Transcription error: {e}")
-                _pipeline_log("ERROR", f"Transcription exception: {e}")
-                print(f"[ERR] Error: {e}")
+                logger.error(f"Transcription error: {e}", exc_info=True)
+                _pipeline_log("ERROR", f"Transcription exception: {type(e).__name__}: {e}")
+                print(f"[ERR] {type(e).__name__}: {e}")
                 debug.log_error(f"Transcription error: {e}")
 
             finally:
+                self._worker_busy = False
+
+                # Log total processing time for this segment
+                import time as _fin_time
+                total_time = (_fin_time.time() - asr_start) * 1000 if asr_start else -1
+                remaining = self._asr_queue.qsize()
+                _pipeline_log(
+                    "ASR",
+                    f"<<< Segment done: total={total_time:.0f}ms, "
+                    f"result={'OK: ' + repr(final_text[:40]) if final_text else 'EMPTY'}, "
+                    f"inserted={inserted}, queue_remaining={remaining}",
+                )
+                print(
+                    f"[DONE] total={total_time:.0f}ms, inserted={inserted}, "
+                    f"queue_remaining={remaining}"
+                )
+
                 # Always notify UI that processing is complete (success or failure)
                 self._emit_insert_complete()
 
@@ -1412,8 +1632,53 @@ class AriaApp:
         self._emit_level(level)
 
     def _on_hotkey(self) -> None:
-        """Called when hotkey is pressed - toggle recording."""
-        _pipeline_log("HOTKEY", ">>> Hotkey callback triggered!")
+        """Called when hotkey is pressed - NON-BLOCKING.
+
+        This runs on the hotkey thread (Windows message loop).
+        Must return ASAP to keep the message loop responsive.
+        Actual work is offloaded to _hotkey_action_worker thread.
+        """
+        _pipeline_log("HOTKEY", ">>> Hotkey pressed (on hotkey thread)")
+
+        # Health check: restart action worker if it died
+        if self._hotkey_action_thread and not self._hotkey_action_thread.is_alive():
+            _pipeline_log("HOTKEY", "Action worker died! Restarting...")
+            self._start_hotkey_action_worker()
+
+        try:
+            self._hotkey_action_queue.put_nowait("toggle")
+        except queue.Full:
+            _pipeline_log("HOTKEY", "Action queue full (4 pending), dropping press")
+
+    def _start_hotkey_action_worker(self) -> None:
+        """Start the hotkey action processing thread."""
+        if self._hotkey_action_thread is None or not self._hotkey_action_thread.is_alive():
+            self._hotkey_action_thread = threading.Thread(
+                target=self._hotkey_action_worker, daemon=True, name="hotkey-action"
+            )
+            self._hotkey_action_thread.start()
+
+    def _hotkey_action_worker(self) -> None:
+        """Process hotkey actions sequentially, OFF the hotkey thread."""
+        while not self._stop_event.is_set():
+            try:
+                action = self._hotkey_action_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            try:
+                self._handle_hotkey_action()
+            except Exception as e:
+                _pipeline_log("HOTKEY", f"Action error: {e}")
+                logger.error(f"Hotkey action error: {e}", exc_info=True)
+            finally:
+                self._hotkey_action_queue.task_done()
+
+        logger.info("Hotkey action worker stopped")
+
+    def _handle_hotkey_action(self) -> None:
+        """Handle hotkey toggle - runs on dedicated action thread (not hotkey thread)."""
+        _pipeline_log("HOTKEY", ">>> Processing hotkey action")
 
         # If disabled, re-enable on hotkey press
         if self._is_disabled:
@@ -1422,7 +1687,8 @@ class AriaApp:
             self._is_disabled = False
             # Notify UI to update toggle
             try:
-                bridge.emit_setting_changed("enabled", True)
+                if self._bridge:
+                    self._bridge.emit_setting_changed("enabled", True)
             except Exception:
                 pass
             return
@@ -1435,8 +1701,17 @@ class AriaApp:
             print("[HOTKEY] Pressed in sleeping mode - wakeword detection enabled")
             _pipeline_log("HOTKEY", "In sleeping mode, wakeword detection enabled")
 
-        print(f"[HOTKEY] Pressed! Current state: {self.state.name}")
-        _pipeline_log("HOTKEY", f"Current state: {self.state.name}")
+        worker_alive = self._asr_thread.is_alive() if self._asr_thread else False
+        print(
+            f"[HOTKEY] Pressed! state={self.state.name}, "
+            f"queue={self._asr_queue.qsize()}, worker_alive={worker_alive}, "
+            f"worker_busy={self._worker_busy}"
+        )
+        _pipeline_log(
+            "HOTKEY",
+            f"Current state: {self.state.name}, queue={self._asr_queue.qsize()}, "
+            f"worker_alive={worker_alive}, worker_busy={self._worker_busy}",
+        )
 
         with self._lock:
             if self.state == AppState.IDLE:
@@ -1448,8 +1723,10 @@ class AriaApp:
                 _pipeline_log("HOTKEY", "Stopping recording...")
                 self._stop_recording()
             else:
+                print(
+                    f"[HOTKEY] Ignored! state={self.state.name} (only IDLE/RECORDING accepted)"
+                )
                 _pipeline_log("HOTKEY", f"Ignored (state={self.state.name})")
-            # TRANSCRIBING: ignore hotkey
 
     def _start_recording(self) -> None:
         """Start recording."""
@@ -1459,9 +1736,9 @@ class AriaApp:
         self._beep(800, 50)
 
         self._session_count += 1
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"Recording Session #{self._session_count}")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
         print("[REC] Recording started")
 
         self.state = AppState.RECORDING
@@ -1469,7 +1746,12 @@ class AriaApp:
         _pipeline_log(
             "RECORD", f"Session #{self._session_count}, starting audio capture..."
         )
-        self.audio_capture.start()
+        if not self.audio_capture.start():
+            logger.error("Failed to start audio capture")
+            self._emit_error("麦克风启动失败，请检查音频设备")
+            self.state = AppState.IDLE
+            self._emit_state("IDLE")
+            return
         _pipeline_log("RECORD", "Audio capture started")
 
     def _stop_recording(self) -> None:
@@ -1487,21 +1769,29 @@ class AriaApp:
         self._emit_state("TRANSCRIBING")
 
         # Stop capture and get any remaining audio
+        import time as _stop_time
+        stop_start = _stop_time.time()
         _pipeline_log("RECORD", "Stopping audio capture...")
         final_audio = self.audio_capture.stop()
+        stop_ms = (_stop_time.time() - stop_start) * 1000
+        audio_len = len(final_audio) if final_audio is not None else 0
+        audio_dur = audio_len / 16000 if audio_len > 0 else 0
         _pipeline_log(
             "RECORD",
-            f"Audio captured: {len(final_audio) if final_audio is not None else 0} samples",
+            f"Audio captured: {audio_len} samples ({audio_dur:.2f}s), stop took {stop_ms:.0f}ms",
+        )
+        print(
+            f"[STOP] Audio: {audio_dur:.2f}s ({audio_len} samples), capture.stop() took {stop_ms:.0f}ms"
         )
 
-        # Minimum duration check: 0.5 seconds = 8000 samples at 16kHz
-        # (Just to filter accidental clicks, short phrases are OK)
-        MIN_SAMPLES = 8000  # 0.5 seconds
+        # Minimum duration check: 0.3 seconds = 4800 samples at 16kHz
+        # (Filter accidental clicks, but allow short words like "好"/"嗯")
+        MIN_SAMPLES = 4800  # 0.3 seconds
         if final_audio is not None:
             duration_s = len(final_audio) / 16000
             if len(final_audio) < MIN_SAMPLES:
                 print(
-                    f"[WARN] Recording too short ({duration_s:.2f}s < 0.5s) - accidental click?"
+                    f"[WARN] Recording too short ({duration_s:.2f}s < 0.3s) - accidental click?"
                 )
                 _pipeline_log("RECORD", f"Too short ({duration_s:.2f}s), skipping")
                 # Warning beep disabled
@@ -1580,7 +1870,12 @@ class AriaApp:
                 self._session_count += 1
                 self.state = AppState.RECORDING
                 self._emit_state("RECORDING")
-                self.audio_capture.start()
+                if not self.audio_capture.start():
+                    logger.error("Failed to start audio capture for selection mode")
+                    self._emit_error("麦克风启动失败，请检查音频设备")
+                    self.state = AppState.IDLE
+                    self._emit_state("IDLE")
+                    return False
 
             return True
 
@@ -1714,31 +2009,45 @@ class AriaApp:
             self._start_asr_worker()
             print("ASR worker thread started")
 
+            # Start hotkey action worker (processes hotkey presses off the hotkey thread)
+            self._start_hotkey_action_worker()
+            print("Hotkey action worker started")
+
             # Start config file watcher for hot-reload
             self._start_config_watcher()
 
-            # Register hotkey
+            # Register hotkey (non-fatal - can still use UI to toggle)
             print(f"\nRegistering hotkey: {self.hotkey}")
+            hotkey_ok = False
             try:
                 self.hotkey_manager.register(
                     self.hotkey, self._on_hotkey, "Toggle voice recording"
                 )
+                hotkey_ok = True
             except RuntimeError as e:
-                error_msg = f"Failed to register hotkey: {e}"
-                print(f"[ERR] {error_msg}")
+                # 热键注册失败不是致命错误，用户仍可通过点击悬浮窗使用
+                error_msg = str(e)
+                print(f"[WARN] Hotkey registration failed: {error_msg}")
                 self._emit_error(error_msg)
-                raise
+                # 不 raise，继续启动
 
-            # Start hotkey listener
-            self.hotkey_manager.start()
+            # Start hotkey listener (only if registration succeeded)
+            if hotkey_ok:
+                self.hotkey_manager.start()
+
             self._running = True
 
             print()
             print("=" * 60)
-            print(f"  Press [{self.hotkey.upper()}] to start/stop recording")
+            if hotkey_ok:
+                print(f"  Press [{self.hotkey.upper()}] to start/stop recording")
+            else:
+                print(
+                    f"  Hotkey [{self.hotkey.upper()}] unavailable - use UI to toggle"
+                )
             print("=" * 60)
             print()
-            print("Ready! Waiting for hotkey...")
+            print("Ready! Waiting for input...")
 
         except Exception as e:
             logger.error(f"Failed to start AriaApp: {e}")
@@ -1754,6 +2063,9 @@ class AriaApp:
 
         print("\nStopping AriaApp...")
 
+        # Stop streaming ASR timer first (prevent stale callbacks)
+        self._stop_interim_timer()
+
         # Stop recording if active
         if self.audio_capture and self.audio_capture.is_recording:
             self.audio_capture.stop()
@@ -1764,6 +2076,22 @@ class AriaApp:
         # Stop hotkey listener
         self.hotkey_manager.stop()
 
+        # Release ASR model (free GPU memory)
+        if self.asr_engine and hasattr(self.asr_engine, "unload"):
+            try:
+                self.asr_engine.unload()
+                print("[CLEANUP] ASR engine unloaded")
+            except Exception as e:
+                logger.warning(f"ASR engine unload failed: {e}")
+
+        # Close AI polisher HTTP client
+        if self.polisher and hasattr(self.polisher, "close"):
+            try:
+                self.polisher.close()
+                print("[CLEANUP] Polisher client closed")
+            except Exception as e:
+                logger.warning(f"Polisher close failed: {e}")
+
         self._running = False
         self._emit_state("IDLE")
         print("AriaApp stopped.")
@@ -1771,9 +2099,12 @@ class AriaApp:
     def toggle_recording(self) -> None:
         """
         Programmatically toggle recording (for UI buttons).
-        Same as pressing the hotkey.
+        Non-blocking: enqueues action for the hotkey worker thread.
         """
-        self._on_hotkey()
+        try:
+            self._hotkey_action_queue.put_nowait("toggle")
+        except queue.Full:
+            print("[TOGGLE] Dropped: action queue full")
 
     def is_running(self) -> bool:
         """Check if the application is running."""
@@ -1784,103 +2115,136 @@ class AriaApp:
 
         Thread-safe: Uses self._lock to prevent race conditions with ASR worker.
         """
-        with self._lock:
-            if not self.hotword_manager:
-                return
+        try:
+            with self._lock:
+                if not self.hotword_manager:
+                    return
 
-            self.hotword_manager.reload()
+                self.hotword_manager.reload()
 
-            # Update Layer 1: ASR engine hotwords
-            if self.asr_engine:
-                if self._asr_engine_type == "funasr" and hasattr(
-                    self.asr_engine, "set_hotwords_with_score"
-                ):
-                    # FunASR: update hotwords with score mapping
-                    hotwords_with_score = (
-                        self.hotword_manager.get_asr_hotwords_with_score()
-                    )
-                    self.asr_engine.set_hotwords_with_score(hotwords_with_score)
-                    print(
-                        f"[HOT-RELOAD] Updated FunASR hotwords: {len(hotwords_with_score)} words"
-                    )
-                else:
-                    # Whisper: update initial_prompt
-                    initial_prompt = self.hotword_manager.build_initial_prompt()
-                    if initial_prompt:
-                        self.asr_engine.set_initial_prompt(initial_prompt)
+                # v3.2: Preserve ASR engine type after reload (for polish layer optimization)
+                self.hotword_manager.config.asr_engine_type = self._asr_engine_type
+
+                # Update Layer 1: ASR engine hotwords
+                if self.asr_engine:
+                    if self._asr_engine_type == "funasr" and hasattr(
+                        self.asr_engine, "set_hotwords_with_score"
+                    ):
+                        # FunASR: update hotwords with score mapping
+                        hotwords_with_score = (
+                            self.hotword_manager.get_asr_hotwords_with_score()
+                        )
+                        self.asr_engine.set_hotwords_with_score(hotwords_with_score)
                         print(
-                            f"[HOT-RELOAD] Updated initial_prompt: {initial_prompt[:50]}..."
+                            f"[HOT-RELOAD] Updated FunASR hotwords: {len(hotwords_with_score)} words"
+                        )
+                    elif self._asr_engine_type == "qwen3" and hasattr(
+                        self.asr_engine, "set_context"
+                    ):
+                        # Qwen3: update context string (structured V2 format)
+                        context_string = self.hotword_manager.to_qwen3_context()
+                        if context_string:
+                            self.asr_engine.set_context(context_string)
+                            print(
+                                f"[HOT-RELOAD] Updated Qwen3 context: {len(context_string)} chars"
+                            )
+                    elif hasattr(self.asr_engine, "set_initial_prompt"):
+                        # Whisper: update initial_prompt
+                        initial_prompt = self.hotword_manager.build_initial_prompt()
+                        if initial_prompt:
+                            self.asr_engine.set_initial_prompt(initial_prompt)
+                            print(
+                                f"[HOT-RELOAD] Updated initial_prompt: {initial_prompt[:50]}..."
+                            )
+
+                # Update Layer 2: Regex replacements
+                if self.hotword_processor:
+                    new_replacements = self.hotword_manager.get_replacements()
+                    self.hotword_processor.replacements = new_replacements
+                    self.hotword_processor._build_patterns()
+                    print(
+                        f"[HOT-RELOAD] Updated {len(new_replacements)} replacement rules"
+                    )
+
+                # Update Layer 2.5: Fuzzy matcher (only weight >= 1.0 hotwords)
+                if self.fuzzy_matcher:
+                    layer_hotwords = self.hotword_manager.get_hotwords_by_layer()
+                    fuzzy_hotwords = layer_hotwords["layer2_5_pinyin"]
+                    self.fuzzy_matcher.update_hotwords(fuzzy_hotwords)
+                    print(
+                        f"[HOT-RELOAD] Updated fuzzy matcher with {len(fuzzy_hotwords)} hotwords (weight>=1.0)"
+                    )
+
+                # Update Layer 3: Polisher (close old one first to free GPU/HTTP resources)
+                old_polisher = self.polisher
+                self.polisher = self.hotword_manager.get_active_polisher()
+                if (
+                    old_polisher
+                    and old_polisher is not self.polisher
+                    and hasattr(old_polisher, "close")
+                ):
+                    try:
+                        old_polisher.close()
+                        print("[HOT-RELOAD] Closed previous polisher")
+                    except Exception as e:
+                        logger.warning(f"Failed to close old polisher: {e}")
+
+                # Update selection processor's polisher reference
+                if self.selection_processor:
+                    self.selection_processor.polisher = self.polisher
+                    print("[HOT-RELOAD] Updated selection processor polisher")
+
+                # Update wakeword detector
+                if self.wakeword_detector:
+                    self.wakeword_detector.reload()
+                    print(
+                        f"[HOT-RELOAD] Updated wakeword: '{self.wakeword_detector.wakeword}'"
+                    )
+
+                # Update VAD settings
+                if self.audio_capture and self.audio_capture._vad:
+                    try:
+                        import json
+
+                        with open(self._config_path, "r", encoding="utf-8") as f:
+                            config = json.load(f)
+                        vad_cfg = config.get("vad", {})
+                        new_threshold = max(
+                            0.1, min(0.9, vad_cfg.get("threshold", 0.2))
+                        )
+                        new_min_silence = max(
+                            100, min(5000, vad_cfg.get("min_silence_ms", 1200))
                         )
 
-            # Update Layer 2: Regex replacements
-            if self.hotword_processor:
-                new_replacements = self.hotword_manager.get_replacements()
-                self.hotword_processor.replacements = new_replacements
-                self.hotword_processor._build_patterns()
-                print(f"[HOT-RELOAD] Updated {len(new_replacements)} replacement rules")
+                        # Update VAD config in place
+                        self.audio_capture._vad.config.threshold = new_threshold
+                        self.audio_capture._vad.config.min_silence_ms = new_min_silence
+                        print(
+                            f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, min_silence={new_min_silence}ms"
+                        )
+                    except Exception as e:
+                        print(f"[HOT-RELOAD] VAD update failed: {e}")
 
-            # Update Layer 2.5: Fuzzy matcher (only weight >= 1.0 hotwords)
-            if self.fuzzy_matcher:
-                layer_hotwords = self.hotword_manager.get_hotwords_by_layer()
-                fuzzy_hotwords = layer_hotwords["layer2_5_pinyin"]
-                self.fuzzy_matcher.update_hotwords(fuzzy_hotwords)
-                print(
-                    f"[HOT-RELOAD] Updated fuzzy matcher with {len(fuzzy_hotwords)} hotwords (weight>=1.0)"
-                )
+                # Update output settings (typewriter mode, elevation check)
+                if self.output_injector:
+                    try:
+                        new_output_config = self._load_output_config()
+                        self.output_injector.config = new_output_config
+                        mode_str = (
+                            "typewriter"
+                            if new_output_config.typewriter_mode
+                            else "clipboard"
+                        )
+                        print(f"[HOT-RELOAD] Updated output: mode={mode_str}")
+                    except Exception as e:
+                        print(f"[HOT-RELOAD] Output config update failed: {e}")
 
-            # Update Layer 3: Polisher
-            self.polisher = self.hotword_manager.get_active_polisher()
-
-            # Update selection processor's polisher reference
-            if self.selection_processor:
-                self.selection_processor.polisher = self.polisher
-                print("[HOT-RELOAD] Updated selection processor polisher")
-
-            # Update wakeword detector
-            if self.wakeword_detector:
-                self.wakeword_detector.reload()
-                print(
-                    f"[HOT-RELOAD] Updated wakeword: '{self.wakeword_detector.wakeword}'"
-                )
-
-            # Update VAD settings
-            if self.audio_capture and self.audio_capture._vad:
-                try:
-                    import json
-
-                    with open(self._config_path, "r", encoding="utf-8") as f:
-                        config = json.load(f)
-                    vad_cfg = config.get("vad", {})
-                    new_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
-                    new_min_silence = max(
-                        100, min(5000, vad_cfg.get("min_silence_ms", 1200))
-                    )
-
-                    # Update VAD config in place
-                    self.audio_capture._vad.config.threshold = new_threshold
-                    self.audio_capture._vad.config.min_silence_ms = new_min_silence
-                    print(
-                        f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, min_silence={new_min_silence}ms"
-                    )
-                except Exception as e:
-                    print(f"[HOT-RELOAD] VAD update failed: {e}")
-
-            # Update output settings (typewriter mode, elevation check)
-            if self.output_injector:
-                try:
-                    new_output_config = self._load_output_config()
-                    self.output_injector.config = new_output_config
-                    mode_str = (
-                        "typewriter"
-                        if new_output_config.typewriter_mode
-                        else "clipboard"
-                    )
-                    print(f"[HOT-RELOAD] Updated output: mode={mode_str}")
-                except Exception as e:
-                    print(f"[HOT-RELOAD] Output config update failed: {e}")
-
-            logger.info("Configuration hot-reloaded (all 4 layers + VAD + output)")
-            print("[HOT-RELOAD] Config reloaded successfully!")
+                logger.info("Configuration hot-reloaded (all 4 layers + VAD + output)")
+                print("[HOT-RELOAD] Config reloaded successfully!")
+        except Exception as e:
+            # Catch all exceptions to prevent config watcher from crashing the app
+            logger.error(f"Config reload failed: {e}", exc_info=True)
+            print(f"[HOT-RELOAD] Error: {e}")
 
     def _config_watcher(self) -> None:
         """Watch config file for changes and auto-reload (polling every 2s)."""
@@ -1909,6 +2273,9 @@ class AriaApp:
     def _start_config_watcher(self) -> None:
         """Start config file watcher thread."""
         if self._watcher_thread is None or not self._watcher_thread.is_alive():
+            # Initialize mtime BEFORE starting thread to prevent false trigger
+            if self._config_path.exists():
+                self._config_mtime = self._config_path.stat().st_mtime
             self._watcher_thread = threading.Thread(
                 target=self._config_watcher, daemon=True
             )
@@ -2064,22 +2431,33 @@ class AriaApp:
             self._start_asr_worker()
             print("ASR worker thread started")
 
+            # Start hotkey action worker (processes hotkey presses off the hotkey thread)
+            self._start_hotkey_action_worker()
+            print("Hotkey action worker started")
+
             # Start config file watcher for hot-reload
+            print("[DEBUG] Starting config watcher...")
             self._start_config_watcher()
+            print("[DEBUG] Config watcher thread launched")
 
             # Register hotkey
-            print(f"\nRegistering hotkey: {self.hotkey}")
+            print(f"\n[DEBUG] Registering hotkey: {self.hotkey}")
+            sys.stdout.flush()
             try:
                 self.hotkey_manager.register(
                     self.hotkey, self._on_hotkey, "Toggle voice recording"
                 )
+                print("[DEBUG] Hotkey registered successfully")
+                sys.stdout.flush()
             except RuntimeError as e:
                 print(f"[ERR] Failed to register hotkey: {e}")
                 print("   Try using a different hotkey (e.g., 'ctrl+shift+space')")
                 return
 
-            # Start hotkey listener
-            self.hotkey_manager.start()
+            # Note: hotkey_manager.start() is already called implicitly by register()
+            # via _run_on_hotkey_thread(), so no explicit start() needed here
+            print("[DEBUG] Hotkey manager running (started by register)")
+            sys.stdout.flush()
 
             print()
             print("=" * 60)
@@ -2088,6 +2466,7 @@ class AriaApp:
             print("=" * 60)
             print()
             print("Ready! Waiting for hotkey...")
+            sys.stdout.flush()
 
             # Wait for Ctrl+C
             try:
@@ -2111,11 +2490,24 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Aria - Local AI Voice Dictation")
+    # Read hotkey from config file, fallback to capslock
+    default_hotkey = "capslock"
+    try:
+        import json
+        from pathlib import Path
+
+        config_path = Path(__file__).parent / "config" / "hotwords.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            default_hotkey = cfg.get("general", {}).get("hotkey", "capslock")
+    except Exception:
+        pass
     parser.add_argument(
         "--hotkey",
         "-k",
-        default="capslock",
-        help="Hotkey to toggle recording (default: CapsLock)",
+        default=default_hotkey,
+        help=f"Hotkey to toggle recording (default from config: {default_hotkey})",
     )
     parser.add_argument(
         "--list-devices",

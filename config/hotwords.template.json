@@ -7,74 +7,26 @@
     "compute_type": "float16"
   },
   "funasr": {
-    "model": "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
     "device": "cuda",
     "enable_vad": false,
-    "enable_punc": false
+    "enable_punc": false,
+    "model_name": "paraformer-zh"
+  },
+  "qwen3": {
+    "model_name": "auto",
+    "device": "cuda",
+    "language": "Chinese"
   },
   "enable_initial_prompt": true,
-  "prompt_words": [
-    "Claude",
-    "Claude Code",
-    "Codex",
-    "Gemini",
-    "ultrathink",
-    "agent",
-    "github",
-    "danbooru",
-    "Z-image",
-    "三方会谈",
-    "第一性原理",
-    "迭代",
-    "模糊匹配",
-    "拼音",
-    "琶音",
-    "音阶",
-    "kk",
-    "好的",
-    "可以",
-    "在吗"
-  ],
+  "hotwords": [],
+  "hotword_weights": {},
   "replacements": {
-    "克劳德": "Claude",
-    "克劳德代码": "Claude Code",
-    "克劳德科德": "Claude Code",
-    "cloud code": "Claude Code",
-    "Cloud Code": "Claude Code",
-    "the clock code": "Claude Code",
-    "clock code": "Claude Code",
-    "the cloud code": "Claude Code",
-    "cloud": "Claude",
-    "Cloud": "Claude",
-    "科德克斯": "Codex",
-    "杰米尼": "Gemini",
-    "吉米尼": "Gemini",
-    "奥特拉兴克": "ultrathink",
-    "阿尔特拉辛克": "ultrathink",
-    "奥特拉think": "ultrathink",
-    "aging": "agent",
-    "aching": "agent",
-    "GitHub": "github",
-    "GITHUB": "github",
-    "Git Hub": "github",
-    "三方会谈": "三方会谈",
-    "三方会议": "三方会谈",
-    "第一性原理": "第一性原理",
-    "第1性原理": "第一性原理",
-    "丹伯如": "danbooru",
-    "丹波鲁": "danbooru",
-    "但波如": "danbooru",
-    "Zimage": "Z-image",
-    "Z image": "Z-image",
-    "之image": "Z-image",
-    "scale": "skill",
-    "到用": "调用",
-    "标减": "标点"
+    "scale": "skill"
   },
-  "domain_context": "AI工具、编程、图像生成、多AI协作",
+  "domain_context": "",
   "polish_mode": "quality",
   "polish": {
-    "enabled": true,
+    "enabled": false,
     "api_url": "https://openrouter.ai/api",
     "api_key": "YOUR_OPENROUTER_API_KEY_HERE",
     "model": "deepseek/deepseek-chat-v3.1:free",
@@ -89,17 +41,21 @@
   },
   "general": {
     "hotkey": "`",
-    "audio_device": "Microsoft 声音映射器 - Input",
+    "audio_device": "",
     "auto_startup": false,
-    "minimize_to_tray": false
+    "minimize_to_tray": false,
+    "start_active": true
   },
   "vad": {
-    "threshold": 0.2,
+    "threshold": 0.3,
     "min_silence_ms": 1200
   },
   "output": {
     "typewriter_mode": false,
     "typewriter_delay_ms": 15,
     "check_elevation": true
+  },
+  "translation": {
+    "output_mode": "popup"
   }
 }

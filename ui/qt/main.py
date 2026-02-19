@@ -50,12 +50,11 @@ def main():
     parser.add_argument(
         "--hotkey", default="grave", help="Hotkey for recording (default: grave/`)"
     )
-    parser.add_argument("--demo", action="store_true", help="Use mock backend for demo")
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # Keep running with floating ball
-    app.setApplicationName("Aria-Dev")
+    app.setApplicationName("Aria")
 
     # Create UI components
     bridge = QtBridge()
@@ -139,7 +138,7 @@ def main():
     tray_menu.addAction(action_quit)
 
     tray.setContextMenu(tray_menu)
-    tray.setToolTip("Aria-Dev - 单击显示历史，双击打开热词设置")
+    tray.setToolTip("Aria - 单击显示历史，双击打开热词设置")
     tray.show()
 
     # Tray icon click handlers
@@ -208,11 +207,24 @@ def main():
         msg_lower = msg.lower()
         return any(kw.lower() in msg_lower for kw in elevation_keywords)
 
+    def _is_hotkey_conflict(msg: str) -> bool:
+        """Check if the error message is about hotkey conflict."""
+        return "already in use" in msg.lower() or (
+            "hotkey" in msg.lower() and "failed" in msg.lower()
+        )
+
     def on_error(msg: str) -> None:
-        """Handle errors - route to elevation dialog or standard error dialog."""
+        """Handle errors - route appropriately based on error type."""
         if _is_elevation_error(msg):
             _log(f"[UI] Elevation warning detected, showing elevation dialog")
             elevation_dialog.show_warning(msg)
+        elif _is_hotkey_conflict(msg):
+            # Hotkey conflict: just log and set tooltip, no popup
+            _log(f"[UI] Hotkey conflict (no popup): {msg}")
+            print(f"[Aria] 快捷键冲突: {msg}")
+            print(f"[Aria] 提示: 快捷键被占用，可点击悬浮窗手动启用语音输入")
+            # Set tooltip on floating ball
+            ball.setToolTip(f"⚠ 快捷键被占用\n点击悬浮窗启用语音输入")
         else:
             show_error_dialog(msg)
 
@@ -287,110 +299,100 @@ def main():
     # Initialize backend
     backend = None
 
-    if args.demo:
-        # Demo mode with mock backend
-        from .mock_backend import MockBackend
+    try:
+        from aria.app import AriaApp
+        import json
+        from aria.core.utils import get_config_path
 
-        backend = MockBackend(bridge)
-        _log("Aria Qt Frontend Started (Demo Mode - Floating Ball)")
-    else:
-        # Real backend
+        # Read hotkey from config (before creating backend)
+        config_path = get_config_path("hotwords.json")
+        actual_hotkey = args.hotkey  # fallback to command line arg
         try:
-            from aria.app import AriaApp
-            import json
-            from aria.core.utils import get_config_path
-
-            # Read hotkey from config (before creating backend)
-            config_path = get_config_path("hotwords.json")
-            actual_hotkey = args.hotkey  # fallback to command line arg
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                config_hotkey = config.get("general", {}).get("hotkey", "")
-                if config_hotkey:
-                    actual_hotkey = config_hotkey.lower()
-                    _log(f"[Aria] Using hotkey from config: {actual_hotkey}")
-            except Exception as e:
-                _log(f"[Aria] Could not read hotkey from config: {e}")
-
-            backend = AriaApp(hotkey=actual_hotkey)
-            backend.set_bridge(bridge)
-            backend.start()
-            _log(f"Aria Qt Frontend Started (Hotkey: {actual_hotkey})")
-
-            # Check start_active setting - if False, disable hotkey listening
-            # (reuse config already loaded above)
-            try:
-                start_active = config.get("general", {}).get("start_active", True)
-                if not start_active:
-                    # Enter sleeping mode (UI shows dimmed, wakeword still works)
-                    backend.set_sleeping(True)
-                    _log("[Aria] Started in sleeping mode (start_active=False)")
-                else:
-                    # CRITICAL FIX: Explicitly ensure system is fully active
-                    # Issue: PopupMenu emits enableToggled(True) during __init__,
-                    # but main.py connects the handler AFTER ball is created.
-                    # This means backend.set_enabled(True) is never called!
-                    # Fix: Explicitly enable and sync all states after event loop starts.
-                    def _ensure_active_state():
-                        _log("[STARTUP] _ensure_active_state() running...")
-                        # 1. Ensure backend hotkey is enabled
-                        if hasattr(backend, "set_enabled"):
-                            backend.set_enabled(True)
-                            _log("[STARTUP] backend.set_enabled(True) called")
-                        # 2. Ensure not sleeping
-                        if hasattr(backend, "set_sleeping"):
-                            backend.set_sleeping(False)
-                            _log("[STARTUP] backend.set_sleeping(False) called")
-                        # 3. Sync UI state
-                        bridge.emit_state("IDLE")
-                        ball.set_sleeping_state(False)
-                        _log("[STARTUP] UI state synced to IDLE")
-                        # 4. Sync UI toggle state (don't trigger signal, just update visual)
-                        #    NOTE: Do NOT toggle False→True as it calls stop() which
-                        #    unregisters hotkeys that start() won't re-register!
-                        if ball._popup_menu and hasattr(ball._popup_menu, "toggle"):
-                            ball._popup_menu.toggle.blockSignals(True)
-                            ball._popup_menu.toggle.setChecked(True)
-                            ball._popup_menu.toggle.blockSignals(False)
-                            _log("[STARTUP] Toggle switch synced to ON")
-                        _log("[Aria] System fully activated (start_active=True)")
-                        _log("[STARTUP] System fully activated!")
-
-                    def _auto_start_recording():
-                        """Auto-start recording after system is ready."""
-                        _log("[STARTUP] Auto-starting recording...")
-                        if hasattr(backend, "toggle_recording"):
-                            backend.toggle_recording()
-                            _log("[STARTUP] Recording started automatically!")
-                            _log("[Aria] Recording started automatically")
-
-                    # Use 500ms delay to ensure all components are ready
-                    # (100ms was sometimes too short on slower machines)
-                    QTimer.singleShot(500, _ensure_active_state)
-                    # Auto-start recording 200ms after activation
-                    QTimer.singleShot(700, _auto_start_recording)
-                    _log("[Aria] Started in active mode (start_active=True)")
-            except Exception as e:
-                _log(f"[Aria] Could not read start_active setting: {e}")
-                # Default: emit IDLE state after event loop starts
-                QTimer.singleShot(100, lambda: bridge.emit_state("IDLE"))
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            config_hotkey = config.get("general", {}).get("hotkey", "")
+            if config_hotkey:
+                actual_hotkey = config_hotkey.lower()
+                _log(f"[Aria] Using hotkey from config: {actual_hotkey}")
         except Exception as e:
-            # Clean up any partially started resources
-            if backend is not None and hasattr(backend, "stop"):
-                try:
-                    backend.stop()
-                except Exception:
-                    pass  # Ignore cleanup errors
+            _log(f"[Aria] Could not read hotkey from config: {e}")
 
-            QMessageBox.critical(
-                None,
-                "Startup Error",
-                f"Failed to start Aria backend:\n{e}\n\nFalling back to demo mode.",
-            )
-            from .mock_backend import MockBackend
+        backend = AriaApp(hotkey=actual_hotkey)
+        backend.set_bridge(bridge)
+        backend.start()
+        _log(f"Aria Qt Frontend Started (Hotkey: {actual_hotkey})")
 
-            backend = MockBackend(bridge)
+        # Check start_active setting - if False, disable hotkey listening
+        # (reuse config already loaded above)
+        try:
+            start_active = config.get("general", {}).get("start_active", True)
+            if not start_active:
+                # Enter sleeping mode (UI shows dimmed, wakeword still works)
+                backend.set_sleeping(True)
+                _log("[Aria] Started in sleeping mode (start_active=False)")
+            else:
+                # CRITICAL FIX: Explicitly ensure system is fully active
+                # Issue: PopupMenu emits enableToggled(True) during __init__,
+                # but main.py connects the handler AFTER ball is created.
+                # This means backend.set_enabled(True) is never called!
+                # Fix: Explicitly enable and sync all states after event loop starts.
+                def _ensure_active_state():
+                    _log("[STARTUP] _ensure_active_state() running...")
+                    # 1. Ensure backend hotkey is enabled
+                    if hasattr(backend, "set_enabled"):
+                        backend.set_enabled(True)
+                        _log("[STARTUP] backend.set_enabled(True) called")
+                    # 2. Ensure not sleeping
+                    if hasattr(backend, "set_sleeping"):
+                        backend.set_sleeping(False)
+                        _log("[STARTUP] backend.set_sleeping(False) called")
+                    # 3. Sync UI state
+                    bridge.emit_state("IDLE")
+                    ball.set_sleeping_state(False)
+                    _log("[STARTUP] UI state synced to IDLE")
+                    # 4. Sync UI toggle state (don't trigger signal, just update visual)
+                    #    NOTE: Do NOT toggle False→True as it calls stop() which
+                    #    unregisters hotkeys that start() won't re-register!
+                    if ball._popup_menu and hasattr(ball._popup_menu, "toggle"):
+                        ball._popup_menu.toggle.blockSignals(True)
+                        ball._popup_menu.toggle.setChecked(True)
+                        ball._popup_menu.toggle.blockSignals(False)
+                        _log("[STARTUP] Toggle switch synced to ON")
+                    _log("[Aria] System fully activated (start_active=True)")
+                    _log("[STARTUP] System fully activated!")
+
+                def _auto_start_recording():
+                    """Auto-start recording after system is ready."""
+                    _log("[STARTUP] Auto-starting recording...")
+                    if hasattr(backend, "toggle_recording"):
+                        backend.toggle_recording()
+                        _log("[STARTUP] Recording started automatically!")
+                        _log("[Aria] Recording started automatically")
+
+                # Use 500ms delay to ensure all components are ready
+                # (100ms was sometimes too short on slower machines)
+                QTimer.singleShot(500, _ensure_active_state)
+                # Auto-start recording 200ms after activation
+                QTimer.singleShot(700, _auto_start_recording)
+                _log("[Aria] Started in active mode (start_active=True)")
+        except Exception as e:
+            _log(f"[Aria] Could not read start_active setting: {e}")
+            # Default: emit IDLE state after event loop starts
+            QTimer.singleShot(100, lambda: bridge.emit_state("IDLE"))
+    except Exception as e:
+        # Clean up any partially started resources
+        if backend is not None and hasattr(backend, "stop"):
+            try:
+                backend.stop()
+            except Exception:
+                pass  # Ignore cleanup errors
+
+        QMessageBox.critical(
+            None,
+            "Startup Error",
+            f"Aria 启动失败:\n{e}\n\n请使用 Aria_debug.bat 查看详细错误信息。",
+        )
+        sys.exit(1)
 
     # Connect ball actions
     ball.toggleRequested.connect(backend.toggle_recording)
@@ -858,8 +860,14 @@ def main():
                     config["translation"] = {}
                 config["translation"]["output_mode"] = mode
 
-                with open(config_path, "w", encoding="utf-8") as f:
+                import os
+
+                tmp_path = str(config_path) + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, config_path)
 
                 _log(f"[Aria] Translate output mode saved: {mode}")
                 tray.showMessage(
@@ -891,6 +899,41 @@ def main():
         initial_mode = backend.get_polish_mode()
         ball.set_polish_mode(initial_mode)
         _log(f"[Aria] Initial polish mode: {initial_mode}")
+
+    # Set engine info on floating ball for popup display
+    def _get_engine_display_name() -> str:
+        """Get human-readable engine name from config."""
+        try:
+            import json
+            from aria.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            engine = cfg.get("asr_engine", "funasr")
+
+            if engine == "funasr":
+                model = cfg.get("funasr", {}).get("model_name", "paraformer-zh")
+                if "sensevoice" in model.lower():
+                    return "FunASR (SenseVoice)"
+                return "FunASR (Paraformer)"
+            elif engine == "whisper":
+                model = cfg.get("whisper", {}).get("model_name", "large-v3-turbo")
+                return f"Whisper ({model})"
+            elif engine == "qwen3":
+                model = cfg.get("qwen3", {}).get("model_name", "Qwen/Qwen3-ASR-1.7B")
+                short = "1.7B" if "1.7B" in model else "0.6B"
+                return f"Qwen3-ASR ({short})"
+            else:
+                return engine.upper()
+        except Exception as e:
+            _log(f"[Aria] Failed to get engine display name: {e}")
+            return "Unknown"
+
+    engine_name = _get_engine_display_name()
+    ball.set_engine_info(engine_name)
+    _log(f"[Aria] Engine info set: {engine_name}")
 
     def cleanup_and_quit():
         """Cleanup backend before quitting."""

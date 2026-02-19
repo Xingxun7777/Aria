@@ -145,6 +145,7 @@ class PopupMenu(QWidget):
         self._current_mode = "fast"  # Default matches config
         self._is_locked = False
         self._is_sleeping = False
+        self._engine_info = "FunASR"  # Current ASR engine name
         self._init_window()
         self._init_ui()
         self._apply_shadow()
@@ -180,7 +181,7 @@ class PopupMenu(QWidget):
 
         # --- Enable Toggle Row ---
         enable_row = QHBoxLayout()
-        enable_label = QLabel("Aria-Dev")
+        enable_label = QLabel("Aria")
         enable_label.setStyleSheet(
             """
             QLabel {
@@ -198,6 +199,19 @@ class PopupMenu(QWidget):
         enable_row.addStretch()
         enable_row.addWidget(self.toggle)
         container_layout.addLayout(enable_row)
+
+        # --- Engine Info Row ---
+        self.engine_label = QLabel(f"🎤 {self._engine_info}")
+        self.engine_label.setStyleSheet(
+            """
+            QLabel {
+                color: rgba(255, 255, 255, 0.5);
+                font-size: 11px;
+                padding: 2px 0;
+            }
+        """
+        )
+        container_layout.addWidget(self.engine_label)
 
         # --- Separator ---
         separator = QFrame()
@@ -485,6 +499,11 @@ class PopupMenu(QWidget):
             self.translate_clipboard_btn.setChecked(True)
         else:
             self.translate_popup_btn.setChecked(True)
+
+    def setEngineInfo(self, engine_name: str):
+        """Set the current ASR engine name for display."""
+        self._engine_info = engine_name
+        self.engine_label.setText(f"🎤 {engine_name}")
 
     def showAt(self, global_pos: QPoint):
         """Show popup at specified position."""

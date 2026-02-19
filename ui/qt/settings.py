@@ -141,6 +141,137 @@ def check_faster_whisper_installed() -> bool:
         return False
 
 
+def check_qwen_asr_installed() -> bool:
+    """检查 qwen-asr 是否已安装。"""
+    try:
+        import qwen_asr  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def install_qwen_asr(parent=None) -> tuple[bool, str]:
+    """
+    动态安装 qwen-asr 包。
+
+    Args:
+        parent: 父窗口（用于显示进度对话框）
+
+    Returns:
+        (success, message): 是否成功，消息
+    """
+    import subprocess
+    import sys
+
+    # 显示安装进度对话框
+    from PySide6.QtWidgets import QProgressDialog
+    from PySide6.QtCore import Qt
+
+    progress = QProgressDialog(
+        "正在安装 Qwen3-ASR 引擎依赖...\n这可能需要 1-2 分钟",
+        None,  # 不显示取消按钮
+        0,
+        0,  # 不确定进度
+        parent,
+    )
+    progress.setWindowTitle("安装依赖")
+    progress.setWindowModality(Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.show()
+
+    try:
+        # 使用当前 Python 解释器的 pip 安装
+        # 使用清华镜像加速
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "qwen-asr",
+                "-i",
+                "https://pypi.tuna.tsinghua.edu.cn/simple",
+                "--quiet",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 分钟超时
+        )
+
+        progress.close()
+
+        if result.returncode == 0:
+            return True, "qwen-asr 安装成功"
+        else:
+            error_msg = result.stderr or result.stdout or "未知错误"
+            return False, f"安装失败: {error_msg}"
+
+    except subprocess.TimeoutExpired:
+        progress.close()
+        return False, "安装超时（超过 5 分钟）"
+    except Exception as e:
+        progress.close()
+        return False, f"安装出错: {e}"
+
+
+# Qwen3 模型大小参考
+QWEN3_MODEL_SIZES = {
+    "Qwen/Qwen3-ASR-1.7B": "3.4GB",
+    "Qwen/Qwen3-ASR-0.6B": "1.2GB",
+}
+
+
+def check_qwen3_model_exists(model_name: str) -> bool:
+    """
+    检查 Qwen3 模型是否已下载到本地缓存。
+
+    Args:
+        model_name: 模型名称，如 "Qwen/Qwen3-ASR-1.7B"
+
+    Returns:
+        True 如果模型已存在
+    """
+    import os
+    from pathlib import Path
+
+    # HuggingFace 默认缓存路径
+    cache_dir = (
+        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    )
+
+    # 模型目录名称模式: models--{org}--{model}
+    # e.g., "Qwen/Qwen3-ASR-1.7B" -> "models--Qwen--Qwen3-ASR-1.7B"
+    model_dir_name = f"models--{model_name.replace('/', '--')}"
+    model_path = cache_dir / model_dir_name
+
+    if model_path.exists():
+        # 检查是否有 snapshots 目录（表示模型已完整下载）
+        snapshots = model_path / "snapshots"
+        if snapshots.exists() and any(snapshots.iterdir()):
+            return True
+    return False
+
+
+def get_gpu_vram_mb() -> int | None:
+    """
+    获取 GPU 显存大小（MB）。
+
+    Returns:
+        显存大小 MB，或 None 如果无法检测
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            # 获取第一个 GPU 的总显存
+            props = torch.cuda.get_device_properties(0)
+            return props.total_memory // (1024 * 1024)
+    except Exception:
+        pass
+    return None
+
+
 def install_faster_whisper(parent=None) -> tuple[bool, str]:
     """
     动态安装 faster-whisper 包。
@@ -255,8 +386,17 @@ class ApiTestWorker(QObject):
                 "max_tokens": 5,
             }
 
+            # Build URL: handle various input formats
+            api_url = self.api_url.rstrip("/")
+            if api_url.endswith("/v1/chat/completions"):
+                full_url = api_url
+            elif api_url.endswith("/v1"):
+                full_url = f"{api_url}/chat/completions"
+            else:
+                full_url = f"{api_url}/v1/chat/completions"
+
             response = requests.post(
-                f"{self.api_url}/v1/chat/completions",
+                full_url,
                 headers=headers,
                 json=data,
                 timeout=5,  # Reduced timeout for faster feedback
@@ -463,20 +603,25 @@ class SettingsWindow(QMainWindow):
         list_header = QLabel("<b>词汇列表</b>")
         layout.addWidget(list_header)
 
-        guide_label = QLabel("权重: 0=禁用, 0.3=提示(仅ASR), 0.5=参考, 1=锁定")
-        guide_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
-        layout.addWidget(guide_label)
+        # Store reference for dynamic update based on engine
+        self._hotword_guide_label = QLabel(
+            "权重: 0=禁用, 0.3=提示(仅ASR), 0.5=参考, 1=锁定"
+        )
+        self._hotword_guide_label.setStyleSheet(
+            "color: #666; font-size: 12px; margin-bottom: 5px;"
+        )
+        layout.addWidget(self._hotword_guide_label)
 
-        # Threshold note with weight explanation
-        threshold_note = QLabel(
+        # Threshold note with weight explanation (dynamic based on engine)
+        self._hotword_threshold_note = QLabel(
             "💡 中文热词: 权重≥0.5 时生效\n"
             "💡 英文热词: 0.5=参考(严格规则), 1.0=锁定(强制替换)，标记为 EN"
         )
-        threshold_note.setStyleSheet(
+        self._hotword_threshold_note.setStyleSheet(
             "color: #888; font-size: 11px; margin-bottom: 10px;"
         )
-        threshold_note.setWordWrap(True)
-        layout.addWidget(threshold_note)
+        self._hotword_threshold_note.setWordWrap(True)
+        layout.addWidget(self._hotword_threshold_note)
 
         # Table widget with word and weight columns
         self.vocab_table = QTableWidget(0, 3)
@@ -776,35 +921,96 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(QLabel("<h2>API 设置</h2>"))
 
-        form = QFormLayout()
+        # === 主 API 设置 ===
+        main_group = QGroupBox("主 API（默认）")
+        main_form = QFormLayout(main_group)
 
         self.api_url = QLineEdit()
         self.api_url.setPlaceholderText("http://localhost:3000")
-        form.addRow("API 地址:", self.api_url)
+        main_form.addRow("API 地址:", self.api_url)
 
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("sk-...")
-        form.addRow("API 密钥:", self.api_key)
+        main_form.addRow("API 密钥:", self.api_key)
 
         self.model = QLineEdit()
         self.model.setPlaceholderText("google/gemini-2.5-flash-lite-preview-09-2025")
-        form.addRow("模型名称:", self.model)
+        main_form.addRow("模型名称:", self.model)
 
         self.timeout = QSpinBox()
         self.timeout.setRange(5, 120)
         self.timeout.setValue(30)
         self.timeout.setSuffix(" 秒")
-        form.addRow("超时时间:", self.timeout)
+        main_form.addRow("超时时间:", self.timeout)
 
-        layout.addLayout(form)
+        layout.addWidget(main_group)
+
+        # === 备用 API 设置（智能轮询） ===
+        backup_group = QGroupBox("备用 API（智能轮询）")
+        backup_layout = QVBoxLayout(backup_group)
+
+        backup_hint = QLabel(
+            "当主 API 连续响应慢或出错时，自动切换到备用 API。\n"
+            "每次程序启动默认使用主 API。"
+        )
+        backup_hint.setStyleSheet("color: #666; font-size: 11px; margin-bottom: 10px;")
+        backup_hint.setWordWrap(True)
+        backup_layout.addWidget(backup_hint)
+
+        backup_form = QFormLayout()
+
+        self.api_url_backup = QLineEdit()
+        self.api_url_backup.setPlaceholderText("留空则不启用备用 API")
+        backup_form.addRow("备用 API 地址:", self.api_url_backup)
+
+        self.api_key_backup = QLineEdit()
+        self.api_key_backup.setEchoMode(QLineEdit.Password)
+        self.api_key_backup.setPlaceholderText("留空则使用主 API 密钥")
+        backup_form.addRow("备用 API 密钥:", self.api_key_backup)
+
+        self.model_backup = QLineEdit()
+        self.model_backup.setPlaceholderText("留空则使用主模型")
+        backup_form.addRow("备用模型名称:", self.model_backup)
+
+        backup_layout.addLayout(backup_form)
+
+        # 轮询参数
+        polling_layout = QHBoxLayout()
+
+        polling_layout.addWidget(QLabel("慢响应阈值:"))
+        self.slow_threshold = QSpinBox()
+        self.slow_threshold.setRange(1000, 30000)
+        self.slow_threshold.setValue(3000)
+        self.slow_threshold.setSuffix(" ms")
+        self.slow_threshold.setToolTip("响应时间超过此值视为慢")
+        polling_layout.addWidget(self.slow_threshold)
+
+        polling_layout.addSpacing(20)
+
+        polling_layout.addWidget(QLabel("切换阈值:"))
+        self.switch_count = QSpinBox()
+        self.switch_count.setRange(1, 10)
+        self.switch_count.setValue(2)
+        self.switch_count.setSuffix(" 次")
+        self.switch_count.setToolTip("连续慢响应达到此次数后切换 API")
+        polling_layout.addWidget(self.switch_count)
+
+        polling_layout.addStretch()
+        backup_layout.addLayout(polling_layout)
+
+        layout.addWidget(backup_group)
 
         layout.addSpacing(20)
 
         btn_layout = QHBoxLayout()
-        self._api_test_button = QPushButton("测试连接")
+        self._api_test_button = QPushButton("测试主 API")
         self._api_test_button.clicked.connect(self._test_api_connection)
         btn_layout.addWidget(self._api_test_button)
+
+        self._api_test_backup_button = QPushButton("测试备用 API")
+        self._api_test_backup_button.clicked.connect(self._test_backup_api_connection)
+        btn_layout.addWidget(self._api_test_backup_button)
 
         btn_save = QPushButton("保存 API 设置")
         btn_save.setObjectName("primaryBtn")
@@ -815,6 +1021,68 @@ class SettingsWindow(QMainWindow):
 
         layout.addStretch()
         return w
+
+    def _test_backup_api_connection(self):
+        """Test backup API connection."""
+        api_url = self.api_url_backup.text().strip()
+        if not api_url:
+            QMessageBox.warning(self, "错误", "请先填写备用 API 地址")
+            return
+
+        # Use backup key if set, otherwise use main key
+        api_key = self.api_key_backup.text().strip() or self.api_key.text().strip()
+        # Use backup model if set, otherwise use main model
+        model = self.model_backup.text().strip() or self.model.text().strip()
+
+        # Prevent concurrent tests
+        if (
+            hasattr(self, "_api_thread")
+            and self._api_thread is not None
+            and self._api_thread.isRunning()
+        ):
+            return
+
+        # Disable button during test
+        self._api_test_backup_button.setEnabled(False)
+        self._api_test_backup_button.setText("测试中...")
+
+        # Create worker and thread
+        self._api_thread = QThread()
+        self._api_worker = ApiTestWorker(api_url, api_key, model)
+        self._api_worker.moveToThread(self._api_thread)
+
+        # Connect signals
+        self._api_thread.started.connect(self._api_worker.run)
+        self._api_worker.finished.connect(self._on_backup_api_test_finished)
+        self._api_worker.finished.connect(self._api_thread.quit)
+        self._api_worker.finished.connect(self._api_worker.deleteLater)
+        self._api_thread.finished.connect(self._api_thread.deleteLater)
+
+        # Start test
+        self._api_thread.start()
+
+    def _on_backup_api_test_finished(
+        self, success: bool, message: str, status_code: int
+    ):
+        """Handle backup API test result."""
+        self._api_test_backup_button.setEnabled(True)
+        self._api_test_backup_button.setText("测试备用 API")
+
+        if success:
+            QMessageBox.information(
+                self, "成功", f"备用 API 连接成功！\n\n状态码: {status_code}"
+            )
+        elif status_code > 0:
+            QMessageBox.warning(
+                self,
+                "连接失败",
+                f"备用 API 返回错误\n\n状态码: {status_code}\n响应: {message}",
+            )
+        else:
+            QMessageBox.warning(self, "连接失败", message)
+
+        # Clear thread reference AFTER all UI updates (allow future tests)
+        self._api_thread = None
 
     def _test_api_connection(self):
         """Test API connection with a simple request (non-blocking)."""
@@ -859,7 +1127,7 @@ class SettingsWindow(QMainWindow):
         # Re-enable button using stored reference
         if hasattr(self, "_api_test_button"):
             self._api_test_button.setEnabled(True)
-            self._api_test_button.setText("测试连接")
+            self._api_test_button.setText("测试主 API")
 
         if success:
             QMessageBox.information(self, "成功", f"{message}\n\n状态码: {status_code}")
@@ -872,11 +1140,42 @@ class SettingsWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "连接失败", message)
 
+        # Clear thread reference AFTER all UI updates (allow future tests)
+        self._api_thread = None
+
     def _on_engine_changed(self, index: int):
         """Handle ASR engine selection change - show/hide corresponding settings."""
-        is_whisper = index == 1
-        self.funasr_group.setVisible(not is_whisper)
-        self.whisper_group.setVisible(is_whisper)
+        # index: 0=FunASR, 1=Whisper, 2=Qwen3
+        self.funasr_group.setVisible(index == 0)
+        self.whisper_group.setVisible(index == 1)
+        self.qwen3_group.setVisible(index == 2)
+
+        # Update hotword explanation based on engine
+        self._update_hotword_explanation(index)
+
+    def _update_hotword_explanation(self, engine_index: int):
+        """Update hotword explanation labels based on selected ASR engine."""
+        # Check if labels exist (they are created in hotwords tab)
+        if not hasattr(self, "_hotword_guide_label"):
+            return
+
+        if engine_index == 2:  # Qwen3
+            # Qwen3 uses context string repetition, not weighted scores
+            self._hotword_guide_label.setText("Qwen3 模式: 热词通过上下文重复机制生效")
+            self._hotword_threshold_note.setText(
+                "💡 Qwen3-ASR 使用文本上下文而非权重分数\n"
+                "💡 热词会作为上下文提示发送给模型\n"
+                "💡 权重仅影响润色阶段，不影响 ASR 识别"
+            )
+        else:
+            # FunASR / Whisper - standard weight-based explanation
+            self._hotword_guide_label.setText(
+                "权重: 0=禁用, 0.3=提示(仅ASR), 0.5=参考, 1=锁定"
+            )
+            self._hotword_threshold_note.setText(
+                "💡 中文热词: 权重≥0.5 时生效\n"
+                "💡 英文热词: 0.5=参考(严格规则), 1.0=锁定(强制替换)，标记为 EN"
+            )
 
     def _on_wakeword_text_changed(self, text: str):
         """Update pinyin hint when wakeword text changes."""
@@ -908,7 +1207,13 @@ class SettingsWindow(QMainWindow):
         engine_layout = QFormLayout(engine_group)
 
         self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["FunASR (推荐，中文优化)", "Whisper (多语言支持)"])
+        self.engine_combo.addItems(
+            [
+                "FunASR (推荐，中文优化)",
+                "Whisper (多语言支持)",
+                "Qwen3-ASR (最新，52语言)",
+            ]
+        )
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
         engine_layout.addRow("引擎:", self.engine_combo)
 
@@ -973,6 +1278,36 @@ class SettingsWindow(QMainWindow):
         layout.addWidget(self.whisper_group)
         self.whisper_group.setVisible(False)  # Default: hidden
 
+        # === Qwen3-ASR Settings (visible when Qwen3 selected) ===
+        self.qwen3_group = QGroupBox("Qwen3-ASR 设置")
+        qwen3_layout = QFormLayout(self.qwen3_group)
+
+        self.qwen3_model = QComboBox()
+        self.qwen3_model.addItems(
+            ["1.7B - 最高准确度，约4GB显存", "0.6B - 轻量快速，约2GB显存"]
+        )
+        self.qwen3_model.setCurrentIndex(0)
+        qwen3_layout.addRow("模型:", self.qwen3_model)
+
+        self.qwen3_device = QComboBox()
+        self.qwen3_device.addItems(["cuda", "cpu"])
+        qwen3_layout.addRow("设备:", self.qwen3_device)
+
+        self.qwen3_dtype = QComboBox()
+        self.qwen3_dtype.addItems(["float16 - 推荐", "bfloat16 - RTX 30/40/50系及以上"])
+        qwen3_layout.addRow("精度:", self.qwen3_dtype)
+
+        qwen3_info = QLabel(
+            "Qwen3-ASR: 阿里最新语音识别模型\n"
+            "• 支持52种语言/方言，中英文混合识别优秀\n"
+            "• 首次使用需下载模型（1.7B约3.4GB，0.6B约1.2GB）"
+        )
+        qwen3_info.setStyleSheet("color: #888; font-size: 12px;")
+        qwen3_layout.addRow("", qwen3_info)
+
+        layout.addWidget(self.qwen3_group)
+        self.qwen3_group.setVisible(False)  # Default: hidden
+
         # Legacy compatibility: keep old names for save_config detection
         self.asr_model = self.funasr_model
         self.asr_device = self.funasr_device
@@ -1019,9 +1354,9 @@ class SettingsWindow(QMainWindow):
         )
         output_layout.addWidget(typewriter_warn1)
 
-        typewriter_warn2 = QLabel("⛔ 在反作弊游戏中使用可能导致账号封禁！")
+        typewriter_warn2 = QLabel("ℹ️ 仅适用于普通应用，游戏请用管理员启动 Aria")
         typewriter_warn2.setStyleSheet(
-            "color: #dc3545; font-size: 11px; margin-left: 20px;"
+            "color: #888; font-size: 11px; margin-left: 20px;"
         )
         output_layout.addWidget(typewriter_warn2)
 
@@ -1140,13 +1475,18 @@ class SettingsWindow(QMainWindow):
         self.model.setText(polish.get("model", ""))
         self.timeout.setValue(polish.get("timeout", 30))
 
+        # 备用 API 配置
+        self.api_url_backup.setText(polish.get("api_url_backup", ""))
+        self.api_key_backup.setText(polish.get("api_key_backup", ""))
+        self.model_backup.setText(polish.get("model_backup", ""))
+        self.slow_threshold.setValue(int(polish.get("slow_threshold_ms", 3000)))
+        self.switch_count.setValue(polish.get("switch_after_slow_count", 2))
+
         # === Advanced tab ===
-        # ASR engine selection
+        # ASR engine selection (0=FunASR, 1=Whisper, 2=Qwen3)
         asr_engine = self.config.get("asr_engine", "funasr")
-        if asr_engine == "whisper":
-            self.engine_combo.setCurrentIndex(1)
-        else:
-            self.engine_combo.setCurrentIndex(0)
+        engine_index_map = {"funasr": 0, "whisper": 1, "qwen3": 2}
+        self.engine_combo.setCurrentIndex(engine_index_map.get(asr_engine, 0))
         # Trigger visibility update
         self._on_engine_changed(self.engine_combo.currentIndex())
 
@@ -1186,6 +1526,26 @@ class SettingsWindow(QMainWindow):
             self.whisper_compute.setCurrentIndex(1)
         else:
             self.whisper_compute.setCurrentIndex(0)
+
+        # Qwen3-ASR settings
+        qwen3 = self.config.get("qwen3", {})
+        qwen3_model = qwen3.get("model_name", "Qwen/Qwen3-ASR-1.7B")
+        # Map model name to combo index (0=1.7B, 1=0.6B)
+        if "0.6B" in qwen3_model:
+            self.qwen3_model.setCurrentIndex(1)
+        else:
+            self.qwen3_model.setCurrentIndex(0)
+
+        qwen3_device = qwen3.get("device", "cuda")
+        idx = self.qwen3_device.findText(qwen3_device)
+        if idx >= 0:
+            self.qwen3_device.setCurrentIndex(idx)
+
+        qwen3_dtype = qwen3.get("torch_dtype", "float16")
+        if "bfloat16" in qwen3_dtype:
+            self.qwen3_dtype.setCurrentIndex(1)
+        else:
+            self.qwen3_dtype.setCurrentIndex(0)
 
         # VAD settings
         vad = self.config.get("vad", {})
@@ -1287,8 +1647,27 @@ class SettingsWindow(QMainWindow):
         self.config["polish"]["timeout"] = self.timeout.value()
         self.config["polish"]["prompt_template"] = self.prompt_edit.toPlainText()
 
+        # 备用 API 配置（智能轮询）
+        backup_url = self.api_url_backup.text().strip()
+        if backup_url:
+            self.config["polish"]["api_url_backup"] = backup_url
+            self.config["polish"]["api_key_backup"] = self.api_key_backup.text().strip()
+            self.config["polish"]["model_backup"] = self.model_backup.text().strip()
+            self.config["polish"]["slow_threshold_ms"] = float(
+                self.slow_threshold.value()
+            )
+            self.config["polish"]["switch_after_slow_count"] = self.switch_count.value()
+        else:
+            # 清除备用 API 配置（如果之前有）
+            self.config["polish"].pop("api_url_backup", None)
+            self.config["polish"].pop("api_key_backup", None)
+            self.config["polish"].pop("model_backup", None)
+            self.config["polish"].pop("slow_threshold_ms", None)
+            self.config["polish"].pop("switch_after_slow_count", None)
+
         # === Advanced tab - ASR Engine Selection ===
-        new_engine = "funasr" if self.engine_combo.currentIndex() == 0 else "whisper"
+        engine_map = {0: "funasr", 1: "whisper", 2: "qwen3"}
+        new_engine = engine_map.get(self.engine_combo.currentIndex(), "funasr")
         if old_engine != new_engine:
             restart_needed = True
 
@@ -1354,6 +1733,87 @@ class SettingsWindow(QMainWindow):
                         "(已自动配置国内镜像加速)",
                     )
 
+        # 切换到 Qwen3 时的完整检查流程
+        if new_engine == "qwen3" and old_engine != "qwen3":
+            qwen3_model_map = ["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"]
+            qwen3_model = qwen3_model_map[self.qwen3_model.currentIndex()]
+            model_size = QWEN3_MODEL_SIZES.get(qwen3_model, "3.4GB")
+            short_name = "1.7B" if "1.7B" in qwen3_model else "0.6B"
+
+            # Step 1: 检查 qwen-asr 是否已安装
+            if not check_qwen_asr_installed():
+                reply = QMessageBox.question(
+                    self,
+                    "需要安装依赖",
+                    "切换到 Qwen3-ASR 需要安装 qwen-asr 引擎。\n\n"
+                    "是否现在安装？（约 50MB，需要 1-2 分钟）",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    success, msg = install_qwen_asr(self)
+                    if not success:
+                        QMessageBox.critical(
+                            self,
+                            "安装失败",
+                            f"qwen-asr 安装失败:\n\n{msg}\n\n" "请检查网络连接后重试。",
+                        )
+                        return  # 安装失败，不保存配置
+                    else:
+                        QMessageBox.information(
+                            self, "安装成功", "Qwen3-ASR 引擎依赖已安装成功！"
+                        )
+                else:
+                    # 用户取消安装，恢复引擎选择
+                    self.engine_combo.setCurrentIndex(0)  # 恢复为 FunASR
+                    return
+
+            # Step 2: 显存预警 (1.7B 需要约 4-6GB 显存)
+            if "1.7B" in qwen3_model:
+                vram_mb = get_gpu_vram_mb()
+                if vram_mb is not None and vram_mb < 6000:  # 6GB 阈值
+                    vram_gb = vram_mb / 1024
+                    reply = QMessageBox.warning(
+                        self,
+                        "显存预警",
+                        f"检测到 GPU 显存较小: {vram_gb:.1f}GB\n\n"
+                        f"Qwen3-ASR 1.7B 建议显存 ≥ 6GB。\n"
+                        f"显存不足可能导致:\n"
+                        f"• 启动失败 (OOM)\n"
+                        f"• 识别速度变慢\n\n"
+                        f"建议选择 0.6B 轻量版 (约需 2GB 显存)。\n\n"
+                        f"是否继续使用 1.7B？",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.No:
+                        # 自动切换到 0.6B
+                        self.qwen3_model.setCurrentIndex(1)
+                        QMessageBox.information(
+                            self,
+                            "已切换",
+                            "已自动切换到 Qwen3-ASR 0.6B 轻量版。",
+                        )
+
+            # Step 3: 检查模型是否已存在
+            # 重新获取当前选择（可能被显存警告修改了）
+            qwen3_model = qwen3_model_map[self.qwen3_model.currentIndex()]
+            model_size = QWEN3_MODEL_SIZES.get(qwen3_model, "3.4GB")
+            short_name = "1.7B" if "1.7B" in qwen3_model else "0.6B"
+
+            if not check_qwen3_model_exists(qwen3_model):
+                QMessageBox.information(
+                    self,
+                    "首次使用 Qwen3-ASR",
+                    f"下次启动时将自动下载 Qwen3-ASR 模型:\n\n"
+                    f"模型: {short_name}\n"
+                    f"大小: 约 {model_size}\n"
+                    f"预计时间: 2-5 分钟\n\n"
+                    f"下载期间会显示进度提示。\n"
+                    "(已自动配置国内镜像加速)",
+                )
+
         self.config["asr_engine"] = new_engine
 
         # === Advanced tab - FunASR ===
@@ -1399,6 +1859,31 @@ class SettingsWindow(QMainWindow):
         self.config["whisper"]["device"] = new_whisper_device
         self.config["whisper"]["compute_type"] = new_whisper_compute
         self.config["whisper"]["language"] = "zh"  # Default to Chinese
+
+        # === Advanced tab - Qwen3-ASR ===
+        if "qwen3" not in self.config:
+            self.config["qwen3"] = {}
+
+        # Map combo index to model name (0=1.7B, 1=0.6B)
+        qwen3_model_map = ["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"]
+        new_qwen3_model = qwen3_model_map[self.qwen3_model.currentIndex()]
+        new_qwen3_device = self.qwen3_device.currentText()
+        new_qwen3_dtype = (
+            "bfloat16" if self.qwen3_dtype.currentIndex() == 1 else "float16"
+        )
+
+        old_qwen3 = self.config.get("qwen3", {})
+        if (
+            old_qwen3.get("model_name") != new_qwen3_model
+            or old_qwen3.get("device") != new_qwen3_device
+            or old_qwen3.get("torch_dtype") != new_qwen3_dtype
+        ):
+            restart_needed = True
+
+        self.config["qwen3"]["model_name"] = new_qwen3_model
+        self.config["qwen3"]["device"] = new_qwen3_device
+        self.config["qwen3"]["torch_dtype"] = new_qwen3_dtype
+        self.config["qwen3"]["language"] = "Chinese"  # Default
 
         # === Advanced tab - VAD ===
         if "vad" not in self.config:
@@ -1448,16 +1933,28 @@ class SettingsWindow(QMainWindow):
             # Update wakeword
             wakeword_config["wakeword"] = new_wakeword
 
-            # Save back
-            with open(wakeword_path, "w", encoding="utf-8") as f:
+            # Save back (atomic write)
+            import os as _os
+
+            _tmp_wk = str(wakeword_path) + ".tmp"
+            with open(_tmp_wk, "w", encoding="utf-8") as f:
                 json.dump(wakeword_config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                _os.fsync(f.fileno())
+            _os.replace(_tmp_wk, str(wakeword_path))
         except Exception as e:
             print(f"Failed to save wakeword config: {e}")
 
-        # Save to file
+        # Save to file (atomic write to prevent corruption)
         try:
-            with open(self.config_path, "w", encoding="utf-8") as f:
+            import os
+
+            tmp_path = str(self.config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(self.config_path))
 
             # Only show message if restart needed (important info)
             if restart_needed:

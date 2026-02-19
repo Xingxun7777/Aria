@@ -8,11 +8,19 @@ import tempfile
 import atexit
 import time
 import subprocess
+import threading
 
 # Fix OpenMP conflict between PyTorch and faster-whisper (MUST be before any imports)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-
+# === Fix stdout/stderr for pythonw.exe / AriaRuntime.exe ===
+# Under pythonw.exe, sys.stdout and sys.stderr are None.
+# Any print() call would crash with: AttributeError: 'NoneType' has no attribute 'write'
+# Redirect to devnull so all print() calls are safe. Debug mode (python.exe) is unaffected.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 
 
 # === Detect if running from portable build ===
@@ -438,7 +446,6 @@ if sys.platform == "win32":
     subprocess.Popen.__init__ = _patched_popen_init
 
 
-
 def get_project_python() -> str:
     """
     Get the correct Python interpreter path for this project.
@@ -571,6 +578,51 @@ try:
         if reporter:
             reporter.emit(stage, message, percent)
 
+    class LoadingHeartbeat:
+        """
+        Background thread that sends periodic progress updates during blocking operations.
+        Shows animated dots to indicate the app is not frozen.
+        """
+
+        def __init__(
+            self, stage: str, base_message: str, percent: int, interval: float = 0.8
+        ):
+            self.stage = stage
+            self.base_message = base_message
+            self.percent = percent
+            self.interval = interval
+            self._stop_event = threading.Event()
+            self._thread = None
+
+        def start(self):
+            """Start the heartbeat thread."""
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+        def stop(self):
+            """Stop the heartbeat thread."""
+            self._stop_event.set()
+            if self._thread:
+                self._thread.join(timeout=1.0)
+
+        def _run(self):
+            """Heartbeat loop - cycles through dot animation."""
+            dots = [".", "..", "...", ""]
+            idx = 0
+            while not self._stop_event.is_set():
+                msg = f"{self.base_message}{dots[idx]}"
+                emit_progress(self.stage, msg, self.percent)
+                idx = (idx + 1) % len(dots)
+                self._stop_event.wait(self.interval)
+
+        def __enter__(self):
+            self.start()
+            return self
+
+        def __exit__(self, *args):
+            self.stop()
+
     emit_progress("python_env")  # 5%
 
     # CRITICAL: Import PySide6 FIRST to initialize Windows DLLs properly
@@ -594,19 +646,24 @@ try:
         log(f"ASR engine from config: '{asr_engine}'")
         if asr_engine == "funasr":
             log("Pre-loading FunASR (before Qt imports)...")
-            emit_progress("funasr_model", "加载语音模型中...", 20)
             print("Pre-loading FunASR model (before Qt)...")
             from aria.core.asr.funasr_engine import FunASREngine, FunASRConfig
 
             funasr_cfg = config.get("funasr", {})
+            model_name = funasr_cfg.get("model_name", "paraformer-zh")
+            emit_progress("funasr_model", f"初始化 FunASR ({model_name})...", 15)
+
             pre_config = FunASRConfig(
-                model_name=funasr_cfg.get("model_name", "paraformer-zh"),
+                model_name=model_name,
                 vad_model=funasr_cfg.get("vad_model", "fsmn-vad"),
                 punc_model=funasr_cfg.get("punc_model", "ct-punc"),
                 device=funasr_cfg.get("device", "cuda"),
             )
             _preloaded_asr = FunASREngine(pre_config)
-            _preloaded_asr.load()
+            with LoadingHeartbeat(
+                "funasr_model", f"加载模型中 ({model_name})", 25, interval=0.6
+            ):
+                _preloaded_asr.load()
             import aria
 
             aria._preloaded_asr_engine = _preloaded_asr
@@ -615,7 +672,6 @@ try:
             print("FunASR model pre-loaded!")
         elif asr_engine == "fireredasr":
             log("Pre-loading FireRedASR (before Qt imports)...")
-            emit_progress("funasr_model", "加载模型中...", 20)
             print("Pre-loading FireRedASR model (before Qt)...")
             # Add FireRedASR repo to path (check config first, then sibling directory)
             firered_cfg = config.get("fireredasr", {})
@@ -632,17 +688,25 @@ try:
             )
 
             # Default model path: look in FireRedASR sibling directory
+            model_type = firered_cfg.get("model_type", "aed")
             default_model_path = os.path.join(
                 fireredasr_path, "pretrained_models", "FireRedASR-AED-L"
             )
+            emit_progress(
+                "firered_model", f"初始化 FireRedASR ({model_type.upper()})...", 15
+            )
+
             pre_config = FireRedASRConfig(
-                model_type=firered_cfg.get("model_type", "aed"),
+                model_type=model_type,
                 model_path=firered_cfg.get("model_path", default_model_path),
                 use_gpu=firered_cfg.get("use_gpu", True),
                 beam_size=firered_cfg.get("beam_size", 2),
             )
             _preloaded_asr = FireRedASREngine(pre_config)
-            _preloaded_asr.load()
+            with LoadingHeartbeat(
+                "firered_model", f"加载模型中 ({model_type.upper()})", 25, interval=0.6
+            ):
+                _preloaded_asr.load()
             import aria
 
             aria._preloaded_asr_engine = _preloaded_asr
@@ -682,15 +746,13 @@ try:
             model_exists = (cache_dir / model_pattern).exists()
 
             if model_exists:
-                emit_progress(
-                    "whisper_load", f"加载 Whisper 模型 ({model_name})...", 20
-                )
+                emit_progress("whisper_load", f"初始化 Whisper ({model_name})...", 15)
             else:
                 emit_progress(
                     "whisper_download",
-                    f"首次使用，正在下载 Whisper 模型 ({model_name})...\n"
+                    f"首次使用，正在下载 Whisper ({model_name})...\n"
                     "这可能需要 2-5 分钟，请耐心等待",
-                    20,
+                    15,
                 )
 
             pre_config = WhisperConfig(
@@ -700,13 +762,103 @@ try:
                 compute_type=whisper_cfg.get("compute_type", "float16"),
             )
             _preloaded_asr = WhisperEngine(pre_config)
-            _preloaded_asr.load()
+            with LoadingHeartbeat(
+                "whisper_load",
+                f"加载模型中 ({model_name})",
+                25,
+                interval=0.6,
+            ):
+                _preloaded_asr.load()
             import aria
 
             aria._preloaded_asr_engine = _preloaded_asr
             log("Whisper model pre-loaded successfully")
             emit_progress("funasr_model", "模型加载完成", 50)
             print("Whisper model pre-loaded!")
+        elif asr_engine == "qwen3":
+            log("Pre-loading Qwen3-ASR model (before Qt imports)...")
+            print("Pre-loading Qwen3-ASR model (before Qt)...")
+
+            # Step 0: 检查 qwen-asr 是否已安装
+            try:
+                import qwen_asr  # noqa: F401
+            except ImportError:
+                log("qwen-asr not installed, cannot use Qwen3 engine")
+                emit_progress("qwen3_error", "Qwen3-ASR 引擎依赖未安装", 50)
+                raise ImportError("qwen-asr not installed. Run: pip install qwen-asr")
+
+            # 设置 HuggingFace 国内镜像（加速中国用户下载）
+            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            log("Set HF_ENDPOINT to hf-mirror.com for China users")
+
+            from aria.core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
+
+            qwen3_cfg = config.get("qwen3", {})
+            model_name = qwen3_cfg.get("model_name", "Qwen/Qwen3-ASR-1.7B")
+
+            # Extract short model name for display (e.g., "1.7B" or "0.6B")
+            short_name = "1.7B" if "1.7B" in model_name else "0.6B"
+            model_size = "3.4GB" if "1.7B" in model_name else "1.2GB"
+
+            # 检测模型是否已存在（区分下载和加载状态）
+            cache_dir = (
+                Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+                / "hub"
+            )
+            model_dir_name = f"models--{model_name.replace('/', '--')}"
+            model_path = cache_dir / model_dir_name
+            model_exists = model_path.exists() and (model_path / "snapshots").exists()
+
+            # Phase 1: Show appropriate message based on model existence
+            if model_exists:
+                emit_progress(
+                    "qwen3_load",
+                    f"正在加载 Qwen3-ASR {short_name}...",
+                    15,
+                )
+                log(f"Loading existing Qwen3-ASR model: {model_name}")
+            else:
+                emit_progress(
+                    "qwen3_download",
+                    f"首次使用 Qwen3-ASR {short_name}\n"
+                    f"正在下载模型 ({model_size})，请耐心等待...",
+                    15,
+                )
+                log(f"Downloading Qwen3-ASR model: {model_name}")
+
+            pre_config = Qwen3Config(
+                model_name=model_name,
+                device=qwen3_cfg.get("device", "cuda"),
+                torch_dtype=qwen3_cfg.get("torch_dtype", "float16"),
+                language=qwen3_cfg.get("language", "Chinese"),
+            )
+            _preloaded_asr = Qwen3ASREngine(pre_config)
+
+            # Phase 2: Loading/downloading model (this is the slow part)
+            # Use heartbeat to show animation during blocking load
+            # Show different message based on whether downloading or loading
+            # IMPORTANT: Include "Qwen3-ASR" in message so user knows what's loading
+            heartbeat_stage = "qwen3_download" if not model_exists else "qwen3_load"
+            heartbeat_msg = (
+                f"正在下载 Qwen3-ASR {short_name} ({model_size})"
+                if not model_exists
+                else f"正在加载 Qwen3-ASR {short_name}"
+            )
+            with LoadingHeartbeat(
+                heartbeat_stage,
+                heartbeat_msg,
+                25,
+                interval=0.6,
+            ):
+                _preloaded_asr.load()
+
+            # Phase 3: Done
+            import aria
+
+            aria._preloaded_asr_engine = _preloaded_asr
+            log("Qwen3-ASR model pre-loaded successfully")
+            emit_progress("funasr_model", "Qwen3-ASR 就绪", 50)
+            print(f"Qwen3-ASR model pre-loaded! ({short_name})")
         else:
             # Other engines - just show progress
             emit_progress("funasr_model", "准备语音引擎...", 50)

@@ -135,6 +135,9 @@ class FloatingBall(QWidget):
         # Auto-send state indicator (persistent color tint)
         self._auto_send_enabled = False
 
+        # Current ASR engine info for popup display
+        self._engine_info = "FunASR"
+
         # Debug log file for tracking state changes (controlled by config)
         self._debug_log_path = None
         self._debug_logging_enabled = False
@@ -272,10 +275,27 @@ class FloatingBall(QWidget):
         # Streaming display enabled flag
         self._streaming_display_enabled = True
 
+        # Streaming label state machine (prevents animation race conditions)
+        # States: "hidden", "fading_in", "visible", "fading_out"
+        self._streaming_state = "hidden"
+
     def _fade_out_streaming_label(self):
         """Fade out and hide the streaming label with slide-down animation."""
-        if not self._streaming_label.isVisible():
+        # State machine guard: only fade out if visible or fading in
+        if self._streaming_state not in ("visible", "fading_in"):
             return
+
+        self._streaming_state = "fading_out"
+
+        # Disconnect any existing finished signal to prevent race conditions
+        try:
+            self._streaming_anim_group.finished.disconnect(self._on_fade_out_finished)
+        except (RuntimeError, TypeError):
+            pass  # Not connected
+        try:
+            self._streaming_anim_group.finished.disconnect(self._on_fade_in_finished)
+        except (RuntimeError, TypeError):
+            pass  # Not connected
 
         # Stop any running animation
         self._streaming_anim_group.stop()
@@ -302,37 +322,75 @@ class FloatingBall(QWidget):
 
     def _on_fade_out_finished(self):
         """Called when fade-out animation completes."""
+        # State machine guard: only hide if we're actually fading out
+        # (prevents race condition where fade-in interrupted fade-out)
+        if self._streaming_state != "fading_out":
+            return
+
         self._streaming_label.hide()
+        self._streaming_state = "hidden"
+
         # Disconnect to avoid multiple connections
         try:
             self._streaming_anim_group.finished.disconnect(self._on_fade_out_finished)
-        except RuntimeError:
+        except (RuntimeError, TypeError):
             pass  # Already disconnected
 
     def _fade_in_streaming_label(self):
         """Fade in the streaming label with slide-up animation."""
+        # State machine: if already visible and not fading out, just update position
+        if self._streaming_state == "visible":
+            self._update_streaming_label_position()
+            return
+
+        # Mark state transition
+        was_fading_out = self._streaming_state == "fading_out"
+        self._streaming_state = "fading_in"
+
+        # Disconnect any existing finished signals to prevent race conditions
+        try:
+            self._streaming_anim_group.finished.disconnect(self._on_fade_out_finished)
+        except (RuntimeError, TypeError):
+            pass  # Not connected
+        try:
+            self._streaming_anim_group.finished.disconnect(self._on_fade_in_finished)
+        except (RuntimeError, TypeError):
+            pass  # Not connected
+
         # Stop any running animation
         self._streaming_anim_group.stop()
 
         # Calculate positions
         self._update_streaming_label_position()
         target_pos = self._streaming_label.pos()
-        start_pos = QPoint(target_pos.x(), target_pos.y() + 10)  # Start 10px below
+
+        # Get current opacity for smooth transition (especially if interrupting fade-out)
+        current_opacity = self._streaming_opacity.opacity()
+
+        # If interrupting a fade-out, start from current state
+        if was_fading_out and self._streaming_label.isVisible():
+            start_pos = self._streaming_label.pos()
+            start_opacity = current_opacity
+        else:
+            # Fresh fade-in from below
+            start_pos = QPoint(target_pos.x(), target_pos.y() + 10)  # Start 10px below
+            start_opacity = 0.0
+            self._streaming_opacity.setOpacity(0.0)
+            self._streaming_label.move(start_pos)
 
         # Ensure visible before animation
         if not self._streaming_label.isVisible():
-            self._streaming_opacity.setOpacity(0.0)
-            self._streaming_label.move(start_pos)
             self._streaming_label.show()
 
-        # Configure fade in (opacity)
-        self._streaming_fade_anim.setDuration(180)
-        self._streaming_fade_anim.setStartValue(0.0)
+        # Configure fade in (opacity) - shorter duration if already partially visible
+        duration = 100 if was_fading_out else 180
+        self._streaming_fade_anim.setDuration(duration)
+        self._streaming_fade_anim.setStartValue(start_opacity)
         self._streaming_fade_anim.setEndValue(1.0)
         self._streaming_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         # Configure slide up (position)
-        self._streaming_pos_anim.setDuration(180)
+        self._streaming_pos_anim.setDuration(duration)
         self._streaming_pos_anim.setStartValue(start_pos)
         self._streaming_pos_anim.setEndValue(target_pos)
         self._streaming_pos_anim.setEasingCurve(QEasingCurve.OutCubic)
@@ -340,7 +398,23 @@ class FloatingBall(QWidget):
         # Store base position
         self._streaming_base_pos = target_pos
 
+        # Connect finished signal for state update
+        self._streaming_anim_group.finished.connect(self._on_fade_in_finished)
         self._streaming_anim_group.start()
+
+    def _on_fade_in_finished(self):
+        """Called when fade-in animation completes."""
+        # State machine guard
+        if self._streaming_state != "fading_in":
+            return
+
+        self._streaming_state = "visible"
+
+        # Disconnect to avoid multiple connections
+        try:
+            self._streaming_anim_group.finished.disconnect(self._on_fade_in_finished)
+        except (RuntimeError, TypeError):
+            pass  # Already disconnected
 
     def _update_streaming_label_position(self):
         """Position the streaming label above the ball."""
@@ -423,6 +497,8 @@ class FloatingBall(QWidget):
             # Sync sleeping state based on current ball state
             is_sleeping = self._state == self.STATE_SLEEPING
             self._popup_menu.setSleeping(is_sleeping)
+            # Sync engine info
+            self._popup_menu.setEngineInfo(self._engine_info)
             # Position above the ball
             ball_center = self.mapToGlobal(self.rect().center())
             self._popup_menu.showAt(ball_center)
@@ -1331,11 +1407,13 @@ class FloatingBall(QWidget):
             display_text = text if len(text) <= 60 else "..." + text[-57:]
             self._streaming_label.setText(display_text)
             self._streaming_label.adjustSize()
-            self._update_streaming_label_position()
 
-            # Fade in if not already visible
-            if not self._streaming_label.isVisible():
+            # State machine: fade in if hidden or fading out, update position if visible
+            if self._streaming_state in ("hidden", "fading_out"):
                 self._fade_in_streaming_label()
+            elif self._streaming_state in ("visible", "fading_in"):
+                # Already visible/appearing - just update position
+                self._update_streaming_label_position()
 
             # Auto-hide after 2 seconds of no updates
             self._streaming_hide_timer.stop()
@@ -1482,11 +1560,25 @@ class FloatingBall(QWidget):
         """
         self._streaming_display_enabled = enabled
         if not enabled:
-            # Hide immediately if disabling
+            # Hide immediately if disabling - force state to allow fade out
             self._streaming_hide_timer.stop()
-            self._fade_out_streaming_label()
+            if self._streaming_state != "hidden":
+                # Force state to allow fade-out even if fading_in
+                if self._streaming_state == "fading_in":
+                    self._streaming_state = "visible"
+                self._fade_out_streaming_label()
         self._log(f"STREAMING_DISPLAY: {enabled}")
 
     def is_streaming_display_enabled(self) -> bool:
         """Return whether streaming display is enabled."""
         return self._streaming_display_enabled
+
+    def set_engine_info(self, engine_name: str) -> None:
+        """
+        Set the current ASR engine name for popup display.
+
+        Args:
+            engine_name: Engine name, e.g., "FunASR", "Whisper (large-v3)", "Qwen3-ASR (1.7B)"
+        """
+        self._engine_info = engine_name
+        self._log(f"ENGINE_INFO: {engine_name}")

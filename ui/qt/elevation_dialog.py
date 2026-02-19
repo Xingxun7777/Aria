@@ -521,8 +521,14 @@ class ElevationWarningDialog(QWidget):
                 config["elevation_dialog"] = {}
             config["elevation_dialog"]["dont_remind"] = self._dont_remind_again
 
-            with open(config_path, "w", encoding="utf-8") as f:
+            import os
+
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
 
             _log(f"Saved dont_remind preference: {self._dont_remind_again}")
         except Exception as e:

@@ -1,258 +1,225 @@
-# Aria 项目文档
+# Aria v1.1 - 项目技术文档
 
-> Windows 本地 AI 语音听写工具
-> 版本: v1.0 (2025-12)
-> 路径: `G:\AIBOX\aria`
+> Windows 本地 AI 语音听写 + 智能指令工具
+> 版本: v1.1.1 (2026-02)
+> Python: 3.12.4 | Qt: PySide6 | GPU: CUDA 12.x
 
 ---
 
-## 快速概览
+## 启动链路
 
-按热键说话 → 本地 AI 识别 → 智能纠错润色 → 自动输入到光标位置
+### 开发模式
+```
+Aria.bat → .venv\Scripts\pythonw.exe launcher.py
+  └→ launcher.py: 单例检查(Named Mutex) → splash屏幕 → from aria.ui.qt.main import main → main()
+       └→ aria/__init__.py: __path__ = [项目根] → 所有 from aria.xxx import 重定向到根目录
+            └→ main() → AriaApp() → start() → hotkey/ASR/UI 全部就绪
+```
 
-**核心特性:**
-- FunASR (Paraformer) 本地中文语音识别
-- Silero-VAD 智能语音活动检测
-- 三层热词纠错系统 + AI 润色
-- 选区指令（选中文字后说"润色"/"翻译"）
-- 唤醒词控制（"瑶瑶开启自动发送"）
-- PySide6 浮动球 UI
+### 便携版
+```
+Aria.exe → launcher_stub.py (PyInstaller EXE)
+  └→ _internal/AriaRuntime.exe -s -m aria.launcher
+       └→ aria 是普通包 (根 __init__.py，无 __path__ 重定向)
+```
+
+### 启动脚本
+
+| 文件 | 用途 |
+|------|------|
+| `Aria.bat` | 生产启动 (pythonw, 无控制台) |
+| `Aria_debug.bat` | 调试启动 (python, 有控制台) |
+| `run_debug.bat` | 高级调试 (PATH 隔离, Torch DLL 优先) |
 
 ---
 
 ## 目录结构
 
 ```
-aria/
-├── app.py                 # 主应用 (69KB) - 核心逻辑、状态机、ASR流程
-├── launcher.py            # 启动器 - 环境检测、splash、异常处理
-├── config/
-│   ├── hotwords.json      # 用户配置 (热词、API、模型设置)
-│   └── settings.py        # 配置加载器
+voicetype-v1.1-dev/
+├── launcher.py            # 入口: 单例 + splash + 环境检测
+├── app.py                 # 主应用 (~2300行): 状态机 + ASR 编排 + 所有流程
+├── progress_ipc.py        # splash 进程间通信
+├── __init__.py            # 根包元数据 (__version__)
+├── __main__.py            # python -m aria 入口
+│
+├── aria/                  # 包别名 (__path__ 重定向到项目根)
+│   ├── __init__.py        # __path__ = [parent_dir] 实现重定向
+│   └── __main__.py        # module 入口
 │
 ├── core/                  # 核心模块
-│   ├── asr/               # 语音识别引擎
-│   │   ├── base.py        # ASR 基类接口
-│   │   ├── funasr_engine.py   # FunASR Paraformer (当前使用)
-│   │   ├── whisper_engine.py  # Whisper (备选)
-│   │   └── fireredasr_engine.py # FireRedASR (实验性)
-│   │
-│   ├── audio/             # 音频处理
-│   │   ├── capture.py     # 音频捕获 (sounddevice)
-│   │   └── vad.py         # Silero-VAD 语音检测
-│   │
-│   ├── hotword/           # 热词纠错系统 (三层)
-│   │   ├── manager.py     # Layer1: initial_prompt 领域词汇
+│   ├── asr/               # 语音识别引擎 (4个)
+│   │   ├── __init__.py    # ASR 基类接口
+│   │   ├── funasr_engine.py   # FunASR Paraformer (默认)
+│   │   ├── whisper_engine.py  # Whisper (faster-whisper)
+│   │   ├── fireredasr_engine.py # FireRedASR
+│   │   └── qwen3_engine.py   # Qwen3-ASR (最新)
+│   ├── audio/
+│   │   ├── capture.py     # 音频捕获 (sounddevice, 有界队列)
+│   │   └── vad.py         # Silero-VAD (阈值0.3, 线程安全)
+│   ├── hotword/           # 4层热词纠错
+│   │   ├── manager.py     # 配置管理 + Layer1 initial_prompt
 │   │   ├── processor.py   # Layer2: 规则替换
-│   │   ├── fuzzy_matcher.py  # Layer2.5: 拼音模糊匹配
-│   │   ├── polish.py      # Layer3: AI 在线润色 (Gemini/DeepSeek)
-│   │   └── local_polish.py   # Layer3-alt: 本地 LLM 润色 (llama.cpp)
-│   │
-│   ├── selection/         # 选区指令系统
-│   │   ├── detector.py    # 检测选中文字 (Ctrl+C)
-│   │   ├── commands.py    # 指令解析 (润色/翻译/总结...)
-│   │   └── processor.py   # LLM 处理选中内容
-│   │
-│   ├── wakeword/          # 唤醒词系统 ("瑶瑶")
-│   │   ├── detector.py    # 唤醒词检测
-│   │   └── executor.py    # 命令执行
-│   │
-│   ├── action/            # UI 动作类型
-│   │   └── types.py       # TranslationAction, ChatAction
-│   │
-│   ├── debug.py           # 调试信息收集
-│   ├── logging.py         # 日志系统
-│   ├── insight_store.py   # 历史记录存储
-│   └── model_manager.py   # 模型下载管理
+│   │   ├── fuzzy_matcher.py # Layer2.5: 拼音模糊匹配
+│   │   ├── polish.py      # Layer3: API 润色 (OpenRouter)
+│   │   └── local_polish.py # Layer3: 本地 LLM 润色 (llama.cpp)
+│   ├── selection/         # 选区指令 (润色/翻译/扩写/问AI)
+│   ├── wakeword/          # 唤醒词系统
+│   ├── command/           # 语音命令检测
+│   ├── action/            # UI 动作类型 (Translation/Chat Action)
+│   ├── debug.py           # DebugConfig + DebugSession (JSON 日志)
+│   ├── logging.py         # 系统日志
+│   ├── insight_store.py   # 历史记录
+│   └── utils/             # 工具函数
 │
 ├── system/                # 系统交互
-│   ├── hotkey.py          # 全局热键 (Windows API)
-│   ├── output.py          # 文本输出 (剪贴板 + Ctrl+V)
+│   ├── hotkey.py          # 全局热键 (Windows low-level hook)
+│   ├── output.py          # 文本输出 (剪贴板+Ctrl+V / typewriter模式)
+│   ├── admin.py           # 管理员权限检测
 │   └── platform/          # 平台特定代码
 │
 ├── ui/                    # 用户界面
-│   ├── qt/                # PySide6 Qt UI
-│   │   ├── main.py        # 主窗口
-│   │   ├── floating_ball.py  # 浮动球 (核心 UI)
-│   │   ├── settings.py    # 设置面板
-│   │   ├── ai_chat_window.py  # AI 对话窗口
+│   ├── qt/
+│   │   ├── main.py        # 主窗口 + 系统托盘
+│   │   ├── floating_ball.py # 浮动球 UI
+│   │   ├── popup_menu.py  # 右键菜单
+│   │   ├── settings.py    # 设置面板 (84KB)
+│   │   ├── bridge.py      # QtBridge 线程安全信号桥
 │   │   ├── translation_popup.py # 翻译弹窗
-│   │   ├── history.py     # 历史记录
-│   │   ├── overlay.py     # 录音状态浮层
-│   │   ├── bridge.py      # 后端信号桥
-│   │   └── workers/       # 后台线程
-│   └── streaming_display.py  # 流式显示 (预留)
+│   │   ├── ai_chat_window.py   # AI 对话窗口
+│   │   ├── elevation_dialog.py # 管理员提权对话框
+│   │   ├── splash.py      # 启动画面
+│   │   ├── history.py     # 历史记录面板
+│   │   ├── styles.py      # 样式定义
+│   │   └── workers/       # 后台线程 (翻译等)
+│   └── streaming_display.py # 流式显示缓冲区
 │
-├── models/                # 本地模型
-│   └── qwen2.5-1.5b-instruct-q4_k_m.gguf  # 本地润色模型 (1.1GB)
+├── config/
+│   ├── hotwords.json      # 用户配置 (gitignored, 含 API key)
+│   ├── hotwords.template.json # 配置模板 (入库)
+│   ├── wakeword.json      # 唤醒词配置
+│   └── commands.json      # 语音命令定义
 │
-├── DebugLog/              # 调试日志 (gitignore)
-├── docs/                  # 文档
+├── build_portable/        # 便携版打包系统
+│   ├── build.py           # 主打包脚本 (嵌入式Python + 代码 + 依赖)
+│   ├── build_launcher_exe.py  # 编译 Aria.exe 启动器
+│   ├── launcher_stub.py   # EXE 源码 (最小启动器)
+│   ├── release.bat        # 一键打包 (build + exe + 验证)
+│   └── RELEASE_GUIDE.md   # 发布指南
+│
+├── assets/aria.ico        # 应用图标
+├── models/                # 本地模型 (GGUF)
+├── DebugLog/              # 调试日志 (gitignored)
+├── data/insights/         # 用户历史 (gitignored)
 ├── tests/                 # 测试
-└── tools/                 # 工具脚本
+├── tools/                 # 开发工具
+└── docs/                  # 文档
+    └── DEBUG_LESSONS.md   # 调试经验库
 ```
 
 ---
 
-## 处理流程
+## 核心处理流水线
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Aria 处理流水线                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  [热键触发] ──► [录音] ──► [VAD检测] ──► [ASR识别]              │
-│      │            │            │            │                    │
-│   CapsLock   sounddevice   Silero-VAD   FunASR/Paraformer       │
-│                                                                  │
-│  ──► [唤醒词检测] ──► [选区指令检测] ──► [热词纠错]             │
-│          │                │                  │                   │
-│      "瑶瑶xxx"        "润色/翻译"      Layer1+2+2.5             │
-│                                                                  │
-│  ──► [AI润色] ──► [文本输出] ──► [自动发送?]                    │
-│         │            │              │                            │
-│    DeepSeek     Ctrl+V paste    Enter (可选)                    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 热词纠错系统 (三层)
-
-| 层级 | 名称 | 作用 | 示例 |
-|------|------|------|------|
-| Layer 1 | initial_prompt | ASR 提示词，引导识别方向 | domain_context: "AI工具、编程" |
-| Layer 2 | 规则替换 | 固定替换规则 | "scale" → "skill" |
-| Layer 2.5 | 拼音模糊 | 相似发音匹配 | "克劳德" → "Claude" |
-| Layer 3 | AI 润色 | LLM 智能纠错+标点 | "吉他" → "GitHub" |
-
----
-
-## 配置文件 (config/hotwords.json)
-
-```json
-{
-  "hotwords": ["claude", "github", "aria", ...],
-  "replacements": {"scale": "skill"},
-  "domain_context": "AI工具、编程",
-
-  "polish": {
-    "enabled": true,
-    "api_url": "https://openrouter.ai/api",
-    "model": "deepseek/deepseek-chat"
-  },
-
-  "general": {
-    "hotkey": "grave",
-    "start_active": true
-  },
-
-  "funasr": {
-    "model_name": "paraformer-zh",
-    "device": "cuda"
-  },
-
-  "vad": {
-    "threshold": 0.2,
-    "min_silence_ms": 1200
-  }
-}
+热键触发 → 状态 RECORDING
+  │
+  ├→ sounddevice 音频回调 → VAD 检测 (Silero)
+  │    └→ 语音开始 → ASR 队列 (maxsize=5)
+  │    └→ 语音结束 → ASR 队列
+  │
+  ├→ 流式显示 (1.5s 间隔中间识别)
+  │
+  └→ 热键再次 → 状态 TRANSCRIBING
+       │
+       ├→ ASR Worker 线程消费队列
+       │    └→ 引擎识别 (FunASR/Whisper/Qwen3)
+       │
+       ├→ Layer -1: 唤醒词检测 → 语音命令 (sleep/wake/auto-send)
+       ├→ Layer  0: 选区指令检测 → AI 处理
+       ├→ Layer  1: initial_prompt (ASR 引导)
+       ├→ Layer  2: 规则替换 (regex)
+       ├→ Layer 2.5: 拼音模糊匹配
+       ├→ Layer  3: AI 润色 (API/本地LLM)
+       │
+       └→ 文本输出 (剪贴板+Ctrl+V / typewriter) → 状态 IDLE
 ```
 
 ---
 
-## 选区指令
+## 线程模型
 
-选中文字后按热键说话，支持以下指令：
-
-| 指令词 | 功能 | 行为 |
-|--------|------|------|
-| "润色" / "优化" | 润色文字 | 替换选中内容 |
-| "翻译" / "翻译成英文" | 翻译弹窗 | 显示翻译结果 |
-| "总结" / "帮我总结" | 总结内容 | 替换选中内容 |
-| "问AI" / "解释一下" | AI对话 | 打开对话窗口 |
-
----
-
-## 唤醒词命令 ("瑶瑶")
-
-| 命令 | 功能 |
-|------|------|
-| "瑶瑶开启自动发送" | 输入后自动按 Enter |
-| "瑶瑶关闭自动发送" | 关闭自动发送 |
-| "瑶瑶睡觉" | 进入休眠模式 |
-| "瑶瑶醒来" | 退出休眠模式 |
+| 线程 | 用途 | 同步机制 |
+|------|------|----------|
+| UI 主线程 | PySide6 事件循环 | QueuedConnection |
+| 音频回调 | sounddevice 采集 | _buffer_lock |
+| ASR Worker | 识别+热词+输出 | _asr_lock, _stop_event |
+| 热键监听 | Windows hook | _lock (状态切换) |
+| 配置监视 | 2s 轮询热重载 | _stop_event |
+| 流式定时器 | 中间识别 | generation token |
+| Bridge | 后端→UI 信号 | QMetaObject.invokeMethod |
 
 ---
 
-## 版本历史
+## 便携版打包
 
-### v1.0 (2025-12)
-- FunASR Paraformer 中文识别
-- 三层热词纠错系统
-- AI 在线润色 (DeepSeek/Gemini)
-- 选区指令 (润色/翻译成英文/总结) - 替换选中文字
-- 唤醒词控制 ("瑶瑶")
-- PySide6 浮动球 UI
-- 系统托盘
-- 调试日志系统
-
-### v1.1 (2025-12) - 当前版本
-**Action-driven 架构升级：**
-- [x] 翻译弹窗 - 选中文字说"翻译"，显示弹窗而非替换原文
-- [x] AI 对话窗口 - 选中文字说"问AI"，打开对话窗口
-- [x] TranslationAction / ChatAction 动作类型
-- [x] QtBridge 信号机制
-- [x] TranslationWorker 异步翻译
-
-**待修复/优化：**
-- [ ] AI 润色过于精简问题 (已修复 prompt，待验证)
-- [ ] 新录音可能清空之前文字的问题 (待复现定位)
-
-### v1.2 (计划中)
-- [ ] 流式 ASR 显示 (边说边显示)
-- [ ] 多语言支持
-- [ ] 语音输入历史搜索
-- [ ] 自定义选区指令模板
-
----
-
-## 启动方式
-
-```bash
-# 方式1: 双击启动
-Aria.bat
-
-# 方式2: Python 启动
-python -m aria
-
-# 方式3: 调试模式
-Aria_debug.bat
+### 命令
+```powershell
+cd G:\AIBOX\voicetype-v1.1-dev
+.\build_portable\release.bat
 ```
+
+### 打包流程
+1. 下载 Python 3.12.4 嵌入式 (缓存复用)
+2. 创建 `dist_portable/Aria/_internal/` 结构
+3. 配置 `python312._pth` (stdlib → site-packages → app → app\aria)
+4. 复制源码到 `_internal/app/aria/`
+5. **清理敏感数据** (用 template 替换用户配置, 日志/录音 → 删除)
+6. 复制 `.venv/Lib/site-packages/` (~8.3GB)
+7. 创建启动脚本 (Aria.cmd, Aria.vbs, Aria_debug.bat)
+8. 编译 Aria.exe (PyInstaller, launcher_stub.py)
+9. 验证 API key 已清理
+
+### 输出
+```
+dist_portable/Aria/
+├── Aria.exe           # 主入口 (双击启动)
+├── Aria.cmd           # 命令行启动
+├── Aria.vbs           # 静默启动
+├── Aria_debug.bat     # 调试模式
+├── CreateShortcut.cmd # 创建桌面快捷方式
+├── aria.ico           # 图标
+└── _internal/
+    ├── python.exe / pythonw.exe / AriaRuntime.exe
+    ├── python312.dll
+    ├── python312._pth
+    ├── app/aria/      # 源码
+    └── Lib/site-packages/  # 依赖
+```
+
+---
+
+## 配置热重载
+
+config watcher 每 2 秒检查 `hotwords.json` 修改时间，变更时自动更新：
+- Layer 2 替换规则
+- Layer 2.5 拼音词表
+- Layer 3 polisher 实例 (旧实例会被 close)
+- 唤醒词
+- VAD 参数
 
 ---
 
 ## 环境要求
 
-- Windows 10/11
-- Python 3.10+ (建议 3.12)
-- CUDA 12.4+ (RTX 5090 支持)
-- 独立 conda 环境: `aria`
-
----
-
-## 相关文件说明
-
-| 文件 | 用途 |
+| 项目 | 要求 |
 |------|------|
-| `Aria.bat` | 主启动脚本 |
-| `launcher.py` | Python 启动器 |
-| `app.py` | 主应用逻辑 |
-| `config/hotwords.json` | 用户配置 |
-| `DebugLog/` | 调试日志 |
-| `docs/RELEASE_CHECKLIST.md` | 发布检查清单 |
+| OS | Windows 10/11 64位 |
+| Python | 3.12.4 (venv) |
+| GPU | NVIDIA CUDA 12.x (推荐) |
+| VRAM | 4GB+ |
+| 关键依赖 | PySide6, torch, sounddevice, silero-vad, funasr |
 
 ---
 
-*最后更新: 2025-12-17*
+*最后更新: 2026-02-12*

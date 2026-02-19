@@ -38,6 +38,10 @@ class HotWordConfig:
     # Internal: merged list for ASR/AI (auto-generated)
     prompt_words: List[str] = field(default_factory=list)
 
+    # ASR engine type - affects polish layer behavior
+    # Qwen3 handles English well at ASR layer, so we reduce English hotwords to LLM
+    asr_engine_type: str = "funasr"  # "whisper", "funasr", "qwen3", "fireredasr"
+
     # Layer 3: Polish mode and configs
     polish_mode: str = "fast"  # "fast" = local Qwen, "quality" = Gemini API
     polish_config: Optional[PolishConfig] = None  # For quality mode
@@ -83,6 +87,14 @@ class HotWordConfig:
                         "model", "google/gemini-2.5-flash-lite-preview-09-2025"
                     ),
                     "timeout": polish_data.get("timeout", 10.0),
+                    # 智能轮询配置（备用 API）
+                    "api_url_backup": polish_data.get("api_url_backup", ""),
+                    "api_key_backup": polish_data.get("api_key_backup", ""),
+                    "model_backup": polish_data.get("model_backup", ""),
+                    "slow_threshold_ms": polish_data.get("slow_threshold_ms", 3000.0),
+                    "switch_after_slow_count": polish_data.get(
+                        "switch_after_slow_count", 2
+                    ),
                 }
                 # Allow optional prompt_template override from config
                 if "prompt_template" in polish_data:
@@ -143,13 +155,23 @@ class HotWordConfig:
 
         # Save quality mode (API) polish config if present
         if self.polish_config:
-            data["polish"] = {
+            polish_save = {
                 "enabled": self.polish_config.enabled,
                 "api_url": self.polish_config.api_url,
                 "api_key": self.polish_config.api_key,
                 "model": self.polish_config.model,
                 "timeout": self.polish_config.timeout,
             }
+            # 保存智能轮询配置（仅当有备用 API 时）
+            if self.polish_config.api_url_backup:
+                polish_save["api_url_backup"] = self.polish_config.api_url_backup
+                polish_save["api_key_backup"] = self.polish_config.api_key_backup
+                polish_save["model_backup"] = self.polish_config.model_backup
+                polish_save["slow_threshold_ms"] = self.polish_config.slow_threshold_ms
+                polish_save["switch_after_slow_count"] = (
+                    self.polish_config.switch_after_slow_count
+                )
+            data["polish"] = polish_save
 
         # Save fast mode (local) polish config if present
         if self.local_polish_config:
@@ -164,13 +186,26 @@ class HotWordConfig:
             # Ensure directory exists
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-            with open(save_path, "w", encoding="utf-8") as f:
+            # Atomic write: write to temp file first, then replace
+            # Prevents config corruption if crash occurs mid-write
+            tmp_path = save_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, save_path)
 
             logger.info(f"Saved hotword config to {save_path}")
 
         except IOError as e:
             logger.error(f"Failed to save hotword config: {e}")
+            # Clean up temp file on failure
+            tmp_path = save_path + ".tmp"
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
             raise
 
 
@@ -271,24 +306,29 @@ class HotWordManager:
         """
         Get hotwords for Polish, split into tiers by weight.
 
-        Simplified 3-tier system (v3.1):
+        Simplified 3-tier system (v3.2):
         - critical (weight = 1.0): Mandatory vocabulary, LLM must use these spellings
         - reference (weight = 0.5): Reference words, LLM should prefer if phonetically similar
         - hint (weight = 0.3): Hint only, sent to ASR but NOT to polish layer
         - disabled (weight = 0): Completely excluded
 
-        v3.1 Change: English hotwords now included in reference tier with separate
-        prompt instructions to prevent over-fitting. The LLM is instructed to be
-        more conservative with English replacements.
+        v3.2 Change (Qwen3 optimization):
+        - Qwen3-ASR handles English hotwords well at ASR layer
+        - So for Qwen3 mode: only critical-tier English goes to LLM polish
+        - This prevents LLM over-replacement of normal English words
 
         Returns:
             {"critical": [...], "reference": [...], "english_reference": [...]}
         """
         weights = self._load_weights()
 
+        # Check if using Qwen3 ASR (handles English well at ASR layer)
+        is_qwen3_mode = self.config.asr_engine_type == "qwen3"
+
         critical = []
+        critical_english = []  # Separate for Qwen3 mode filtering
         reference = []  # Chinese reference
-        english_reference = []  # English reference (new in v3.1)
+        english_reference = []  # English reference
 
         for word in self.config.prompt_words:
             w = weights.get(word, 0.5)  # Default to reference tier
@@ -298,27 +338,42 @@ class HotWordManager:
 
             if w >= 1.0:
                 # Critical tier: both Chinese and English included
-                critical.append(word)
+                if is_english:
+                    critical_english.append(word)
+                else:
+                    critical.append(word)
             elif w >= 0.5:
                 # Reference tier: separate Chinese and English
-                # v3.1: English now included but with stricter prompt rules
                 if is_english:
                     english_reference.append(word)
                 else:
                     reference.append(word)
             # weight < 0.5: NOT included in polish layer (hint/disabled)
 
+        # Qwen3 optimization: reduce English hotwords to LLM
+        if is_qwen3_mode:
+            # Only pass critical-tier English to LLM (音译乱码修正)
+            # Reference-tier English already handled by Qwen3 ASR
+            logger.debug(
+                f"Qwen3 mode: skipping {len(english_reference)} reference-tier "
+                f"English hotwords for LLM polish"
+            )
+            english_reference = []  # Don't send reference-tier English to LLM
+
+        # Merge critical tiers
+        all_critical = critical + critical_english
+
         logger.debug(
-            f"Polish tiers: critical={len(critical)}, reference={len(reference)}, "
+            f"Polish tiers (asr={self.config.asr_engine_type}): "
+            f"critical={len(all_critical)}, reference={len(reference)}, "
             f"english_reference={len(english_reference)}"
         )
 
         # Return structure with separate English tier
-        # Note: strong/context kept empty for backwards compat with PolishConfig fields
         return {
-            "critical": critical,
+            "critical": all_critical,
             "reference": reference,
-            "english_reference": english_reference,  # New in v3.1
+            "english_reference": english_reference,
         }
 
     def _load_weights(self) -> Dict[str, float]:
@@ -552,6 +607,166 @@ class HotWordManager:
             result.append(f"{word} {score}")
 
         return result
+
+    def to_qwen3_context(self) -> str:
+        """
+        Build Qwen3-ASR context (V3: evidence-based format).
+
+        Based on Qwen3-ASR documentation:
+        - Context is used to "nudge" recognition, NOT as instructions
+        - Model doesn't understand "必须正确识别" - it just sees text
+        - Repetition works (transformer attention mechanism)
+        - Example sentences are most effective for biasing
+
+        V3 Strategy:
+        1. Critical words: repeat 3x (increases attention weight)
+        2. Reference words: list once
+        3. Example sentences: most effective biasing mechanism
+        4. NO instructional text (Qwen3 doesn't follow instructions)
+
+        Returns:
+            Formatted context string for Qwen3-ASR
+        """
+        weights = self._load_weights()
+        parts = []
+
+        # Part 1: Critical terms - REPEAT for attention boost
+        # Transformer attention mechanism responds to repetition
+        critical = [
+            word for word in self.config.prompt_words if weights.get(word, 0.5) >= 1.0
+        ]
+        if critical:
+            # Repeat each critical word 3 times for maximum bias
+            critical_repeated = " ".join([w for w in critical for _ in range(3)])
+            parts.append(critical_repeated)
+
+        # Part 2: Reference + Hint terms - list once (weight >= 0.3)
+        # In Qwen3, both tiers get same treatment (single occurrence = light bias)
+        # Keeping hint tier ensures words like "Lora" aren't silently dropped
+        reference = [
+            word
+            for word in self.config.prompt_words
+            if 0.3 <= weights.get(word, 0.5) < 1.0
+        ]
+        if reference:
+            parts.append(" ".join(reference))
+
+        # Part 3: Example sentences - MOST EFFECTIVE for biasing
+        # Real usage context helps model understand when to use these words
+        examples = self._get_example_sentences()
+        if examples:
+            # Join with periods for sentence boundaries
+            parts.append("。".join(examples) + "。")
+
+        # Part 4: Domain context as natural text (not as instruction)
+        if self.config.domain_context:
+            parts.append(self.config.domain_context)
+
+        context = "\n".join(parts)
+
+        # Token estimation and safety check
+        est_tokens = self._estimate_tokens(context)
+        if est_tokens > 9000:  # Leave 1K buffer
+            logger.warning(
+                f"Qwen3 context approaching limit: ~{est_tokens} tokens, truncating"
+            )
+            context = self._truncate_context(context, max_tokens=9000)
+            est_tokens = self._estimate_tokens(context)
+
+        logger.debug(
+            f"Qwen3 context V3: critical={len(critical)} (x3 repeat), "
+            f"reference={len(reference)}, examples={len(examples)}, "
+            f"chars={len(context)}, est_tokens={est_tokens}"
+        )
+
+        return context
+
+    def _get_example_sentences(self) -> List[str]:
+        """
+        Load example sentences from config file.
+
+        ⚠️ WARNING: Example sentences cause HALLUCINATION in Qwen3-ASR!
+        When audio is short/ambiguous, the model outputs example sentences
+        verbatim instead of actual speech. This feature is DISABLED.
+
+        Evidence (2025-01-31 debug log):
+        - 1.3s audio → output entire example_sentences as transcription
+        - Root cause: Context biasing too aggressive with complete sentences
+
+        Returns:
+            Empty list (feature disabled to prevent hallucination)
+        """
+        # DISABLED: Example sentences cause hallucination
+        # See docstring for details. Do not re-enable without fixing.
+        return []
+        if not self.config.config_path:
+            return []
+
+        try:
+            with open(self.config.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("example_sentences", [])
+        except Exception:
+            return []
+
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        Estimate token count for Qwen3-ASR context.
+
+        Rough estimation:
+        - Chinese characters: ~1.5 chars per token
+        - English/ASCII: ~4 chars per token
+
+        Args:
+            text: The context string to estimate
+
+        Returns:
+            Estimated token count
+        """
+        if not text:
+            return 0
+
+        cn_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        en_chars = len(text) - cn_chars
+
+        # Rough estimation formula
+        return int(cn_chars / 1.5 + en_chars / 4)
+
+    def _truncate_context(self, context: str, max_tokens: int = 9000) -> str:
+        """
+        Truncate context to fit within token limit.
+
+        Preserves structure priority:
+        1. Domain description (always keep)
+        2. Critical terms (high priority)
+        3. Reference terms (medium priority)
+        4. Examples (low priority, truncate first)
+        5. Hint terms (lowest priority)
+
+        Args:
+            context: Full context string
+            max_tokens: Maximum tokens allowed
+
+        Returns:
+            Truncated context string
+        """
+        lines = context.split("\n")
+        result_lines = []
+
+        # Priority order: 场景 > 必须 > 可能 > 示例 > 其他
+        priority_prefixes = ["场景", "必须", "可能", "示例", "其他"]
+
+        for prefix in priority_prefixes:
+            for line in lines:
+                if line.startswith(prefix):
+                    result_lines.append(line)
+                    current = "\n".join(result_lines)
+                    if self._estimate_tokens(current) > max_tokens:
+                        # Remove the line that pushed us over
+                        result_lines.pop()
+                        return "\n".join(result_lines)
+
+        return "\n".join(result_lines)
 
     def reload(self) -> None:
         """Reload configuration from file."""

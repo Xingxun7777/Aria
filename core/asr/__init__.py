@@ -8,9 +8,10 @@ from .fireredasr_engine import (
     FireRedASRConfig,
     check_fireredasr_installation,
 )
+from .qwen3_engine import Qwen3ASREngine, Qwen3Config, check_qwen3_installation
 
-# Note: FunASR and FireRedASR use lazy imports to avoid slow startup
-# Call check_funasr_installation() or check_fireredasr_installation() to check availability
+# Note: FunASR, FireRedASR, and Qwen3 use lazy imports to avoid slow startup
+# Call check_*_installation() to check availability
 
 __all__ = [
     "ASREngine",
@@ -24,4 +25,7 @@ __all__ = [
     "FireRedASREngine",
     "FireRedASRConfig",
     "check_fireredasr_installation",
+    "Qwen3ASREngine",
+    "Qwen3Config",
+    "check_qwen3_installation",
 ]

@@ -1,1 +1,1 @@
-"""UI components - tray, overlay, settings."""
+"""UI components - floating ball, system tray, settings."""

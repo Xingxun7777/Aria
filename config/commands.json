@@ -1,8 +1,7 @@
 {
   "enabled": true,
-  "prefix": "小助手",
+  "prefix": "遥遥",
   "cooldown_ms": 500,
-
   "commands": {
     "发送": {
       "key": "enter",
@@ -18,37 +17,51 @@
     },
     "撤销": {
       "key": "z",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "撤销上一步操作 (Ctrl+Z)"
     },
     "重做": {
       "key": "y",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "重做上一步操作 (Ctrl+Y)"
     },
     "复制": {
       "key": "c",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "复制选中内容 (Ctrl+C)"
     },
     "粘贴": {
       "key": "v",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "粘贴剪贴板内容 (Ctrl+V)"
     },
     "全选": {
       "key": "a",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "全选内容 (Ctrl+A)"
     },
     "保存": {
       "key": "s",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "保存文件 (Ctrl+S)"
     },
     "剪切": {
       "key": "x",
-      "modifiers": ["ctrl"],
+      "modifiers": [
+        "ctrl"
+      ],
       "description": "剪切选中内容 (Ctrl+X)"
     }
   }

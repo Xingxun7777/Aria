@@ -27,8 +27,8 @@ from pathlib import Path
 # Configuration
 # =============================================================================
 
-PYTHON_VERSION = "3.10.11"  # Match your dev environment
-PYTHON_MAJOR, PYTHON_MINOR = 3, 10  # Explicit for safety
+PYTHON_VERSION = "3.12.4"  # MUST match .venv Python version exactly
+PYTHON_MAJOR, PYTHON_MINOR = 3, 12  # Explicit for safety
 
 PYTHON_EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 
@@ -40,7 +40,7 @@ CACHE_DIR = BUILD_DIR / ".cache"
 RUNTIME_EXE_NAME = "AriaRuntime.exe"
 
 # Source directories to copy (relative to PROJECT_ROOT)
-SOURCE_DIRS = ["core", "ui", "features", "scheduler", "system", "config"]
+SOURCE_DIRS = ["core", "ui", "system", "config"]
 SOURCE_FILES = [
     "app.py",
     "__init__.py",
@@ -50,7 +50,7 @@ SOURCE_FILES = [
 ]
 
 # Data directories (assets, resources, etc.)
-DATA_DIRS = ["assets", "resources", "models"]
+DATA_DIRS = ["assets", "resources"]
 
 # Directories to completely exclude from distribution
 EXCLUDE_DIRS = ["DebugLog", "logs", ".git", "__pycache__"]
@@ -289,83 +289,64 @@ def step_clean_sensitive_data():
         return
 
     # ==========================================================================
-    # 1. Clean hotwords.json - Remove ALL user-specific data
+    # 1. Replace hotwords.json with template (clean defaults for distribution)
     # ==========================================================================
     hotwords_file = config_dir / "hotwords.json"
-    if hotwords_file.exists():
+    template_file = config_dir / "hotwords.template.json"
+
+    if template_file.exists():
+        try:
+            # Use the template as the distribution config (has safe defaults)
+            shutil.copy2(template_file, hotwords_file)
+            log("  Replaced hotwords.json with template (clean defaults)")
+
+            # Verify no API keys leaked
+            with open(hotwords_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            api_key = config.get("polish", {}).get("api_key", "")
+            if api_key and "YOUR_" not in api_key.upper():
+                # Template somehow has a real key - sanitize it
+                config["polish"]["api_key"] = "YOUR_OPENROUTER_API_KEY_HERE"
+                with open(hotwords_file, "w", encoding="utf-8") as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+                log("  WARNING: Template had real API key - sanitized")
+
+        except Exception as e:
+            log(f"  WARNING: Failed to use template: {e}")
+            # Fallback: try to clean existing hotwords.json
+            if hotwords_file.exists():
+                try:
+                    with open(hotwords_file, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    if "polish" in config and "api_key" in config["polish"]:
+                        config["polish"]["api_key"] = "YOUR_API_KEY_HERE"
+                    config.get("hotwords", []).clear()
+                    config.get("replacements", {}).clear()
+                    with open(hotwords_file, "w", encoding="utf-8") as f:
+                        json.dump(config, f, ensure_ascii=False, indent=2)
+                    log("  Fallback: cleaned hotwords.json in place")
+                except Exception as e2:
+                    log(f"  WARNING: Fallback clean also failed: {e2}")
+    elif hotwords_file.exists():
+        log("  WARNING: No template found, cleaning hotwords.json in place")
         try:
             with open(hotwords_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
-
-            # Clean API keys
             if "polish" in config and "api_key" in config["polish"]:
                 config["polish"]["api_key"] = "YOUR_API_KEY_HERE"
-                log("  Cleaned: polish.api_key")
-
-            # Clean user-specific data
-            if "hotwords" in config:
-                config["hotwords"] = []
-                log("  Cleaned: hotwords (emptied)")
-
-            if "hotword_weights" in config:
-                config["hotword_weights"] = {}
-                log("  Cleaned: hotword_weights (emptied)")
-
-            if "replacements" in config:
-                config["replacements"] = {}
-                log("  Cleaned: replacements (emptied)")
-
+            for key in ["hotwords", "hotword_weights", "replacements"]:
+                if key in config:
+                    if isinstance(config[key], list):
+                        config[key] = []
+                    elif isinstance(config[key], dict):
+                        config[key] = {}
             if "domain_context" in config:
                 config["domain_context"] = ""
-                log("  Cleaned: domain_context (emptied)")
-
-            # Clean user-specific hardware info (exposes microphone brand/model)
             if "general" in config:
-                if "audio_device" in config["general"]:
-                    config["general"]["audio_device"] = ""
-                    log("  Cleaned: general.audio_device (reset to auto-detect)")
-
-            # Set default ASR engine to funasr (better out-of-box experience)
-            config["asr_engine"] = "funasr"
-            log("  Set: asr_engine = funasr (default)")
-
-            # Set polish_mode to fast (uses local Qwen model, doesn't require API)
-            config["polish_mode"] = "fast"
-            log("  Set: polish_mode = fast (default)")
-
-            # Enable local polish, disable API polish (for out-of-box experience)
-            if "local_polish" in config:
-                config["local_polish"]["enabled"] = True
-                log("  Set: local_polish.enabled = true")
-            if "polish" in config:
-                config["polish"]["enabled"] = False
-                log("  Set: polish.enabled = false (API disabled by default)")
-
-            # Clean hardcoded paths (replace absolute paths with relative)
-            def clean_paths(obj, path=""):
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if isinstance(v, str) and re.search(
-                            r"[A-Z]:[/\\]", v, re.IGNORECASE
-                        ):
-                            if "model_path" in k.lower() or "path" in k.lower():
-                                obj[k] = "./models/YOUR_MODEL_HERE"
-                                log(f"  Cleaned path: {path}.{k}")
-                        elif isinstance(v, (dict, list)):
-                            clean_paths(v, f"{path}.{k}")
-                elif isinstance(obj, list):
-                    for i, v in enumerate(obj):
-                        if isinstance(v, (dict, list)):
-                            clean_paths(v, f"{path}[{i}]")
-
-            clean_paths(config)
-
-            # Write cleaned config
+                config["general"]["audio_device"] = ""
             with open(hotwords_file, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
-
-            log("  Updated hotwords.json")
-
+            log("  Cleaned hotwords.json (no template available)")
         except Exception as e:
             log(f"  WARNING: Failed to clean hotwords.json: {e}")
 
@@ -448,7 +429,26 @@ def step_clean_sensitive_data():
             log(f"  WARNING: Failed to reset wakeword.json: {e}")
 
     # ==========================================================================
-    # 7. Remove __pycache__ directories
+    # 7. Reset commands.json prefix to match wakeword
+    # ==========================================================================
+    commands_file = config_dir / "commands.json"
+    if commands_file.exists():
+        try:
+            with open(commands_file, "r", encoding="utf-8") as f:
+                cmd_config = json.load(f)
+
+            cmd_config["prefix"] = "小助手"
+
+            with open(commands_file, "w", encoding="utf-8") as f:
+                json.dump(cmd_config, f, ensure_ascii=False, indent=2)
+
+            log("  Set: commands.json prefix = 小助手 (matches wakeword)")
+
+        except Exception as e:
+            log(f"  WARNING: Failed to reset commands.json: {e}")
+
+    # ==========================================================================
+    # 8. Remove __pycache__ directories
     # ==========================================================================
     pycache_count = 0
     for pycache in aria_dir.rglob("__pycache__"):

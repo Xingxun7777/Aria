@@ -93,6 +93,15 @@ class PolishConfig:
     model: str = "google/gemini-2.5-flash-lite-preview-09-2025"
     timeout: float = 10.0
 
+    # 备用 API 配置（用于智能轮询）
+    api_url_backup: str = ""  # 备用 API 地址，为空则不启用轮询
+    api_key_backup: str = ""  # 备用 API 密钥（如果不同）
+    model_backup: str = ""  # 备用模型（如果不同，为空则用主模型）
+
+    # 智能轮询参数
+    slow_threshold_ms: float = 3000.0  # 响应超过此值视为"慢"（毫秒）
+    switch_after_slow_count: int = 2  # 连续慢 N 次后切换 API
+
     # Prompt template - supports {text}, {domain_context}, {hotwords}
     # Also supports {hotwords_critical} and {hotwords_context} for tiered system
     # Uses the shared DEFAULT_POLISH_PROMPT constant
@@ -152,11 +161,75 @@ class AIPolisher:
     AI-powered text polisher using LLM.
 
     Uses OpenAI-compatible API to polish ASR output.
+    Supports intelligent API failover when response is slow.
     """
 
     def __init__(self, config: PolishConfig):
         self.config = config
         self._client: Optional[httpx.Client] = None
+
+        # 智能轮询状态
+        self._using_backup: bool = False  # 当前是否使用备用 API
+        self._slow_count: int = 0  # 连续慢响应计数
+        self._last_switch_reason: str = ""  # 上次切换原因（调试用）
+
+    def _get_current_api_config(self) -> Tuple[str, str, str]:
+        """
+        获取当前使用的 API 配置。
+
+        Returns:
+            (api_url, api_key, model)
+        """
+        if self._using_backup and self.config.api_url_backup:
+            return (
+                self.config.api_url_backup,
+                self.config.api_key_backup or self.config.api_key,
+                self.config.model_backup or self.config.model,
+            )
+        return (self.config.api_url, self.config.api_key, self.config.model)
+
+    def _check_and_switch_api(self, response_time_ms: float, had_error: bool) -> None:
+        """
+        检查响应时间，必要时切换 API。
+
+        Args:
+            response_time_ms: 本次响应时间（毫秒）
+            had_error: 是否发生错误（超时、网络错误等）
+        """
+        # 如果没有配置备用 API，不做切换
+        if not self.config.api_url_backup:
+            return
+
+        is_slow = response_time_ms > self.config.slow_threshold_ms or had_error
+
+        if is_slow:
+            self._slow_count += 1
+            current_api = "备用" if self._using_backup else "主"
+            logger.debug(
+                f"[POLISH] {current_api}API 响应慢/错误 "
+                f"({response_time_ms:.0f}ms), 连续慢次数: {self._slow_count}"
+            )
+
+            # 达到切换阈值
+            if self._slow_count >= self.config.switch_after_slow_count:
+                self._using_backup = not self._using_backup
+                self._slow_count = 0
+                new_api = "备用" if self._using_backup else "主"
+                self._last_switch_reason = (
+                    f"连续{self.config.switch_after_slow_count}次慢响应"
+                    if not had_error
+                    else "API错误"
+                )
+                logger.info(
+                    f"[POLISH] 切换到{new_api}API (原因: {self._last_switch_reason})"
+                )
+        else:
+            # 响应正常，重置计数
+            if self._slow_count > 0:
+                logger.debug(
+                    f"[POLISH] 响应正常 ({response_time_ms:.0f}ms), 重置慢计数"
+                )
+            self._slow_count = 0
 
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
@@ -353,11 +426,14 @@ class AIPolisher:
         Returns:
             Dict with keys: output_text, changed, api_time_ms, error, http_status, full_prompt
         """
+        # 获取当前 API 配置（支持智能轮询）
+        current_url, current_key, current_model = self._get_current_api_config()
+
         debug_info = {
             "enabled": self.config.enabled,
-            "api_url": self.config.api_url,
+            "api_url": current_url,
             "full_api_url": "",  # Will be set after URL construction
-            "model": self.config.model,
+            "model": current_model,
             "timeout": self.config.timeout,
             "input_text": text,
             "prompt_template": self.config.prompt_template,
@@ -367,6 +443,7 @@ class AIPolisher:
             "api_time_ms": 0.0,
             "error": "",
             "http_status": 0,
+            "using_backup": self._using_backup,  # 是否使用备用 API
         }
 
         if not self.config.enabled:
@@ -377,6 +454,7 @@ class AIPolisher:
             debug_info["error"] = "Text too short"
             return debug_info
 
+        had_error = False
         try:
             client = self._get_client()
 
@@ -386,7 +464,7 @@ class AIPolisher:
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.config.api_key}",
+                "Authorization": f"Bearer {current_key}",
             }
 
             # System message for JSON output mode
@@ -396,7 +474,7 @@ class AIPolisher:
             json_prompt = f'{prompt}\n\n输出JSON：{{"text": "修正后的文本"}}'
 
             payload = {
-                "model": self.config.model,
+                "model": current_model,
                 "messages": [
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": json_prompt},
@@ -407,7 +485,7 @@ class AIPolisher:
             }
 
             # Build full API URL - handle both /api and /api/v1 base URLs
-            base_url = self.config.api_url.rstrip("/")
+            base_url = current_url.rstrip("/")
             if base_url.endswith("/v1"):
                 full_url = f"{base_url}/chat/completions"
             else:
@@ -426,6 +504,9 @@ class AIPolisher:
                     f"HTTP {response.status_code}: {response.text[:200]}"
                 )
                 logger.warning(f"Polish API error: {response.status_code}")
+                had_error = True
+                # 检查是否需要切换 API
+                self._check_and_switch_api(api_time, had_error)
                 return debug_info
 
             result = response.json()
@@ -462,16 +543,24 @@ class AIPolisher:
             debug_info["output_text"] = polished
             debug_info["changed"] = polished != text
 
+            # 检查是否需要切换 API（正常响应也要检查响应时间）
+            self._check_and_switch_api(api_time, had_error=False)
+
             logger.debug(f"Polished: '{text}' -> '{polished}'")
             return debug_info
 
         except httpx.TimeoutException:
             debug_info["error"] = "Timeout"
+            debug_info["api_time_ms"] = self.config.timeout * 1000  # 超时时间
             logger.warning("Polish API timeout")
+            # 超时视为严重错误，检查切换
+            self._check_and_switch_api(self.config.timeout * 1000, had_error=True)
             return debug_info
         except Exception as e:
             debug_info["error"] = str(e)
             logger.error(f"Polish error: {e}")
+            # 其他错误也检查切换
+            self._check_and_switch_api(0, had_error=True)
             return debug_info
 
     def close(self):

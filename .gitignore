@@ -1,66 +1,68 @@
-# Python
+# === Python ===
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 
-# Debug audio files
-debug_audio_*.wav
+# === Virtual Environments ===
+.venv/
+.venv_old/
+env/
+venv/
 
-# IDE
+# === IDE ===
 .idea/
 .vscode/
 *.swp
 *.swo
+*.code-workspace
 
-# Logs
-*.log
-logs/
-
-# Environment
-.env
-.venv
-env/
-venv/
-ENV/
-
-# OS
+# === OS ===
 .DS_Store
 Thumbs.db
 nul
+desktop.ini
 
-# Config with secrets
-config/hotwords.json
-
-# Debug logs
+# === Logs ===
+*.log
+logs/
 DebugLog/
 
-# Large model files
-models/*.gguf
-*.tmp.*
+# === User Config (contains API keys and personal settings) ===
+config/hotwords.json
 
-# Portable build artifacts
+# === User Data ===
+data/
+
+# === Large Model Files ===
+models/*.gguf
+models/*.bin
+models/*.pt
+
+# === Build Artifacts ===
 dist_portable/
-build_portable/.pyinstaller_build/
 build_portable/.cache/
+build_portable/.pyinstaller_build/
 build_portable/*.spec
 
-# User data
-data/
-.venv_old/
+# === Temporary Files ===
+*.tmp
+*.tmp.*
+*.bak
+
+# === Debug Audio ===
+debug_audio_*.wav
+*.wav.tmp
+
+# === AI Agent Artifacts (session-specific) ===
+.agent/ai_logs/
+.agent/temp/
+.agent/context/codex_sessions.json
+.agent/context/gemini_sessions.json
+
+# === Sisyphus Planning (session-specific) ===
+.sisyphus/drafts/
+.sisyphus/plans/

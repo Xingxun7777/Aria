@@ -327,6 +327,8 @@ class HotkeyManager:
         _log(f"Registered bindings: {list(self._bindings.keys())}")
 
         msg_count = 0
+        last_heartbeat = time.time()
+        HEARTBEAT_INTERVAL = 300  # Log heartbeat every 5 minutes
         while self._running:
             self._process_actions()
             # PeekMessage with PM_REMOVE (1)
@@ -349,8 +351,10 @@ class HotkeyManager:
                         try:
                             logger.debug(f"Hotkey {hotkey_id} triggered")
                             _log(f"Calling callback for hotkey {hotkey_id}")
+                            cb_start = time.time()
                             binding.callback()
-                            _log(f"Callback completed successfully")
+                            cb_ms = (time.time() - cb_start) * 1000
+                            _log(f"Callback completed ({cb_ms:.0f}ms)")
                         except Exception as e:
                             logger.error(f"Hotkey callback error: {e}")
                             _log(f"Callback error: {e}")
@@ -362,6 +366,12 @@ class HotkeyManager:
             else:
                 # No message, sleep briefly to reduce CPU
                 time.sleep(0.01)
+
+            # Periodic heartbeat to confirm message loop is alive
+            now = time.time()
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                _log(f"[HEARTBEAT] alive, msgs={msg_count}, bindings={list(self._bindings.keys())}")
+                last_heartbeat = now
 
         # Process any remaining actions (e.g., unregister) before exit
         self._process_actions()
@@ -472,7 +482,9 @@ class HotkeyManager:
                 done.set()
 
         self._action_queue.put(wrapper)
-        done.wait()
+        # Use timeout to prevent indefinite blocking
+        if not done.wait(timeout=5.0):
+            raise RuntimeError("Hotkey thread did not respond in time")
 
         if "error" in result:
             raise result["error"]
