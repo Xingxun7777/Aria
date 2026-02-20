@@ -57,12 +57,12 @@ build_portable/*.spec
 debug_audio_*.wav
 *.wav.tmp
 
-# === AI Agent Artifacts (session-specific) ===
-.agent/ai_logs/
-.agent/temp/
-.agent/context/codex_sessions.json
-.agent/context/gemini_sessions.json
+# === AI Agent Artifacts ===
+.agent/
 
-# === Sisyphus Planning (session-specific) ===
-.sisyphus/drafts/
-.sisyphus/plans/
+# === Sisyphus Planning ===
+.sisyphus/
+
+# === Temporary Archives ===
+*.tar
+.tmp_arxiv/

@@ -1,6 +1,6 @@
 # Aria 发布审核清单
 
-> 最后更新: 2026-02-12 (v1.1.1)
+> 最后更新: 2026-02-20 (v1.1.2)
 
 ## 发布前检查
 
@@ -38,12 +38,11 @@
 ## Build 命令
 
 ```bash
-cd G:\AIBOX\voicetype-v1.1-dev
 build_portable\release.bat
 ```
 
 ## 压缩命令
 
 ```bash
-7z a Aria-v1.1.1.7z dist_portable\Aria\
+7z a Aria-v1.1.2.7z dist_portable\Aria\
 ```

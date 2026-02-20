@@ -1,7 +1,7 @@
 # Aria v1.1 - 项目技术文档
 
 > Windows 本地 AI 语音听写 + 智能指令工具
-> 版本: v1.1.1 (2026-02)
+> 版本: v1.1.2 (2026-02)
 > Python: 3.12.4 | Qt: PySide6 | GPU: CUDA 12.x
 
 ---
@@ -36,7 +36,7 @@ Aria.exe → launcher_stub.py (PyInstaller EXE)
 ## 目录结构
 
 ```
-voicetype-v1.1-dev/
+Aria/
 ├── launcher.py            # 入口: 单例 + splash + 环境检测
 ├── app.py                 # 主应用 (~2300行): 状态机 + ASR 编排 + 所有流程
 ├── progress_ipc.py        # splash 进程间通信
@@ -165,7 +165,7 @@ voicetype-v1.1-dev/
 
 ### 命令
 ```powershell
-cd G:\AIBOX\voicetype-v1.1-dev
+cd Aria
 .\build_portable\release.bat
 ```
 
@@ -222,4 +222,4 @@ config watcher 每 2 秒检查 `hotwords.json` 修改时间，变更时自动更
 
 ---
 
-*最后更新: 2026-02-12*
+*最后更新: 2026-02-20*

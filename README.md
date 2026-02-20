@@ -69,8 +69,8 @@ CPU 模式下所有功能正常，识别速度约为 GPU 的 2-5 倍时间。
 ### 从源码运行
 
 ```bash
-git clone <repo-url>
-cd voicetype-v1.1-dev
+git clone https://github.com/Xingxun7777/Aria.git
+cd Aria
 
 python -m venv .venv
 .venv\Scripts\activate
@@ -243,7 +243,7 @@ Whisper 和 Qwen3-ASR 首次使用需下载模型（1-3 GB）。FunASR 内置模
 <summary>展开查看</summary>
 
 ```
-voicetype-v1.1-dev/
+Aria/
 ├── launcher.py              # 入口：单例检查 + splash + 模型预加载
 ├── app.py                   # 主应用：状态机 + ASR 编排
 ├── core/                    # 核心模块
