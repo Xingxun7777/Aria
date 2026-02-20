@@ -834,6 +834,54 @@ def main():
 
     ball.modeChanged.connect(on_mode_changed)
 
+    # Handle input mode change from popup menu
+    def on_input_mode_changed(mode):
+        _log(f"[Aria] Input mode changed: {mode}")
+        if hasattr(backend, "set_input_mode"):
+            backend.set_input_mode(mode)
+        # Save to config
+        try:
+            import json, os
+            from aria.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            if "general" not in config:
+                config["general"] = {}
+            config["general"]["input_mode"] = mode
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+            _log(f"[Aria] Input mode saved: {mode}")
+            tray.showMessage(
+                "Aria",
+                f"输入模式: {'切换模式' if mode == 'toggle' else '按住说话 (右Ctrl)'}",
+                QSystemTrayIcon.MessageIcon.Information,
+                1500,
+            )
+        except Exception as e:
+            _log(f"[Aria] Failed to save input mode: {e}")
+
+    ball.inputModeChanged.connect(on_input_mode_changed)
+
+    # Load and sync initial input mode
+    if ball._popup_menu:
+        try:
+            import json
+            from aria.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            input_mode = config.get("general", {}).get("input_mode", "toggle")
+            ball._popup_menu.setInputMode(input_mode)
+        except Exception:
+            pass  # Default to toggle mode
+
     # Handle sleep toggle from popup menu (fallback button)
     def on_sleep_toggled(sleeping):
         _log(f"[Aria] Sleep toggled via UI: {sleeping}")

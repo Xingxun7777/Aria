@@ -14,9 +14,129 @@ from typing import Any, Callable, Dict, Optional
 from dataclasses import dataclass
 from enum import IntFlag
 
+import numpy as np
+
 from ..core.logging import get_system_logger
 
 logger = get_system_logger()
+
+
+# PTT key name -> pynput Key mapping (lazy-loaded to avoid import at module level)
+_PTT_KEY_MAP = None
+
+
+def _get_ptt_key(key_name: str):
+    """Map PTT key name string to pynput Key object."""
+    global _PTT_KEY_MAP
+    if _PTT_KEY_MAP is None:
+        from pynput.keyboard import Key
+        _PTT_KEY_MAP = {
+            "right_ctrl": Key.ctrl_r,
+            "left_ctrl": Key.ctrl_l,
+            "right_alt": Key.alt_r,
+            "left_alt": Key.alt_l,
+            "right_shift": Key.shift_r,
+            "left_shift": Key.shift_l,
+        }
+    return _PTT_KEY_MAP.get(key_name.lower())
+
+
+class PTTHandler:
+    """Push-to-Talk handler using pynput for key-down/up detection.
+
+    Uses pynput.keyboard.Listener (SetWindowsHookEx) which coexists with
+    RegisterHotKey used by HotkeyManager — no conflicts.
+
+    The listener is passive (does not suppress/intercept keystrokes).
+    """
+
+    def __init__(
+        self,
+        key: str = "right_ctrl",
+        on_press_cb: Optional[Callable[[], None]] = None,
+        on_release_cb: Optional[Callable[[], None]] = None,
+    ):
+        self._key_name = key
+        self._target_key = _get_ptt_key(key)
+        if self._target_key is None:
+            raise ValueError(f"Unknown PTT key: {key}. "
+                             f"Supported: {list(_PTT_KEY_MAP.keys()) if _PTT_KEY_MAP else []}")
+        self._on_press_cb = on_press_cb
+        self._on_release_cb = on_release_cb
+        self._is_pressed = False  # Debounce: ignore OS auto-repeat
+        self._listener = None
+        self._running = False
+
+    def start(self) -> None:
+        """Start the pynput keyboard listener."""
+        if self._running:
+            return
+        from pynput.keyboard import Listener
+        self._running = True
+        self._is_pressed = False
+        self._listener = Listener(
+            on_press=self._on_key_press,
+            on_release=self._on_key_release,
+        )
+        self._listener.daemon = True
+        self._listener.start()
+        logger.info(f"PTT handler started (key={self._key_name})")
+
+    def stop(self) -> None:
+        """Stop the pynput keyboard listener."""
+        if not self._running:
+            return
+        self._running = False
+        self._is_pressed = False
+        if self._listener:
+            self._listener.stop()
+            self._listener = None
+        logger.info("PTT handler stopped")
+
+    def set_key(self, key_name: str) -> None:
+        """Change the PTT key. Restarts listener if running."""
+        new_key = _get_ptt_key(key_name)
+        if new_key is None:
+            raise ValueError(f"Unknown PTT key: {key_name}")
+        was_running = self._running
+        if was_running:
+            self.stop()
+        self._key_name = key_name
+        self._target_key = new_key
+        if was_running:
+            self.start()
+
+    @property
+    def is_pressed(self) -> bool:
+        return self._is_pressed
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def _on_key_press(self, key) -> None:
+        """pynput callback for key press."""
+        if not self._running:
+            return
+        if key == self._target_key and not self._is_pressed:
+            self._is_pressed = True
+            if self._on_press_cb:
+                try:
+                    self._on_press_cb()
+                except Exception as e:
+                    logger.error(f"PTT press callback error: {e}")
+
+    def _on_key_release(self, key) -> None:
+        """pynput callback for key release."""
+        if not self._running:
+            return
+        if key == self._target_key and self._is_pressed:
+            self._is_pressed = False
+            if self._on_release_cb:
+                try:
+                    self._on_release_cb()
+                except Exception as e:
+                    logger.error(f"PTT release callback error: {e}")
 
 # Windows API - use WinDLL with use_last_error for proper error handling
 user32 = ctypes.WinDLL("user32", use_last_error=True)

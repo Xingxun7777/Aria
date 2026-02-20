@@ -141,7 +141,7 @@ from .core.selection import (
     CommandType,
 )
 from .core.action import TranslationAction, ChatAction
-from .system.hotkey import HotkeyManager
+from .system.hotkey import HotkeyManager, PTTHandler
 from .system.output import OutputInjector, OutputConfig
 from .ui.streaming_display import DisplayBuffer, DisplayState
 from .core.logging import get_system_logger
@@ -262,6 +262,14 @@ class AriaApp:
 
         # Disabled mode: hotkey toggles back to enabled (for elevation dialog)
         self._is_disabled = False
+
+        # PTT (Push-to-Talk) mode
+        self._input_mode: str = "toggle"  # "toggle" (default) or "ptt"
+        self._ptt_handler: PTTHandler = None
+        self._ptt_audio_segments: list = []  # Accumulated audio during PTT hold
+        self._ptt_active: bool = False  # True while PTT key is held down
+        self._ptt_max_timer: threading.Timer = None  # 60s safety limit
+        self._ptt_key: str = "right_ctrl"  # Default PTT key
 
         # Config file watcher (hot-reload)
         self._config_path = get_config_path("hotwords.json")
@@ -949,6 +957,9 @@ class AriaApp:
         self._emit_voice_activity(True)
 
         # Start streaming ASR (interim results while speaking)
+        # FIX I4: Skip interim timer in PTT mode (audio is merged at release, not piecemeal)
+        if self._input_mode == "ptt" and self._ptt_active:
+            return
         self._last_interim_text = ""
         self._start_interim_timer()
 
@@ -958,6 +969,17 @@ class AriaApp:
         self._emit_voice_activity(False)
 
         if audio is None or len(audio) < 1600:  # < 0.1s
+            return
+
+        # PTT mode: accumulate audio segments, don't send to ASR yet
+        if self._input_mode == "ptt" and self._ptt_active:
+            import numpy as np
+            segment = np.array(audio, copy=True)
+            with self._lock:
+                self._ptt_audio_segments.append(segment)
+                seg_count = len(self._ptt_audio_segments)
+            print(f"[PTT] Accumulated segment ({len(audio)/16000:.1f}s), "
+                  f"total segments: {seg_count}")
             return
 
         # Health check: restart worker if it died (GPU error, uncaught exception, etc.)
@@ -1667,7 +1689,12 @@ class AriaApp:
                 continue
 
             try:
-                self._handle_hotkey_action()
+                if action == "ptt_press":
+                    self._on_ptt_press()
+                elif action == "ptt_release":
+                    self._on_ptt_release()
+                else:
+                    self._handle_hotkey_action()
             except Exception as e:
                 _pipeline_log("HOTKEY", f"Action error: {e}")
                 logger.error(f"Hotkey action error: {e}", exc_info=True)
@@ -1713,13 +1740,19 @@ class AriaApp:
             f"worker_alive={worker_alive}, worker_busy={self._worker_busy}",
         )
 
+        # FIX I3: Check PTT state before acquiring lock (avoid deadlock with _on_ptt_release)
+        if self._input_mode == "ptt" and self._ptt_active and self.state == AppState.RECORDING:
+            _pipeline_log("HOTKEY", "PTT active, delegating to ptt_release...")
+            self._on_ptt_release()
+            return
+
         with self._lock:
             if self.state == AppState.IDLE:
                 # Normal recording start
                 _pipeline_log("HOTKEY", "Starting recording...")
                 self._start_recording()
             elif self.state == AppState.RECORDING:
-                # Stop recording
+                # Stop recording (toggle mode)
                 _pipeline_log("HOTKEY", "Stopping recording...")
                 self._stop_recording()
             else:
@@ -1817,6 +1850,204 @@ class AriaApp:
         self.state = AppState.IDLE
         # REMOVED: self._emit_state("IDLE") - moved to on_insert_complete flow
         print("[STATE] -> IDLE (internal, UI stays TRANSCRIBING)")
+
+    # =========================================================================
+    # PTT (Push-to-Talk) Methods
+    # =========================================================================
+
+    def _on_ptt_press(self) -> None:
+        """Called when PTT key is pressed down."""
+        _pipeline_log("PTT", ">>> PTT key pressed")
+
+        if self._input_mode != "ptt":
+            return
+
+        # Only start if IDLE
+        with self._lock:
+            if self.state != AppState.IDLE:
+                print(f"[PTT] Ignored press (state={self.state.name})")
+                return
+
+        # Re-enable from disabled state (same as toggle mode)
+        if self._is_disabled:
+            self._is_disabled = False
+            if self._bridge:
+                self._bridge.emit_setting_changed("enabled", True)
+            return
+
+        # Allow in sleeping mode for wakeword detection
+        with self._lock:
+            is_sleeping = self._is_sleeping
+        if is_sleeping:
+            print("[PTT] Pressed in sleeping mode - wakeword detection enabled")
+
+        self._ptt_active = True
+        self._ptt_audio_segments = []
+
+        # Start recording
+        with self._lock:
+            self._start_recording()
+
+        # Safety: 60s max recording timer
+        if self._ptt_max_timer:
+            self._ptt_max_timer.cancel()
+        self._ptt_max_timer = threading.Timer(60.0, self._on_ptt_timeout)
+        self._ptt_max_timer.daemon = True
+        self._ptt_max_timer.start()
+
+        print("[PTT] Recording started (hold key to continue)")
+
+    def _on_ptt_release(self) -> None:
+        """Called when PTT key is released. Must run on action worker thread."""
+        _pipeline_log("PTT", ">>> PTT key released")
+
+        if not self._ptt_active:
+            return
+
+        # Cancel safety timer
+        if self._ptt_max_timer:
+            self._ptt_max_timer.cancel()
+            self._ptt_max_timer = None
+
+        # Check we're actually recording
+        with self._lock:
+            if self.state != AppState.RECORDING:
+                print(f"[PTT] Release ignored (state={self.state.name})")
+                self._ptt_active = False
+                self._ptt_audio_segments = []
+                return
+
+        # FIX C2: Stop capture FIRST while _ptt_active is still True
+        # This ensures any last VAD callbacks still accumulate into _ptt_audio_segments
+        self._stop_interim_timer()
+        self._beep(400, 50)
+        print("[PTT] Recording stopped, collecting audio...")
+
+        self._emit_state("TRANSCRIBING")
+
+        import numpy as np
+        final_audio = self.audio_capture.stop()
+
+        # NOW set _ptt_active=False (capture is stopped, no more VAD callbacks)
+        self._ptt_active = False
+
+        # FIX I1: Lock-protected access to _ptt_audio_segments
+        with self._lock:
+            all_segments = list(self._ptt_audio_segments)
+            self._ptt_audio_segments = []
+
+        if final_audio is not None and len(final_audio) > 0:
+            all_segments.append(np.array(final_audio, copy=True))
+
+        if not all_segments:
+            print("[PTT] No audio collected")
+            self.state = AppState.IDLE
+            self._emit_state("IDLE")
+            self._emit_insert_complete()
+            return
+
+        merged = np.concatenate(all_segments)
+        duration_s = len(merged) / 16000
+        print(f"[PTT] Merged audio: {duration_s:.2f}s ({len(all_segments)} segments)")
+
+        # Too short check (< 0.3s = accidental tap)
+        MIN_SAMPLES = 4800  # 0.3 seconds
+        if len(merged) < MIN_SAMPLES:
+            print(f"[PTT] Too short ({duration_s:.2f}s < 0.3s) - ignored")
+            self.state = AppState.IDLE
+            self._emit_state("IDLE")
+            self._emit_insert_complete()
+            return
+
+        # Queue merged audio for ASR
+        _pipeline_log("PTT", f"Queuing merged audio for ASR ({duration_s:.2f}s)")
+        try:
+            self._asr_queue.put_nowait((self._session_count, merged))
+        except queue.Full:
+            print("[PTT] ASR queue full, dropping merged audio")
+
+        self.state = AppState.IDLE
+        print("[PTT] -> IDLE (internal, UI stays TRANSCRIBING)")
+
+    def _on_ptt_timeout(self) -> None:
+        """Safety: auto-release after 60s max recording.
+
+        FIX C1: Queue the release action instead of calling directly from Timer thread.
+        This ensures _on_ptt_release runs on the action worker thread.
+        """
+        print("[PTT] 60s timeout reached, queuing auto-release")
+        _pipeline_log("PTT", "60s timeout, queuing ptt_release")
+        try:
+            self._hotkey_action_queue.put("ptt_release", timeout=2.0)
+        except queue.Full:
+            # Emergency: timer thread can't queue - force cleanup
+            _pipeline_log("PTT", "EMERGENCY: queue full on timeout, forcing cleanup")
+            self._ptt_active = False
+
+    def set_input_mode(self, mode: str) -> None:
+        """Switch between 'toggle' and 'ptt' input modes.
+
+        Thread-safe: can be called from UI thread.
+        """
+        if mode not in ("toggle", "ptt"):
+            print(f"[PTT] Unknown input mode: {mode}")
+            return
+
+        if mode == self._input_mode:
+            return
+
+        print(f"[PTT] Switching input mode: {self._input_mode} -> {mode}")
+        _pipeline_log("PTT", f"Input mode: {self._input_mode} -> {mode}")
+
+        # If currently recording, stop first
+        with self._lock:
+            if self.state == AppState.RECORDING:
+                if self._ptt_active:
+                    self._ptt_active = False
+                    if self._ptt_max_timer:
+                        self._ptt_max_timer.cancel()
+                        self._ptt_max_timer = None
+                self._stop_recording()
+
+        old_mode = self._input_mode
+        self._input_mode = mode
+
+        if mode == "ptt":
+            # Start PTT handler
+            if not self._ptt_handler:
+                ptt_key = self._ptt_key
+                def _ptt_press_cb():
+                    try:
+                        self._hotkey_action_queue.put_nowait("ptt_press")
+                    except queue.Full:
+                        _pipeline_log("PTT", "Press dropped: action queue full")
+
+                def _ptt_release_cb():
+                    # FIX I2: Use put with timeout for release - release must not be lost
+                    try:
+                        self._hotkey_action_queue.put("ptt_release", timeout=2.0)
+                    except queue.Full:
+                        _pipeline_log("PTT", "CRITICAL: Release dropped after 2s wait!")
+                        self._ptt_active = False  # Emergency cleanup
+
+                self._ptt_handler = PTTHandler(
+                    key=ptt_key,
+                    on_press_cb=_ptt_press_cb,
+                    on_release_cb=_ptt_release_cb,
+                )
+            self._ptt_handler.start()
+            print(f"[PTT] PTT mode active (key={self._ptt_key})")
+        else:
+            # Stop PTT handler
+            if self._ptt_handler:
+                self._ptt_handler.stop()
+            self._ptt_audio_segments = []
+            self._ptt_active = False
+            print("[PTT] Toggle mode active")
+
+    def get_input_mode(self) -> str:
+        """Get current input mode."""
+        return self._input_mode
 
     # =========================================================================
     # Selection Mode Methods
@@ -2035,6 +2266,19 @@ class AriaApp:
             if hotkey_ok:
                 self.hotkey_manager.start()
 
+            # Load PTT config (default off)
+            try:
+                import json
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                self._ptt_key = _cfg.get("general", {}).get("ptt_key", "right_ctrl")
+                saved_mode = _cfg.get("general", {}).get("input_mode", "toggle")
+                if saved_mode == "ptt":
+                    self.set_input_mode("ptt")
+                    print(f"[PTT] Started in PTT mode (key={self._ptt_key})")
+            except Exception as e:
+                print(f"[PTT] Config load skipped: {e}")
+
             self._running = True
 
             print()
@@ -2045,6 +2289,8 @@ class AriaApp:
                 print(
                     f"  Hotkey [{self.hotkey.upper()}] unavailable - use UI to toggle"
                 )
+            if self._input_mode == "ptt":
+                print(f"  PTT mode: hold [{self._ptt_key.upper()}] to record")
             print("=" * 60)
             print()
             print("Ready! Waiting for input...")
@@ -2065,6 +2311,13 @@ class AriaApp:
 
         # Stop streaming ASR timer first (prevent stale callbacks)
         self._stop_interim_timer()
+
+        # Stop PTT handler
+        if self._ptt_handler:
+            self._ptt_handler.stop()
+        if self._ptt_max_timer:
+            self._ptt_max_timer.cancel()
+            self._ptt_max_timer = None
 
         # Stop recording if active
         if self.audio_capture and self.audio_capture.is_recording:

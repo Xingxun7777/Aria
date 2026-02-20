@@ -25,9 +25,55 @@ from PySide6.QtGui import (
     QPen,
     QRadialGradient,
     QConicalGradient,
+    QLinearGradient,
 )
 
 from .popup_menu import PopupMenu
+
+
+class _StreamingLabel(QLabel):
+    """QLabel with a 'frosted glass lite' panel for elegant readability.
+
+    Three painted layers create a premium feel without actual backdrop blur:
+      1. Semi-transparent warm-dark panel  (readable on any desktop)
+      2. Top-edge highlight gradient       (simulates glass catching light)
+      3. Hair-thin luminous border         (defines edges subtly)
+
+    WA_TranslucentBackground on Windows breaks stylesheet background-color,
+    so all visual layers are drawn by QPainter in paintEvent.
+    """
+
+    _BG = QColor(28, 25, 38, 130)          # warm purple-dark, ~51 % opacity
+    _HL_TOP = QColor(255, 255, 255, 18)    # glass highlight start
+    _HL_END = QColor(255, 255, 255, 0)     # glass highlight fade
+    _BORDER = QColor(255, 255, 255, 20)    # barely-visible edge
+    _R = 10.0                              # corner radius
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self.rect().adjusted(0, 0, -1, -1)
+
+        # Layer 1 — warm semi-transparent panel
+        p.setBrush(self._BG)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(r, self._R, self._R)
+
+        # Layer 2 — top-edge highlight (glass catching overhead light)
+        grad = QLinearGradient(0, 0, 0, min(r.height(), 22))
+        grad.setColorAt(0.0, self._HL_TOP)
+        grad.setColorAt(1.0, self._HL_END)
+        p.setBrush(QBrush(grad))
+        p.drawRoundedRect(r, self._R, self._R)
+
+        # Layer 3 — hair-thin luminous border
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(self._BORDER, 0.5))
+        p.drawRoundedRect(r, self._R, self._R)
+
+        p.end()
+        # Text rendered by QLabel (stylesheet color)
+        super().paintEvent(event)
 
 
 class FloatingBall(QWidget):
@@ -53,6 +99,7 @@ class FloatingBall(QWidget):
     lockToggled = Signal(bool)  # Middle-click: lock state changed
     enableToggled = Signal(bool)  # From popup menu: enable/disable
     modeChanged = Signal(str)  # From popup menu: polish mode changed
+    inputModeChanged = Signal(str)  # From popup menu: input mode changed
 
     # Ball states
     STATE_IDLE = "idle"
@@ -215,7 +262,7 @@ class FloatingBall(QWidget):
         """Initialize the ball appearance and streaming text label."""
         # Floating text label for streaming ASR results
         # Design: "Phantom HUD" - elegant, warm, premium feel
-        self._streaming_label = QLabel()
+        self._streaming_label = _StreamingLabel()
         self._streaming_label.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.Tool
@@ -224,17 +271,16 @@ class FloatingBall(QWidget):
         )
         self._streaming_label.setAttribute(Qt.WA_TranslucentBackground)
         self._streaming_label.setAttribute(Qt.WA_ShowWithoutActivating)
+        # Panel painted by _StreamingLabel.paintEvent (frosted glass lite).
         self._streaming_label.setStyleSheet(
             """
             QLabel {
-                background-color: rgba(20, 20, 25, 160);
-                color: rgba(255, 254, 250, 210);
+                background: transparent;
+                color: rgba(255, 255, 255, 230);
                 font-family: "Segoe UI", "Microsoft YaHei";
                 font-size: 13px;
                 font-weight: 400;
                 padding: 10px 16px;
-                border-radius: 10px;
-                border: 1px solid rgba(255, 255, 255, 8);
             }
             """
         )
@@ -244,14 +290,12 @@ class FloatingBall(QWidget):
         self._streaming_label.setWordWrap(True)
         self._streaming_label.hide()
 
-        # Opacity effect for fade animation
-        self._streaming_opacity = QGraphicsOpacityEffect(self._streaming_label)
-        self._streaming_opacity.setOpacity(0.0)
-        self._streaming_label.setGraphicsEffect(self._streaming_opacity)
+        # Fade animation via window opacity (NOT QGraphicsOpacityEffect —
+        # that breaks stylesheet background rendering with WA_TranslucentBackground on Windows)
+        self._streaming_label.setWindowOpacity(0.0)
 
-        # Fade animation (opacity)
         self._streaming_fade_anim = QPropertyAnimation(
-            self._streaming_opacity, b"opacity"
+            self._streaming_label, b"windowOpacity"
         )
         self._streaming_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
@@ -306,7 +350,7 @@ class FloatingBall(QWidget):
 
         # Configure fade out (opacity)
         self._streaming_fade_anim.setDuration(280)
-        self._streaming_fade_anim.setStartValue(self._streaming_opacity.opacity())
+        self._streaming_fade_anim.setStartValue(self._streaming_label.windowOpacity())
         self._streaming_fade_anim.setEndValue(0.0)
         self._streaming_fade_anim.setEasingCurve(QEasingCurve.InCubic)
 
@@ -365,7 +409,7 @@ class FloatingBall(QWidget):
         target_pos = self._streaming_label.pos()
 
         # Get current opacity for smooth transition (especially if interrupting fade-out)
-        current_opacity = self._streaming_opacity.opacity()
+        current_opacity = self._streaming_label.windowOpacity()
 
         # If interrupting a fade-out, start from current state
         if was_fading_out and self._streaming_label.isVisible():
@@ -375,7 +419,7 @@ class FloatingBall(QWidget):
             # Fresh fade-in from below
             start_pos = QPoint(target_pos.x(), target_pos.y() + 10)  # Start 10px below
             start_opacity = 0.0
-            self._streaming_opacity.setOpacity(0.0)
+            self._streaming_label.setWindowOpacity(0.0)
             self._streaming_label.move(start_pos)
 
         # Ensure visible before animation
@@ -440,6 +484,7 @@ class FloatingBall(QWidget):
         self._popup_menu = PopupMenu()
         self._popup_menu.enableToggled.connect(self._on_menu_enable_toggled)
         self._popup_menu.modeChanged.connect(self._on_menu_mode_changed)
+        self._popup_menu.inputModeChanged.connect(self._on_menu_input_mode_changed)
         self._popup_menu.settingsRequested.connect(self._on_menu_settings)
         self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
         self._popup_menu.streamingToggled.connect(self._on_menu_streaming_toggled)
@@ -451,6 +496,10 @@ class FloatingBall(QWidget):
     def _on_menu_mode_changed(self, mode):
         """Handle mode change from popup menu."""
         self.modeChanged.emit(mode)
+
+    def _on_menu_input_mode_changed(self, mode):
+        """Handle input mode change from popup menu."""
+        self.inputModeChanged.emit(mode)
 
     def _on_menu_settings(self):
         """Handle settings request from popup menu."""
@@ -1143,6 +1192,9 @@ class FloatingBall(QWidget):
             self._icon_scale_target = 0.0  # Hide active icon
             # Squircle animation: circle -> rounded square
             self._corner_radius_target = self._CORNER_SQUIRCLE
+            # Hide streaming text label immediately
+            if self._streaming_state in ("visible", "fading_in"):
+                self._fade_out_streaming_label()
         else:
             # Restore based on current state and processing flag
             if (
@@ -1379,9 +1431,10 @@ class FloatingBall(QWidget):
                     self._pulse_timer.start(33)  # 30 FPS
                     self._log(f">>> GROW ball to {self._SCALE_ACTIVE}")
                 else:
-                    # Stopped speaking but still recording: keep big
+                    # Stopped speaking but still recording: shrink to idle
+                    self._window_scale_target = self._SCALE_IDLE
                     self._pulse_timer.start(50)  # 20 FPS
-                    self._log(f"Voice stopped, scale stays {self._window_scale_target}")
+                    self._log(f"Voice stopped, shrink to {self._SCALE_IDLE}")
 
             self.update()
 
@@ -1401,7 +1454,7 @@ class FloatingBall(QWidget):
             self._fade_out_streaming_label()
             if text:
                 self.setToolTip(f"Last: {text[:50]}...")
-        elif text and self._streaming_display_enabled:
+        elif text and self._streaming_display_enabled and not self._is_locked:
             # Interim result - show in floating label with fade-in
             # Only show the last ~60 chars for readability
             display_text = text if len(text) <= 60 else "..." + text[-57:]
@@ -1432,8 +1485,18 @@ class FloatingBall(QWidget):
         self._shrink_fallback_timer.stop()
         self._is_processing = False
 
-        # Always shrink when processing is complete
-        # This is the correct behavior - ball should be small when backend is idle
+        # FIX: If still recording, DON'T shrink — user is speaking in continuous mode.
+        # The ball should stay active-sized until recording actually stops.
+        if self._state in (self.STATE_RECORDING, self.STATE_SELECTION_LISTENING):
+            self._log(
+                f"INSERT_COMPLETE: still {self._state}, keeping ball active (no shrink)"
+            )
+            # Keep recording indicator on
+            self._icon_scale_target = 1.0
+            self.update()
+            return
+
+        # Not recording: shrink as usual
         self._is_speaking = False
         self._icon_scale_target = 0.0
 
@@ -1486,7 +1549,12 @@ class FloatingBall(QWidget):
 
     def _force_shrink(self):
         """Fallback: Force shrink if on_insert_complete didn't arrive in time."""
-        self._log(f">>> FALLBACK_SHRINK triggered, processing={self._is_processing}")
+        self._log(f">>> FALLBACK_SHRINK triggered, processing={self._is_processing}, state={self._state}")
+        # Don't force shrink during active recording — voice activity drives the scale
+        if self._state in (self.STATE_RECORDING, self.STATE_SELECTION_LISTENING):
+            self._log(">>> FALLBACK_SHRINK: still recording, skipped")
+            self._is_processing = False
+            return
         if self._is_processing:
             # on_insert_complete didn't arrive, force shrink anyway
             self._is_processing = False

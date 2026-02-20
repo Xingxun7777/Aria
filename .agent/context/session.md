@@ -435,9 +435,160 @@ dist_portable/VoiceType/ (6.8GB)
 
 ---
 
+---
+
+## Session: 2026-02-12 (v1.1.1 Pre-Launch Review + Build + Project Cleanup)
+
+> 跨 3 个连续 session 完成，因 context compaction 合并记录
+
+### Completed
+
+#### Phase 1: Pre-Launch Code Review (2 轮)
+- [x] Round 1: Codex 咨询 + 3-reviewer team review → 8 code fixes
+- [x] Round 2: 3-investigator deep review → 7 additional code fixes
+- [x] 共计 15 处代码修复
+
+#### Phase 2: Portable Build
+- [x] 修复 build.py Python 版本 (3.10.11 → 3.12.4)
+- [x] 移除 SOURCE_DIRS 中的死代码目录 (features/, scheduler/)
+- [x] 重写 step_clean_sensitive_data() — 改用 template 替换用户配置
+- [x] 安装 PyInstaller 6.18.0，编译 Aria.exe (8.1MB)
+- [x] 完整便携版打包验证（15 项检查全部通过）
+
+#### Phase 3: Comprehensive Project Cleanup
+- [x] 删除 25+ 死代码/冗余文件 (git rm + disk)
+- [x] 重写 .gitignore（全面覆盖 AI agent、构建产物、用户数据）
+- [x] 生成 requirements.txt (134 packages)
+- [x] 创建 .editorconfig
+- [x] 更新 LICENSE 版权年份 (2024-2025 → 2024-2026)
+- [x] 重写 README.md（商业级质量）
+- [x] 重写 CHANGELOG.md（添加 v1.1.1 条目）
+- [x] 重写 docs/RELEASE_CHECKLIST.md
+- [x] 重写 build_portable/RELEASE_GUIDE.md
+- [x] 更新 PROJECT.md（版本号 + 构建描述）
+- [x] 版本号统一为 1.1.1（__init__.py + aria/__init__.py）
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `app.py` | 15 处修复: polisher leak, audio check, timer cleanup, atomic JSON, etc. |
+| `build_portable/build.py` | Python 3.12.4, template config, removed dead dirs |
+| `build_portable/RELEASE_GUIDE.md` | 完全重写 |
+| `.gitignore` | 完全重写（覆盖 .agent/, .sisyphus/, models/) |
+| `README.md` | 完全重写（4 引擎, 热词系统, typewriter, FAQ） |
+| `CHANGELOG.md` | 新增 v1.1.1 条目 |
+| `docs/RELEASE_CHECKLIST.md` | 完全重写 |
+| `__init__.py` + `aria/__init__.py` | 版本 → "1.1.1" |
+| `LICENSE` | 版权 → 2024-2026 |
+| `.editorconfig` | 新建 |
+| `requirements.txt` | 新建 (pip freeze) |
+| 25+ files | 删除（死代码、冗余启动脚本、旧文档） |
+
+### Key Decisions
+- **Config 策略**: 分发版使用 hotwords.template.json 替换用户配置（非清理式）
+- **版本号**: 统一使用 1.1.1（非 1.1.0-dev）
+- **Dead code 策略**: 通过 Grep 确认无 import 后再删除
+- **文档策略**: README 面向用户，PROJECT.md 面向开发者，RELEASE_GUIDE 面向发布
+
+### Deleted Files (25+)
+**Dead code**: overlay.py, tray.py, mock_backend.py, model_download_dialog.py, model_manager.py, polish_prompt_backup.py, hotwords_prompt_backup.txt, scheduler/ (3 files)
+**Redundant launchers**: Aria_FunASR.bat, Aria_Whisper.bat, Aria_env.bat, run.py, run_gui.pyw, run_aria.bat, run_aria_env.bat, run_aria_gui.vbs, start_aria.bat, CreateShortcut.ps1
+**Others**: aria.spec, requirements_backup.txt, test_v4_flow.py, SESSION docs (2)
+
+### Pending Tasks
+1. [ ] Git commit 所有更改（等待用户确认）
+2. [ ] 功能测试（Aria_debug.bat 启动测试）
+3. [ ] 便携版分发测试（干净系统解压运行）
+4. [ ] 后续迭代: pyproject.toml, CONTRIBUTING.md, SECURITY.md
+
+### Known Issues
+- 无新问题。所有已知问题均在本轮修复。
+
+---
+
+## Session: 2026-02-12 (v1.1.1 End-to-End Review Round 2)
+
+### Completed
+- [x] 修复 ui/qt/__init__.py 导入已删除模块 (P0 崩溃)
+- [x] 修复 ui/qt/main.py MockBackend 引用 + 移除 demo 模式 (P0 崩溃)
+- [x] launcher.py 添加 stdout/stderr null 保护 (P0 崩溃)
+- [x] hotwords.template.json: polish.enabled → false (P1 UX)
+- [x] hotwords.template.json: 清空开发者专属 hotwords/replacements/domain_context (P1 泄露)
+- [x] hotwords.template.json: funasr "model" → "model_name" 键名修正 (P1 配置)
+- [x] build.py: DATA_DIRS 移除 models/ (P1 体积 -1.1GB)
+- [x] build.py: 添加 commands.json prefix 重置步骤 (P2 一致性)
+- [x] release.bat: 版本号 Aria-v1.1 → Aria-v1.1.1 (P2)
+- [x] README.md: 版本号 + polish 默认值更新 (P2)
+- [x] __init__.py / ui/__init__.py: 过时注释修正 (P3)
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `ui/qt/__init__.py` | 移除 3 个死导入 (mock_backend, overlay, tray) |
+| `ui/qt/main.py` | 移除 demo 模式, MockBackend fallback → sys.exit(1) |
+| `launcher.py` | 添加 stdout/stderr null 保护 (pythonw.exe) |
+| `config/hotwords.template.json` | polish.enabled=false, 清空开发者数据, 修正 funasr 键名 |
+| `build_portable/build.py` | 移除 models/, 添加 commands.json prefix 重置 |
+| `build_portable/release.bat` | 版本号修正 |
+| `README.md` | 版本号 + polish 默认值 |
+| `docs/DEBUG_LESSONS.md` | 新增 3 条调试经验 |
+
+### Decisions
+- Decision: launcher.py 用全局 stdout redirect 而非逐个替换 print → Reason: 更安全，不遗漏
+- Decision: template polish 默认关闭 → Reason: 占位符 API key 导致每次语音多等数秒
+- Decision: 移除 models/ from DATA_DIRS → Reason: local_polish 默认关闭，1.1GB GGUF 无用
+
+### Pending Tasks
+1. [ ] 重新执行 `build_portable\release.bat` 打包 (dist_portable 已过时)
+2. [ ] Git commit 所有更改
+3. [ ] 便携版分发测试（干净系统解压运行）
+
+### Known Issues
+- FunASR 首次下载无明确"下载中"提示（低优先级，heartbeat 仍工作）
+- 便携版无 README（口头分发可接受）
+
+---
+
+## Session: 2026-02-20 (PTT 实现 + 流式文字标签视觉设计)
+
+### Completed
+- [x] PTT (Push-to-Talk) 功能实现 — 6 文件修改
+- [x] Team review PTT 代码 → 6 issues (2 critical, 4 important) 全部修复
+- [x] 修复悬浮球动画：语音活动驱动（说话变大/静默变小），录音中不被 insert_complete 覆盖
+- [x] 修复流式识别文字在白色背景下不可见 — WA_TranslucentBackground + stylesheet bg 不渲染
+- [x] 三方会谈设计流式文字标签视觉方案（Codex 参与，Gemini N/A）
+- [x] 迭代 5+ 方案：颜色调整 → opacity effect 替换 → QPainter 背景 → 描边 → 低透明面板 → Frosted Glass Lite
+- [x] 最终实现 "Frosted Glass Lite"：3 层 QPainter（暖紫背景 α130 + 顶部高光渐变 + 细边框）
+- [x] 锁定模式（中键）隐藏流式文字标签
+- [x] DEBUG_LESSONS.md 新增 2 条经验
+
+### Key Changes
+| File | Change |
+|------|--------|
+| `system/hotkey.py` | 新增 PTTHandler 类（pynput keyboard listener） |
+| `app.py` | PTT 集成：_ptt_audio_segments, _on_ptt_press/release, set_input_mode |
+| `ui/qt/popup_menu.py` | 输入模式 UI（切换模式 / 按住说话） |
+| `ui/qt/main.py` | PTT 信号连接 |
+| `ui/qt/floating_ball.py` | _StreamingLabel 子类 + 动画修复 + 锁定隐藏 |
+| `config/hotwords.template.json` | general.input_mode + general.ptt_key |
+| `docs/DEBUG_LESSONS.md` | 2 条新经验 |
+
+### Decisions
+- Decision: QPainter 手动绘制背景 → Reason: WA_TranslucentBackground 下 stylesheet background-color 不渲染
+- Decision: setWindowOpacity() 替代 QGraphicsOpacityEffect → Reason: opacity effect 与透明窗口不兼容
+- Decision: 放弃 subtitle outline 方案 → Reason: 13px CJK 字体描边极丑
+- Decision: 暖紫色 rgba(28,25,38,130) → Reason: alpha 130 在白/黑背景都可读，视觉优雅
+
+### Pending Tasks
+1. [ ] 便携版重新打包（dist_portable 已过时）
+2. [ ] PTT 功能用户实际测试
+3. [ ] 流式文字标签在各种桌面壁纸下的视觉验证
+
+### Known Issues
+- 无新问题
+
 ## Warmup Hints
-<!-- 预热系统读取此区块 -->
-focus: ui/qt/elevation_dialog.py
+focus: ui/qt/floating_ball.py:33
 mode: standard
 pending_research: 无
-note: 权限弹窗优化完成，添加了"暂时禁用"和"下次不再提醒"功能
+note: PTT + Frosted Glass Lite 流式标签已完成并提交。下次可关注便携版打包或新功能。

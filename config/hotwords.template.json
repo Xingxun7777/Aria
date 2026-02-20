@@ -44,7 +44,9 @@
     "audio_device": "",
     "auto_startup": false,
     "minimize_to_tray": false,
-    "start_active": true
+    "start_active": true,
+    "input_mode": "toggle",
+    "ptt_key": "right_ctrl"
   },
   "vad": {
     "threshold": 0.3,

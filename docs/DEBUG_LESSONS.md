@@ -631,3 +631,28 @@ if sys.stderr is None:
 **Key Learning**:
 - **配置模板的键名必须和代码读取的键名完全一致** — 拼错不报错，只是静默用默认值
 - 排查方法: Grep 代码中 `funasr_cfg.get` 或 `config.get` 看实际读取的键名
+
+---
+
+## Issue: WA_TranslucentBackground 窗口 stylesheet background-color 不渲染
+**Date**: 2026-02-20
+**Symptom**: 独立顶层 QLabel 窗口设置了 `WA_TranslucentBackground` + stylesheet `background-color: rgba(20,20,25,160)`，在深色桌面背景上文字看起来正常（白色文字直接浮在深色桌面上），但在白色桌面上文字完全不可见 — 深色底板根本没有被渲染。
+**Root Cause**: Windows 上 `WA_TranslucentBackground` 可能导致 QLabel 的 stylesheet `background-color` 不被绘制。此外，`QGraphicsOpacityEffect` 与 `WA_TranslucentBackground` 组合时更严重 — 中间 pixmap 渲染丢失背景。
+**Solution**: 子类化 QLabel，在 `paintEvent` 中用 QPainter 手动绘制圆角矩形背景（`drawRoundedRect`），然后调用 `super().paintEvent()` 让 QLabel 绘制文字。QPainter 直接绘制 100% 可靠，不受 stylesheet 渲染管线影响。
+**Key Learning**:
+- **WA_TranslucentBackground + stylesheet background = 不可靠**（Windows 上）
+- 任何需要背景的 translucent 窗口，都应该用 QPainter 手动画背景
+- QGraphicsOpacityEffect 与 translucent 窗口不兼容，用 `setWindowOpacity()` 替代
+- 排查方法: 如果文字在深色背景可见但白色背景不可见 → 说明背景没渲染，文字直接浮在桌面上
+
+---
+
+## Issue: 小字号文字描边（subtitle outline）在 13px 以下非常丑陋
+**Date**: 2026-02-20
+**Symptom**: 尝试用字幕式 8 方向 1px 描边让 13px 流式文字在任何背景上可读，在白色背景下文字边缘出现 muddy halo，CJK 字符尤为严重。
+**Root Cause**: 字幕描边技术（QPainter 多 pass drawText + 偏移）适用于大字号（24px+）。小字号下 1px 偏移占字符宽度比例过大，抗锯齿叠加形成脏灰色光晕。
+**Solution**: 放弃描边方案，改用精心设计的半透明面板（"Frosted Glass Lite"）：暖紫色调背景 `rgba(28,25,38,130)` + 顶部高光渐变 + 极细亮边。视觉效果优于纯黑扁平矩形。
+**Key Learning**:
+- **字幕描边仅适合大字号** — 13px 以下不要用
+- 半透明面板的 "设计感" 不在于 alpha 高低，而在于 **色调暖度 + 高光层次 + 边框细节**
+- 纯黑（rgb 0,0,0）半透明 = debug overlay 感；暖紫色调（rgb 28,25,38）= 设计意图感
