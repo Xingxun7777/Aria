@@ -64,10 +64,10 @@ python -c "import json; c=json.load(open('dist_portable/Aria/_internal/app/aria/
 
 ```powershell
 # 使用 7-Zip 压缩（推荐）
-7z a -t7z -mx=9 Aria-v1.1.1.7z dist_portable\Aria\
+7z a -t7z -mx=9 Aria-v1.1.2.7z dist_portable\Aria\
 
 # 或 ZIP 格式
-7z a -tzip Aria-v1.1.1.zip dist_portable\Aria\
+7z a -tzip Aria-v1.1.2.zip dist_portable\Aria\
 ```
 
 ---

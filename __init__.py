@@ -9,5 +9,5 @@ Core modules:
 - ui: Floating ball, system tray, settings
 """
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __author__ = "Aria Team"

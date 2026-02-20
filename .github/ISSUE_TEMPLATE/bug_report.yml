@@ -1,0 +1,153 @@
+name: Bug 报告
+description: 报告一个问题或错误
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交 Bug 报告！请尽量填写以下信息，方便快速定位问题。
+
+  - type: dropdown
+    id: aria-version
+    attributes:
+      label: Aria 版本
+      description: 在托盘右键菜单或设置面板查看
+      options:
+        - "1.1.2"
+        - "1.1.1"
+        - "1.1.0"
+        - "1.0.0"
+        - "其他（请在描述中说明）"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-type
+    attributes:
+      label: 安装方式
+      options:
+        - "便携版（Releases 下载）"
+        - "源码运行"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os-version
+    attributes:
+      label: 操作系统
+      options:
+        - "Windows 11"
+        - "Windows 10"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: asr-engine
+    attributes:
+      label: ASR 引擎
+      description: 当前使用的语音识别引擎
+      options:
+        - "FunASR（默认）"
+        - "Whisper"
+        - "FireRedASR"
+        - "Qwen3-ASR"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gpu-info
+    attributes:
+      label: GPU 信息
+      description: 运行 nvidia-smi 或在任务管理器查看
+      options:
+        - "RTX 50 系列"
+        - "RTX 40 系列"
+        - "RTX 30 系列"
+        - "RTX 20 系列 / GTX 16 系列"
+        - "GTX 10 系列及更旧"
+        - "无 NVIDIA GPU（CPU 模式）"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: input-mode
+    attributes:
+      label: 输入模式
+      options:
+        - "切换模式（默认）"
+        - "按住说话 (PTT)"
+        - "两种都有问题"
+        - "不相关"
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简要描述遇到的问题
+      placeholder: 按热键开始录音后，说话结束没有输出文字...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 按顺序列出复现步骤
+      placeholder: |
+        1. 打开 Aria
+        2. 按 ` 键开始录音
+        3. 说话 3 秒后再按 ` 键
+        4. 没有文字输出
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 识别结果应该输入到当前窗口
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      placeholder: 浮动球动画结束后没有任何反应，也没有错误提示
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志输出
+      description: |
+        用 `Aria_debug.bat` 启动，复现问题后粘贴控制台输出。
+        也可查看 `DebugLog/` 目录下的日志文件。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、配置修改、特殊环境等
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已使用最新版本测试
+          required: true
+        - label: 已搜索现有 Issues 未找到重复
+          required: true

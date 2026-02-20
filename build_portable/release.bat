@@ -43,6 +43,6 @@ echo 输出目录: dist_portable\Aria\
 echo.
 echo 下一步:
 echo   1. 测试: dist_portable\Aria\Aria.exe
-echo   2. 压缩: 7z a Aria-v1.1.1.7z dist_portable\Aria\
+echo   2. 压缩: 7z a Aria-v1.1.2.7z dist_portable\Aria\
 echo.
 pause

@@ -19,5 +19,5 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 __path__ = [_project_root]
 
 # Re-export version info from root __init__.py
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __author__ = "Aria Team"
