@@ -57,6 +57,9 @@ build_portable/*.spec
 debug_audio_*.wav
 *.wav.tmp
 
+# === Claude Code Local Settings ===
+.claude/
+
 # === AI Agent Artifacts ===
 .agent/
 
