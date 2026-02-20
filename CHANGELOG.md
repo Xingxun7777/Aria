@@ -3,6 +3,19 @@
 All notable changes to Aria will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.2] - 2026-02-20
+
+### Added
+- **按住说话 (PTT)** - 按住右 Ctrl 录音，松开自动识别。支持输入模式切换
+- **流式字幕毛玻璃面板** - 录音中间结果以半透明毛玻璃面板显示，适配任意桌面背景
+- **锁定隐藏字幕** - 锁定浮动球时自动隐藏流式字幕
+- **PTT 安全保护** - 60 秒最大录音时长、0.3 秒误触过滤、模式切换安全停止
+
+### Fixed
+- 修复浮动球动画在录音中因文字插入完成而意外缩小
+- 修复流式字幕在 WA_TranslucentBackground 窗口下背景不渲染
+- 修复 QGraphicsOpacityEffect 与透明窗口不兼容导致淡入淡出失效
+
 ## [1.1.1] - 2026-02-12
 
 ### Added
