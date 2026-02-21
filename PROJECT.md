@@ -50,10 +50,10 @@ Aria/
 ├── core/                  # 核心模块
 │   ├── asr/               # 语音识别引擎 (4个)
 │   │   ├── __init__.py    # ASR 基类接口
-│   │   ├── funasr_engine.py   # FunASR Paraformer (默认)
+│   │   ├── qwen3_engine.py   # Qwen3-ASR (默认)
+│   │   ├── funasr_engine.py   # FunASR Paraformer
 │   │   ├── whisper_engine.py  # Whisper (faster-whisper)
-│   │   ├── fireredasr_engine.py # FireRedASR
-│   │   └── qwen3_engine.py   # Qwen3-ASR (最新)
+│   │   └── fireredasr_engine.py # FireRedASR
 │   ├── audio/
 │   │   ├── capture.py     # 音频捕获 (sounddevice, 有界队列)
 │   │   └── vad.py         # Silero-VAD (阈值0.3, 线程安全)
@@ -218,7 +218,7 @@ config watcher 每 2 秒检查 `hotwords.json` 修改时间，变更时自动更
 | Python | 3.12.4 (venv) |
 | GPU | NVIDIA CUDA 12.x (推荐) |
 | VRAM | 4GB+ |
-| 关键依赖 | PySide6, torch, sounddevice, silero-vad, funasr |
+| 关键依赖 | PySide6, torch, sounddevice, silero-vad, qwen-asr, funasr |
 
 ---
 

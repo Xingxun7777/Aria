@@ -13,7 +13,7 @@ from multiprocessing.connection import Client, Listener
 @dataclass
 class ProgressEvent:
     """Progress event data structure."""
-    stage: str       # "python_env", "funasr_model", "qt_ui", "audio_capture", "done", "error"
+    stage: str       # "python_env", "asr_model", "qt_ui", "audio_capture", "done", "error"
     message: str     # User-facing message
     percent: int     # 0-100
 
@@ -21,7 +21,7 @@ class ProgressEvent:
 # Stage definitions with default percentages
 STAGES = {
     "python_env": (5, "初始化 Python 环境..."),
-    "funasr_model": (50, "加载语音识别模型..."),
+    "asr_model": (50, "加载语音识别模型..."),
     "qt_ui": (80, "准备用户界面..."),
     "audio_capture": (95, "初始化音频设备..."),
     "done": (100, "准备就绪！"),
@@ -263,9 +263,9 @@ if __name__ == "__main__":
             print("[Sender] Connected!")
             reporter.emit_stage("python_env")
             time.sleep(0.5)
-            reporter.emit_stage("funasr_model")
+            reporter.emit_stage("asr_model")
             time.sleep(1)
-            reporter.emit("funasr_model", "模型加载完成", 50)
+            reporter.emit("asr_model", "模型加载完成", 50)
             time.sleep(0.5)
             reporter.emit_stage("qt_ui")
             time.sleep(0.5)

@@ -1,10 +1,10 @@
 {
-  "asr_engine": "funasr",
+  "asr_engine": "qwen3",
   "whisper": {
-    "model": "large-v3-turbo",
     "device": "cuda",
     "language": "zh",
-    "compute_type": "float16"
+    "compute_type": "float16",
+    "model_name": "large-v3-turbo"
   },
   "funasr": {
     "device": "cuda",

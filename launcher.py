@@ -642,7 +642,7 @@ try:
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
-        asr_engine = config.get("asr_engine", "whisper")
+        asr_engine = config.get("asr_engine", "qwen3")
         log(f"ASR engine from config: '{asr_engine}'")
         if asr_engine == "funasr":
             log("Pre-loading FunASR (before Qt imports)...")
@@ -651,7 +651,7 @@ try:
 
             funasr_cfg = config.get("funasr", {})
             model_name = funasr_cfg.get("model_name", "paraformer-zh")
-            emit_progress("funasr_model", f"初始化 FunASR ({model_name})...", 15)
+            emit_progress("asr_model", f"初始化 FunASR ({model_name})...", 15)
 
             pre_config = FunASRConfig(
                 model_name=model_name,
@@ -661,14 +661,14 @@ try:
             )
             _preloaded_asr = FunASREngine(pre_config)
             with LoadingHeartbeat(
-                "funasr_model", f"加载模型中 ({model_name})", 25, interval=0.6
+                "asr_model", f"加载模型中 ({model_name})", 25, interval=0.6
             ):
                 _preloaded_asr.load()
             import aria
 
             aria._preloaded_asr_engine = _preloaded_asr
             log("FunASR pre-loaded successfully")
-            emit_progress("funasr_model", "模型加载完成", 50)
+            emit_progress("asr_model", "模型加载完成", 50)
             print("FunASR model pre-loaded!")
         elif asr_engine == "fireredasr":
             log("Pre-loading FireRedASR (before Qt imports)...")
@@ -711,7 +711,7 @@ try:
 
             aria._preloaded_asr_engine = _preloaded_asr
             log("FireRedASR pre-loaded successfully")
-            emit_progress("funasr_model", "模型加载完成", 50)
+            emit_progress("asr_model", "模型加载完成", 50)
             print("FireRedASR model pre-loaded!")
         elif asr_engine == "whisper":
             log("Pre-loading Whisper model (before Qt imports)...")
@@ -773,7 +773,7 @@ try:
 
             aria._preloaded_asr_engine = _preloaded_asr
             log("Whisper model pre-loaded successfully")
-            emit_progress("funasr_model", "模型加载完成", 50)
+            emit_progress("asr_model", "模型加载完成", 50)
             print("Whisper model pre-loaded!")
         elif asr_engine == "qwen3":
             log("Pre-loading Qwen3-ASR model (before Qt imports)...")
@@ -857,14 +857,14 @@ try:
 
             aria._preloaded_asr_engine = _preloaded_asr
             log("Qwen3-ASR model pre-loaded successfully")
-            emit_progress("funasr_model", "Qwen3-ASR 就绪", 50)
+            emit_progress("asr_model", "Qwen3-ASR 就绪", 50)
             print(f"Qwen3-ASR model pre-loaded! ({short_name})")
         else:
             # Other engines - just show progress
-            emit_progress("funasr_model", "准备语音引擎...", 50)
+            emit_progress("asr_model", "准备语音引擎...", 50)
     except Exception as e:
-        log(f"FunASR pre-load failed: {e}, will fallback in app")
-        emit_progress("funasr_model", "模型加载失败，使用备用引擎", 50)
+        log(f"ASR pre-load failed ({asr_engine}): {e}, will fallback in app")
+        emit_progress("asr_model", "模型加载失败，使用备用引擎", 50)
 
     # Set hotkey from config (default: grave)
     hotkey = config.get("general", {}).get("hotkey", "grave")

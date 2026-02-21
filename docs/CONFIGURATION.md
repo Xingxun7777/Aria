@@ -17,7 +17,7 @@
 
 ## 语音识别
 
-顶层字段 `asr_engine` 控制引擎选择：`funasr` / `whisper` / `fireredasr` / `qwen3`
+顶层字段 `asr_engine` 控制引擎选择（默认 `qwen3`）：`qwen3` / `funasr` / `whisper` / `fireredasr`
 
 ### FunASR (`funasr`)
 

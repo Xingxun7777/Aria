@@ -1209,9 +1209,9 @@ class SettingsWindow(QMainWindow):
         self.engine_combo = QComboBox()
         self.engine_combo.addItems(
             [
-                "FunASR (推荐，中文优化)",
+                "FunASR (中文优化，离线即用)",
                 "Whisper (多语言支持)",
-                "Qwen3-ASR (最新，52语言)",
+                "Qwen3-ASR (推荐，52语言)",
             ]
         )
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
@@ -1484,9 +1484,9 @@ class SettingsWindow(QMainWindow):
 
         # === Advanced tab ===
         # ASR engine selection (0=FunASR, 1=Whisper, 2=Qwen3)
-        asr_engine = self.config.get("asr_engine", "funasr")
+        asr_engine = self.config.get("asr_engine", "qwen3")
         engine_index_map = {"funasr": 0, "whisper": 1, "qwen3": 2}
-        self.engine_combo.setCurrentIndex(engine_index_map.get(asr_engine, 0))
+        self.engine_combo.setCurrentIndex(engine_index_map.get(asr_engine, 2))
         # Trigger visibility update
         self._on_engine_changed(self.engine_combo.currentIndex())
 
@@ -1585,7 +1585,7 @@ class SettingsWindow(QMainWindow):
         """Save configuration to hotwords.json."""
         # Track if restart-required settings changed
         restart_needed = False
-        old_engine = self.config.get("asr_engine", "funasr")
+        old_engine = self.config.get("asr_engine", "qwen3")
         old_funasr = self.config.get("funasr", {})
         old_whisper = self.config.get("whisper", {})
         old_vad = self.config.get("vad", {})
@@ -1667,7 +1667,7 @@ class SettingsWindow(QMainWindow):
 
         # === Advanced tab - ASR Engine Selection ===
         engine_map = {0: "funasr", 1: "whisper", 2: "qwen3"}
-        new_engine = engine_map.get(self.engine_combo.currentIndex(), "funasr")
+        new_engine = engine_map.get(self.engine_combo.currentIndex(), "qwen3")
         if old_engine != new_engine:
             restart_needed = True
 

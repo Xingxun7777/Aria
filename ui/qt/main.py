@@ -959,7 +959,7 @@ def main():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
 
-            engine = cfg.get("asr_engine", "funasr")
+            engine = cfg.get("asr_engine", "qwen3")
 
             if engine == "funasr":
                 model = cfg.get("funasr", {}).get("model_name", "paraformer-zh")

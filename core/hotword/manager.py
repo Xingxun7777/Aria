@@ -40,7 +40,7 @@ class HotWordConfig:
 
     # ASR engine type - affects polish layer behavior
     # Qwen3 handles English well at ASR layer, so we reduce English hotwords to LLM
-    asr_engine_type: str = "funasr"  # "whisper", "funasr", "qwen3", "fireredasr"
+    asr_engine_type: str = "qwen3"  # "qwen3", "funasr", "whisper", "fireredasr"
 
     # Layer 3: Polish mode and configs
     polish_mode: str = "fast"  # "fast" = local Qwen, "quality" = Gemini API

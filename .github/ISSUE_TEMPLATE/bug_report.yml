@@ -49,10 +49,10 @@ body:
       label: ASR 引擎
       description: 当前使用的语音识别引擎
       options:
-        - "FunASR（默认）"
+        - "Qwen3-ASR（默认）"
+        - "FunASR"
         - "Whisper"
         - "FireRedASR"
-        - "Qwen3-ASR"
         - "不确定"
     validations:
       required: true

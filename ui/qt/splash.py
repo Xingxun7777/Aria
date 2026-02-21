@@ -51,7 +51,7 @@ class Config:
     TEXT_MUTED = QColor("#a0a0a5")
 
     # 4 stages
-    STAGES = ["python_env", "funasr_model", "qt_ui", "audio_capture"]
+    STAGES = ["python_env", "asr_model", "qt_ui", "audio_capture"]
     STAGE_RANGES = [(0, 5), (5, 50), (50, 80), (80, 100)]
 
 
