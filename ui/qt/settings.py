@@ -49,97 +49,6 @@ from . import styles
 from aria.core.hotword import DEFAULT_POLISH_PROMPT
 from aria.core.utils.phonetic import get_matcher
 
-# Whisper 模型大小参考（用于提示用户）
-WHISPER_MODEL_SIZES = {
-    "large-v3-turbo": "1.5GB",
-    "large-v3": "3GB",
-    "medium": "1.5GB",
-    "small": "500MB",
-}
-
-
-def check_whisper_model_exists(model_name: str) -> bool:
-    """检查 Whisper 模型是否已下载到本地缓存。"""
-    import os
-
-    # faster-whisper 默认缓存路径
-    cache_dir = (
-        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-    )
-
-    # 模型目录名称模式
-    model_patterns = {
-        "large-v3-turbo": "models--Systran--faster-whisper-large-v3-turbo",
-        "large-v3": "models--Systran--faster-whisper-large-v3",
-        "medium": "models--Systran--faster-whisper-medium",
-        "small": "models--Systran--faster-whisper-small",
-    }
-
-    pattern = model_patterns.get(model_name)
-    if pattern and (cache_dir / pattern).exists():
-        return True
-    return False
-
-
-# Whisper 模型大小（字节，用于磁盘空间检测）
-WHISPER_MODEL_BYTES = {
-    "large-v3-turbo": 1.6 * 1024 * 1024 * 1024,  # 1.6GB
-    "large-v3": 3.2 * 1024 * 1024 * 1024,  # 3.2GB
-    "medium": 1.6 * 1024 * 1024 * 1024,  # 1.6GB
-    "small": 0.5 * 1024 * 1024 * 1024,  # 0.5GB
-}
-
-
-def check_disk_space_for_whisper(model_name: str) -> tuple[bool, str]:
-    """
-    检查磁盘空间是否足够下载 Whisper 模型。
-
-    Returns:
-        (is_sufficient, message): 是否足够，提示信息
-    """
-    import os
-    import shutil
-
-    # 获取缓存目录
-    cache_dir = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-
-    # 确保目录存在（否则无法获取磁盘信息）
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        # 获取磁盘使用情况
-        disk_usage = shutil.disk_usage(cache_dir)
-        free_bytes = disk_usage.free
-        free_gb = free_bytes / (1024 * 1024 * 1024)
-
-        # 获取模型所需空间（加 20% 余量）
-        required_bytes = WHISPER_MODEL_BYTES.get(model_name, 1.6 * 1024 * 1024 * 1024)
-        required_with_margin = required_bytes * 1.2
-        required_gb = required_with_margin / (1024 * 1024 * 1024)
-
-        if free_bytes >= required_with_margin:
-            return True, f"可用空间: {free_gb:.1f}GB"
-        else:
-            return False, (
-                f"磁盘空间不足！\n"
-                f"需要: {required_gb:.1f}GB\n"
-                f"可用: {free_gb:.1f}GB\n"
-                f"缓存目录: {cache_dir}"
-            )
-    except Exception as e:
-        # 无法检测时默认允许继续
-        return True, f"无法检测磁盘空间: {e}"
-
-
-def check_faster_whisper_installed() -> bool:
-    """检查 faster-whisper 是否已安装。"""
-    try:
-        import faster_whisper  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
 
 def check_qwen_asr_installed() -> bool:
     """检查 qwen-asr 是否已安装。"""
@@ -270,70 +179,6 @@ def get_gpu_vram_mb() -> int | None:
     except Exception:
         pass
     return None
-
-
-def install_faster_whisper(parent=None) -> tuple[bool, str]:
-    """
-    动态安装 faster-whisper 包。
-
-    Args:
-        parent: 父窗口（用于显示进度对话框）
-
-    Returns:
-        (success, message): 是否成功，消息
-    """
-    import subprocess
-    import sys
-
-    # 显示安装进度对话框
-    from PySide6.QtWidgets import QProgressDialog
-    from PySide6.QtCore import Qt
-
-    progress = QProgressDialog(
-        "正在安装 Whisper 引擎依赖...\n这可能需要 1-2 分钟",
-        None,  # 不显示取消按钮
-        0,
-        0,  # 不确定进度
-        parent,
-    )
-    progress.setWindowTitle("安装依赖")
-    progress.setWindowModality(Qt.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.show()
-
-    try:
-        # 使用当前 Python 解释器的 pip 安装
-        # 使用清华镜像加速
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "faster-whisper",
-                "-i",
-                "https://pypi.tuna.tsinghua.edu.cn/simple",
-                "--quiet",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 分钟超时
-        )
-
-        progress.close()
-
-        if result.returncode == 0:
-            return True, "faster-whisper 安装成功"
-        else:
-            error_msg = result.stderr or result.stdout or "未知错误"
-            return False, f"安装失败: {error_msg}"
-
-    except subprocess.TimeoutExpired:
-        progress.close()
-        return False, "安装超时（超过 5 分钟）"
-    except Exception as e:
-        progress.close()
-        return False, f"安装出错: {e}"
 
 
 def get_audio_input_devices() -> list:
@@ -605,7 +450,7 @@ class SettingsWindow(QMainWindow):
 
         # Store reference for dynamic update based on engine
         self._hotword_guide_label = QLabel(
-            "权重: 0=禁用, 0.3=提示(仅ASR), 0.5=参考, 1=锁定"
+            "权重越高，识别偏向越强。新词默认 0.5（标准）"
         )
         self._hotword_guide_label.setStyleSheet(
             "color: #666; font-size: 12px; margin-bottom: 5px;"
@@ -614,8 +459,10 @@ class SettingsWindow(QMainWindow):
 
         # Threshold note with weight explanation (dynamic based on engine)
         self._hotword_threshold_note = QLabel(
-            "💡 中文热词: 权重≥0.5 时生效\n"
-            "💡 英文热词: 0.5=参考(严格规则), 1.0=锁定(强制替换)，标记为 EN"
+            "0 禁用：完全排除，不参与任何流程\n"
+            "0.3 仅润色：不影响语音识别，仅在 AI 润色时作为参考\n"
+            "0.5 标准：进入语音识别 + 正则替换 + AI 润色\n"
+            "1 强制：识别偏置最大化 + 拼音模糊匹配 + 强制替换"
         )
         self._hotword_threshold_note.setStyleSheet(
             "color: #888; font-size: 11px; margin-bottom: 10px;"
@@ -725,16 +572,16 @@ class SettingsWindow(QMainWindow):
         word_item.setFlags(word_item.flags() & ~Qt.ItemIsEditable)
         self.vocab_table.setItem(row, 0, word_item)
 
-        # Simplified 4-tier weight options (v3.0):
-        # - 0: disabled
-        # - 0.3: hint (ASR only, not sent to polish)
-        # - 0.5: reference (sent to polish for Chinese words)
-        # - 1.0: lock (mandatory, always sent to polish)
+        # 4-tier weight options (v3.1):
+        # - 0: disabled (excluded from all layers)
+        # - 0.3: hint (post-processing only, excluded from Qwen3 ASR context)
+        # - 0.5: reference (ASR context + regex + polish) — default for new words
+        # - 1.0: lock (ASR 3x repeat + pinyin fuzzy + force replace)
         weight_options = [
             (0, "0 - 禁用"),
-            (0.3, "0.3 - 提示"),
-            (0.5, "0.5 - 参考"),
-            (1.0, "1 - 锁定"),
+            (0.3, "0.3 - 仅润色"),
+            (0.5, "0.5 - 标准"),
+            (1.0, "1 - 强制"),
         ]
 
         # Check if English word (for display hint only)
@@ -801,7 +648,7 @@ class SettingsWindow(QMainWindow):
             if word in existing:
                 QMessageBox.warning(self, "重复", f"'{word}' 已在列表中")
                 return
-            self._add_vocab_row(word, 1.0)
+            self._add_vocab_row(word, 0.5)
 
     def _batch_import_words(self):
         """Batch import words from text input."""
@@ -821,7 +668,7 @@ class SettingsWindow(QMainWindow):
             for word in words:
                 word = word.strip()
                 if word and word not in existing:
-                    self._add_vocab_row(word, 1.0)
+                    self._add_vocab_row(word, 0.5)
                     existing.add(word)
                     added += 1
 
@@ -865,11 +712,14 @@ class SettingsWindow(QMainWindow):
 
         # Mode selection
         mode_group = QButtonGroup(w)
+        self.radio_off = QRadioButton("关闭润色 (直接输出识别结果)")
         self.radio_fast = QRadioButton("快速模式 (本地 Qwen, ~155ms)")
         self.radio_quality = QRadioButton("高质量模式 (Gemini API, ~1.7s)")
+        mode_group.addButton(self.radio_off)
         mode_group.addButton(self.radio_fast)
         mode_group.addButton(self.radio_quality)
 
+        layout.addWidget(self.radio_off)
         layout.addWidget(self.radio_fast)
         layout.addWidget(self.radio_quality)
 
@@ -1145,10 +995,9 @@ class SettingsWindow(QMainWindow):
 
     def _on_engine_changed(self, index: int):
         """Handle ASR engine selection change - show/hide corresponding settings."""
-        # index: 0=FunASR, 1=Whisper, 2=Qwen3
+        # index: 0=FunASR, 1=Qwen3
         self.funasr_group.setVisible(index == 0)
-        self.whisper_group.setVisible(index == 1)
-        self.qwen3_group.setVisible(index == 2)
+        self.qwen3_group.setVisible(index == 1)
 
         # Update hotword explanation based on engine
         self._update_hotword_explanation(index)
@@ -1159,22 +1008,25 @@ class SettingsWindow(QMainWindow):
         if not hasattr(self, "_hotword_guide_label"):
             return
 
-        if engine_index == 2:  # Qwen3
-            # Qwen3 uses context string repetition, not weighted scores
-            self._hotword_guide_label.setText("Qwen3 模式: 热词通过上下文重复机制生效")
-            self._hotword_threshold_note.setText(
-                "💡 Qwen3-ASR 使用文本上下文而非权重分数\n"
-                "💡 热词会作为上下文提示发送给模型\n"
-                "💡 权重仅影响润色阶段，不影响 ASR 识别"
-            )
-        else:
-            # FunASR / Whisper - standard weight-based explanation
+        if engine_index == 1:  # Qwen3
             self._hotword_guide_label.setText(
-                "权重: 0=禁用, 0.3=提示(仅ASR), 0.5=参考, 1=锁定"
+                "Qwen3 模式 — 权重越高，识别偏向越强。新词默认 0.5（标准）"
             )
             self._hotword_threshold_note.setText(
-                "💡 中文热词: 权重≥0.5 时生效\n"
-                "💡 英文热词: 0.5=参考(严格规则), 1.0=锁定(强制替换)，标记为 EN"
+                "0 禁用：完全排除，不参与任何流程\n"
+                "0.3 仅润色：不进入语音识别，仅在 AI 润色时作为参考词\n"
+                "0.5 标准：写入识别上下文（出现1次）+ 正则替换 + AI 润色\n"
+                "1 强制：识别上下文中重复3次（最强偏置）+ 拼音模糊 + 强制替换"
+            )
+        else:  # FunASR
+            self._hotword_guide_label.setText(
+                "FunASR 模式 — 权重越高，识别偏向越强。新词默认 0.5（标准）"
+            )
+            self._hotword_threshold_note.setText(
+                "0 禁用：完全排除，不参与任何流程\n"
+                "0.3 仅润色：ASR 弱提示（分数30）+ AI 润色参考\n"
+                "0.5 标准：ASR 标准识别（分数60）+ 正则替换 + AI 润色\n"
+                "1 强制：ASR 强锁定（分数100）+ 拼音模糊匹配 + 强制替换"
             )
 
     def _on_wakeword_text_changed(self, text: str):
@@ -1210,7 +1062,6 @@ class SettingsWindow(QMainWindow):
         self.engine_combo.addItems(
             [
                 "FunASR (中文优化，离线即用)",
-                "Whisper (多语言支持)",
                 "Qwen3-ASR (推荐，52语言)",
             ]
         )
@@ -1247,44 +1098,17 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(self.funasr_group)
 
-        # === Whisper Settings (visible when Whisper selected) ===
-        self.whisper_group = QGroupBox("Whisper 设置")
-        whisper_layout = QFormLayout(self.whisper_group)
-
-        self.whisper_model = QComboBox()
-        self.whisper_model.addItems(
-            [
-                "large-v3-turbo - 推荐，速度快",
-                "large-v3 - 最高准确度，较慢",
-                "medium - 中等，适合弱显卡",
-                "small - 快速，准确度较低",
-            ]
-        )
-        self.whisper_model.setCurrentIndex(0)
-        whisper_layout.addRow("模型:", self.whisper_model)
-
-        self.whisper_device = QComboBox()
-        self.whisper_device.addItems(["cuda", "cpu"])
-        whisper_layout.addRow("设备:", self.whisper_device)
-
-        self.whisper_compute = QComboBox()
-        self.whisper_compute.addItems(["float16 - 推荐", "int8 - 省显存"])
-        whisper_layout.addRow("精度:", self.whisper_compute)
-
-        whisper_info = QLabel("首次使用需下载模型（约1-3GB），请耐心等待")
-        whisper_info.setStyleSheet("color: #888; font-size: 12px;")
-        whisper_layout.addRow("", whisper_info)
-
-        layout.addWidget(self.whisper_group)
-        self.whisper_group.setVisible(False)  # Default: hidden
-
         # === Qwen3-ASR Settings (visible when Qwen3 selected) ===
         self.qwen3_group = QGroupBox("Qwen3-ASR 设置")
         qwen3_layout = QFormLayout(self.qwen3_group)
 
         self.qwen3_model = QComboBox()
         self.qwen3_model.addItems(
-            ["1.7B - 最高准确度，约4GB显存", "0.6B - 轻量快速，约2GB显存"]
+            [
+                "自动选择 - 根据显存自动决定 (推荐)",
+                "1.7B - 最高准确度，约4GB显存",
+                "0.6B - 轻量快速，约2GB显存",
+            ]
         )
         self.qwen3_model.setCurrentIndex(0)
         qwen3_layout.addRow("模型:", self.qwen3_model)
@@ -1294,7 +1118,9 @@ class SettingsWindow(QMainWindow):
         qwen3_layout.addRow("设备:", self.qwen3_device)
 
         self.qwen3_dtype = QComboBox()
-        self.qwen3_dtype.addItems(["float16 - 推荐", "bfloat16 - RTX 30/40/50系及以上"])
+        self.qwen3_dtype.addItems(
+            ["bfloat16 - 推荐 (RTX 30/40/50系)", "float16 - 旧显卡兼容"]
+        )
         qwen3_layout.addRow("精度:", self.qwen3_dtype)
 
         qwen3_info = QLabel(
@@ -1319,13 +1145,36 @@ class SettingsWindow(QMainWindow):
         self.vad_threshold = QDoubleSpinBox()
         self.vad_threshold.setRange(0.1, 0.9)
         self.vad_threshold.setSingleStep(0.1)
-        self.vad_threshold.setValue(0.5)
-        vad_layout.addRow("阈值:", self.vad_threshold)
+        self.vad_threshold.setValue(0.2)
+        self.vad_threshold.setToolTip(
+            "语音活动检测灵敏度\n"
+            "值越小越灵敏，越容易检测到小声说话\n"
+            "推荐: 0.2 (默认) | 安静环境: 0.1 | 嘈杂环境: 0.4"
+        )
+        vad_layout.addRow("语音检测阈值:", self.vad_threshold)
+
+        self.vad_energy_threshold = QDoubleSpinBox()
+        self.vad_energy_threshold.setRange(0.0005, 0.02)
+        self.vad_energy_threshold.setSingleStep(0.0005)
+        self.vad_energy_threshold.setDecimals(4)
+        self.vad_energy_threshold.setValue(0.003)
+        self.vad_energy_threshold.setToolTip(
+            "音频能量门控 — 低于此值的音频直接丢弃，不送识别\n"
+            "用于过滤键盘声、鼠标声等非语音触发\n"
+            "想小声说话被识别: 调低此值 (如 0.001)\n"
+            "推荐: 0.003 (默认) | 小声说话: 0.001 | 安静环境: 0.0005"
+        )
+        vad_layout.addRow("能量阈值:", self.vad_energy_threshold)
 
         self.vad_min_silence = QSpinBox()
         self.vad_min_silence.setRange(100, 2000)
-        self.vad_min_silence.setValue(500)
+        self.vad_min_silence.setValue(1200)
         self.vad_min_silence.setSuffix(" ms")
+        self.vad_min_silence.setToolTip(
+            "检测到多长时间的静音后，认为一句话说完了\n"
+            "值越小切分越快 (适合快节奏) | 值越大等待越久 (适合慢语速)\n"
+            "推荐: 1200ms (默认)"
+        )
         vad_layout.addRow("最小静音:", self.vad_min_silence)
 
         layout.addWidget(vad_group)
@@ -1360,6 +1209,20 @@ class SettingsWindow(QMainWindow):
         )
         output_layout.addWidget(typewriter_warn2)
 
+        # Typewriter delay
+        typewriter_delay_layout = QHBoxLayout()
+        typewriter_delay_label = QLabel("逐字间隔:")
+        typewriter_delay_label.setStyleSheet("margin-left: 20px;")
+        self.typewriter_delay = QSpinBox()
+        self.typewriter_delay.setRange(5, 100)
+        self.typewriter_delay.setValue(15)
+        self.typewriter_delay.setSuffix(" ms")
+        self.typewriter_delay.setToolTip("打字机模式下每个字符之间的间隔时间")
+        typewriter_delay_layout.addWidget(typewriter_delay_label)
+        typewriter_delay_layout.addWidget(self.typewriter_delay)
+        typewriter_delay_layout.addStretch()
+        output_layout.addLayout(typewriter_delay_layout)
+
         output_layout.addSpacing(10)
 
         self.chk_elevation_check = QCheckBox("权限检测 (检测高权限窗口)")
@@ -1381,6 +1244,25 @@ class SettingsWindow(QMainWindow):
             "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
         )
         local_layout.addRow("模型路径:", self.local_model_path)
+
+        self.local_n_gpu_layers = QSpinBox()
+        self.local_n_gpu_layers.setRange(-1, 100)
+        self.local_n_gpu_layers.setValue(-1)
+        self.local_n_gpu_layers.setToolTip(
+            "GPU 加速层数\n" "-1 = 全部层放 GPU (推荐)\n" "0 = 纯 CPU 推理"
+        )
+        local_layout.addRow("GPU 层数:", self.local_n_gpu_layers)
+
+        self.local_n_ctx = QSpinBox()
+        self.local_n_ctx.setRange(128, 4096)
+        self.local_n_ctx.setValue(512)
+        self.local_n_ctx.setSingleStep(128)
+        self.local_n_ctx.setToolTip(
+            "上下文窗口大小 (token 数)\n"
+            "需要容纳 prompt + 输入文本\n"
+            "推荐: 512 (默认)"
+        )
+        local_layout.addRow("上下文窗口:", self.local_n_ctx)
 
         layout.addWidget(local_group)
 
@@ -1445,7 +1327,7 @@ class SettingsWindow(QMainWindow):
         words = self.config.get("hotwords", self.config.get("prompt_words", []))
         weights = self.config.get("hotword_weights", {})
         for word in words:
-            weight = weights.get(word, 1.0)
+            weight = weights.get(word, 0.5)
             self._add_vocab_row(word, weight)
 
         # Replacements
@@ -1458,8 +1340,10 @@ class SettingsWindow(QMainWindow):
             self.replace_table.setItem(row, 1, QTableWidgetItem(correct))
 
         # === Polish tab ===
-        polish_mode = self.config.get("polish_mode", "fast")
-        if polish_mode == "fast":
+        polish_mode = self.config.get("polish_mode", "quality")
+        if polish_mode == "off":
+            self.radio_off.setChecked(True)
+        elif polish_mode == "fast":
             self.radio_fast.setChecked(True)
         else:
             self.radio_quality.setChecked(True)
@@ -1473,7 +1357,7 @@ class SettingsWindow(QMainWindow):
         self.api_url.setText(polish.get("api_url", ""))
         self.api_key.setText(polish.get("api_key", ""))
         self.model.setText(polish.get("model", ""))
-        self.timeout.setValue(polish.get("timeout", 30))
+        self.timeout.setValue(polish.get("timeout", 10))
 
         # 备用 API 配置
         self.api_url_backup.setText(polish.get("api_url_backup", ""))
@@ -1483,10 +1367,13 @@ class SettingsWindow(QMainWindow):
         self.switch_count.setValue(polish.get("switch_after_slow_count", 2))
 
         # === Advanced tab ===
-        # ASR engine selection (0=FunASR, 1=Whisper, 2=Qwen3)
+        # ASR engine selection (0=FunASR, 1=Qwen3)
         asr_engine = self.config.get("asr_engine", "qwen3")
-        engine_index_map = {"funasr": 0, "whisper": 1, "qwen3": 2}
-        self.engine_combo.setCurrentIndex(engine_index_map.get(asr_engine, 2))
+        engine_index_map = {"funasr": 0, "qwen3": 1}
+        # Backward compat: whisper/fireredasr configs map to qwen3
+        if asr_engine in ("whisper", "fireredasr"):
+            asr_engine = "qwen3"
+        self.engine_combo.setCurrentIndex(engine_index_map.get(asr_engine, 1))
         # Trigger visibility update
         self._on_engine_changed(self.engine_combo.currentIndex())
 
@@ -1504,45 +1391,24 @@ class SettingsWindow(QMainWindow):
         if idx >= 0:
             self.funasr_device.setCurrentIndex(idx)
 
-        # Whisper settings
-        whisper = self.config.get("whisper", {})
-        whisper_model = whisper.get("model_name", "large-v3-turbo")
-        # Map model name to combo index
-        whisper_model_map = {
-            "large-v3-turbo": 0,
-            "large-v3": 1,
-            "medium": 2,
-            "small": 3,
-        }
-        self.whisper_model.setCurrentIndex(whisper_model_map.get(whisper_model, 0))
-
-        whisper_device = whisper.get("device", "cuda")
-        idx = self.whisper_device.findText(whisper_device)
-        if idx >= 0:
-            self.whisper_device.setCurrentIndex(idx)
-
-        whisper_compute = whisper.get("compute_type", "float16")
-        if "int8" in whisper_compute:
-            self.whisper_compute.setCurrentIndex(1)
-        else:
-            self.whisper_compute.setCurrentIndex(0)
-
         # Qwen3-ASR settings
         qwen3 = self.config.get("qwen3", {})
-        qwen3_model = qwen3.get("model_name", "Qwen/Qwen3-ASR-1.7B")
-        # Map model name to combo index (0=1.7B, 1=0.6B)
+        qwen3_model = qwen3.get("model_name", "auto")
+        # Map model name to combo index (0=auto, 1=1.7B, 2=0.6B)
         if "0.6B" in qwen3_model:
-            self.qwen3_model.setCurrentIndex(1)
-        else:
+            self.qwen3_model.setCurrentIndex(2)
+        elif qwen3_model == "auto":
             self.qwen3_model.setCurrentIndex(0)
+        else:
+            self.qwen3_model.setCurrentIndex(1)
 
         qwen3_device = qwen3.get("device", "cuda")
         idx = self.qwen3_device.findText(qwen3_device)
         if idx >= 0:
             self.qwen3_device.setCurrentIndex(idx)
 
-        qwen3_dtype = qwen3.get("torch_dtype", "float16")
-        if "bfloat16" in qwen3_dtype:
+        qwen3_dtype = qwen3.get("torch_dtype", "bfloat16")
+        if "float16" in qwen3_dtype and "bfloat16" not in qwen3_dtype:
             self.qwen3_dtype.setCurrentIndex(1)
         else:
             self.qwen3_dtype.setCurrentIndex(0)
@@ -1550,15 +1416,19 @@ class SettingsWindow(QMainWindow):
         # VAD settings
         vad = self.config.get("vad", {})
         self.vad_threshold.setValue(vad.get("threshold", 0.2))
+        self.vad_energy_threshold.setValue(vad.get("energy_threshold", 0.003))
         self.vad_min_silence.setValue(vad.get("min_silence_ms", 1200))
 
         # Local polish
         local_polish = self.config.get("local_polish", {})
         self.local_model_path.setText(local_polish.get("model_path", ""))
+        self.local_n_gpu_layers.setValue(local_polish.get("n_gpu_layers", -1))
+        self.local_n_ctx.setValue(local_polish.get("n_ctx", 512))
 
         # === Output settings ===
         output_cfg = self.config.get("output", {})
         self.chk_typewriter_mode.setChecked(output_cfg.get("typewriter_mode", False))
+        self.typewriter_delay.setValue(output_cfg.get("typewriter_delay_ms", 15))
         self.chk_elevation_check.setChecked(output_cfg.get("check_elevation", True))
 
         # === Translation settings ===
@@ -1587,7 +1457,6 @@ class SettingsWindow(QMainWindow):
         restart_needed = False
         old_engine = self.config.get("asr_engine", "qwen3")
         old_funasr = self.config.get("funasr", {})
-        old_whisper = self.config.get("whisper", {})
         old_vad = self.config.get("vad", {})
 
         # === General tab ===
@@ -1598,15 +1467,23 @@ class SettingsWindow(QMainWindow):
         self.config["general"]["hotkey"] = (
             self._qt_to_hotkey(hotkey_seq) if hotkey_seq else "grave"
         )
-        self.config["general"]["audio_device"] = self.audio_device.currentText()
+        # Save device name, or "" for system default (index 0)
+        if self.audio_device.currentIndex() == 0:
+            new_audio_device = ""  # System default / auto-detect
+        else:
+            new_audio_device = self.audio_device.currentText()
+        if self.config.get("general", {}).get("audio_device", "") != new_audio_device:
+            restart_needed = True
+        self.config["general"]["audio_device"] = new_audio_device
         self.config["general"]["start_active"] = self.chk_start_active.isChecked()
 
         # Handle auto startup (create/remove shortcut)
         self._set_auto_startup(self.chk_auto_startup.isChecked())
 
         # === Hotwords tab ===
-        # Note: enable_initial_prompt is always true (no UI control needed)
-        self.config["enable_initial_prompt"] = True
+        # Preserve enable_initial_prompt (no UI control; don't overwrite user's manual edits)
+        if "enable_initial_prompt" not in self.config:
+            self.config["enable_initial_prompt"] = True
         self.config["domain_context"] = self.domain_ctx.text()
 
         # Hotwords with weights (use "hotwords" key, remove legacy "prompt_words" if present)
@@ -1632,9 +1509,12 @@ class SettingsWindow(QMainWindow):
         self.config["replacements"] = replacements
 
         # === Polish tab ===
-        self.config["polish_mode"] = (
-            "fast" if self.radio_fast.isChecked() else "quality"
-        )
+        if self.radio_off.isChecked():
+            self.config["polish_mode"] = "off"
+        elif self.radio_fast.isChecked():
+            self.config["polish_mode"] = "fast"
+        else:
+            self.config["polish_mode"] = "quality"
 
         # === API settings ===
         if "polish" not in self.config:
@@ -1666,76 +1546,14 @@ class SettingsWindow(QMainWindow):
             self.config["polish"].pop("switch_after_slow_count", None)
 
         # === Advanced tab - ASR Engine Selection ===
-        engine_map = {0: "funasr", 1: "whisper", 2: "qwen3"}
+        engine_map = {0: "funasr", 1: "qwen3"}
         new_engine = engine_map.get(self.engine_combo.currentIndex(), "qwen3")
         if old_engine != new_engine:
             restart_needed = True
 
-        # 切换到 Whisper 时的完整检查流程
-        if new_engine == "whisper" and old_engine != "whisper":
-            whisper_model_map = ["large-v3-turbo", "large-v3", "medium", "small"]
-            whisper_model = whisper_model_map[self.whisper_model.currentIndex()]
-            model_size = WHISPER_MODEL_SIZES.get(whisper_model, "1.5GB")
-
-            # Step 1: 检查 faster-whisper 是否已安装
-            if not check_faster_whisper_installed():
-                reply = QMessageBox.question(
-                    self,
-                    "需要安装依赖",
-                    "切换到 Whisper 需要安装 faster-whisper 引擎。\n\n"
-                    "是否现在安装？（约 100MB，需要 1-2 分钟）",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-
-                if reply == QMessageBox.Yes:
-                    success, msg = install_faster_whisper(self)
-                    if not success:
-                        QMessageBox.critical(
-                            self,
-                            "安装失败",
-                            f"faster-whisper 安装失败:\n\n{msg}\n\n"
-                            "请检查网络连接后重试。",
-                        )
-                        return  # 安装失败，不保存配置
-                    else:
-                        QMessageBox.information(
-                            self, "安装成功", "Whisper 引擎依赖已安装成功！"
-                        )
-                else:
-                    # 用户取消安装，恢复引擎选择
-                    self.engine_combo.setCurrentIndex(0)  # 恢复为 FunASR
-                    return
-
-            # Step 2: 检查模型是否已存在
-            if not check_whisper_model_exists(whisper_model):
-                # Step 2a: 检查磁盘空间
-                has_space, space_msg = check_disk_space_for_whisper(whisper_model)
-
-                if not has_space:
-                    # 磁盘空间不足，显示警告
-                    QMessageBox.warning(
-                        self,
-                        "磁盘空间不足",
-                        f"无法下载 Whisper 模型:\n\n{space_msg}\n\n"
-                        "请清理磁盘空间后重试。",
-                    )
-                else:
-                    # Step 2b: 空间足够，显示下载提醒
-                    QMessageBox.information(
-                        self,
-                        "首次使用 Whisper",
-                        f"下次启动时将自动下载 Whisper 模型:\n\n"
-                        f"模型: {whisper_model}\n"
-                        f"大小: 约 {model_size}\n"
-                        f"预计时间: 2-5 分钟\n\n"
-                        "请确保网络连接正常。\n"
-                        "(已自动配置国内镜像加速)",
-                    )
-
         # 切换到 Qwen3 时的完整检查流程
         if new_engine == "qwen3" and old_engine != "qwen3":
-            qwen3_model_map = ["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"]
+            qwen3_model_map = ["auto", "Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"]
             qwen3_model = qwen3_model_map[self.qwen3_model.currentIndex()]
             model_size = QWEN3_MODEL_SIZES.get(qwen3_model, "3.4GB")
             short_name = "1.7B" if "1.7B" in qwen3_model else "0.6B"
@@ -1788,8 +1606,8 @@ class SettingsWindow(QMainWindow):
                         QMessageBox.No,
                     )
                     if reply == QMessageBox.No:
-                        # 自动切换到 0.6B
-                        self.qwen3_model.setCurrentIndex(1)
+                        # 自动切换到 0.6B (index 2: auto=0, 1.7B=1, 0.6B=2)
+                        self.qwen3_model.setCurrentIndex(2)
                         QMessageBox.information(
                             self,
                             "已切换",
@@ -1799,20 +1617,23 @@ class SettingsWindow(QMainWindow):
             # Step 3: 检查模型是否已存在
             # 重新获取当前选择（可能被显存警告修改了）
             qwen3_model = qwen3_model_map[self.qwen3_model.currentIndex()]
-            model_size = QWEN3_MODEL_SIZES.get(qwen3_model, "3.4GB")
-            short_name = "1.7B" if "1.7B" in qwen3_model else "0.6B"
 
-            if not check_qwen3_model_exists(qwen3_model):
-                QMessageBox.information(
-                    self,
-                    "首次使用 Qwen3-ASR",
-                    f"下次启动时将自动下载 Qwen3-ASR 模型:\n\n"
-                    f"模型: {short_name}\n"
-                    f"大小: 约 {model_size}\n"
-                    f"预计时间: 2-5 分钟\n\n"
-                    f"下载期间会显示进度提示。\n"
-                    "(已自动配置国内镜像加速)",
-                )
+            # auto 模式跳过下载提示（启动时引擎会根据显存自动选择并下载）
+            if qwen3_model != "auto":
+                model_size = QWEN3_MODEL_SIZES.get(qwen3_model, "3.4GB")
+                short_name = "1.7B" if "1.7B" in qwen3_model else "0.6B"
+
+                if not check_qwen3_model_exists(qwen3_model):
+                    QMessageBox.information(
+                        self,
+                        "首次使用 Qwen3-ASR",
+                        f"下次启动时将自动下载 Qwen3-ASR 模型:\n\n"
+                        f"模型: {short_name}\n"
+                        f"大小: 约 {model_size}\n"
+                        f"预计时间: 2-5 分钟\n\n"
+                        f"下载期间会显示进度提示。\n"
+                        "(已自动配置国内镜像加速)",
+                    )
 
         self.config["asr_engine"] = new_engine
 
@@ -1836,40 +1657,16 @@ class SettingsWindow(QMainWindow):
         self.config["funasr"]["model_name"] = new_funasr_model
         self.config["funasr"]["device"] = new_funasr_device
 
-        # === Advanced tab - Whisper ===
-        if "whisper" not in self.config:
-            self.config["whisper"] = {}
-
-        # Map combo index to model name
-        whisper_model_map = ["large-v3-turbo", "large-v3", "medium", "small"]
-        new_whisper_model = whisper_model_map[self.whisper_model.currentIndex()]
-        new_whisper_device = self.whisper_device.currentText()
-        new_whisper_compute = (
-            "int8" if self.whisper_compute.currentIndex() == 1 else "float16"
-        )
-
-        if (
-            old_whisper.get("model_name") != new_whisper_model
-            or old_whisper.get("device") != new_whisper_device
-            or old_whisper.get("compute_type") != new_whisper_compute
-        ):
-            restart_needed = True
-
-        self.config["whisper"]["model_name"] = new_whisper_model
-        self.config["whisper"]["device"] = new_whisper_device
-        self.config["whisper"]["compute_type"] = new_whisper_compute
-        self.config["whisper"]["language"] = "zh"  # Default to Chinese
-
         # === Advanced tab - Qwen3-ASR ===
         if "qwen3" not in self.config:
             self.config["qwen3"] = {}
 
-        # Map combo index to model name (0=1.7B, 1=0.6B)
-        qwen3_model_map = ["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"]
+        # Map combo index to model name (0=auto, 1=1.7B, 2=0.6B)
+        qwen3_model_map = ["auto", "Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"]
         new_qwen3_model = qwen3_model_map[self.qwen3_model.currentIndex()]
         new_qwen3_device = self.qwen3_device.currentText()
         new_qwen3_dtype = (
-            "bfloat16" if self.qwen3_dtype.currentIndex() == 1 else "float16"
+            "float16" if self.qwen3_dtype.currentIndex() == 1 else "bfloat16"
         )
 
         old_qwen3 = self.config.get("qwen3", {})
@@ -1883,27 +1680,23 @@ class SettingsWindow(QMainWindow):
         self.config["qwen3"]["model_name"] = new_qwen3_model
         self.config["qwen3"]["device"] = new_qwen3_device
         self.config["qwen3"]["torch_dtype"] = new_qwen3_dtype
-        self.config["qwen3"]["language"] = "Chinese"  # Default
+        # Preserve language (no UI control; don't overwrite user's manual edits)
+        if "language" not in self.config["qwen3"]:
+            self.config["qwen3"]["language"] = "Chinese"
 
-        # === Advanced tab - VAD ===
+        # === Advanced tab - VAD (hot-reload handles these, no restart needed) ===
         if "vad" not in self.config:
             self.config["vad"] = {}
-        new_vad_threshold = self.vad_threshold.value()
-        new_vad_silence = self.vad_min_silence.value()
-
-        if (
-            old_vad.get("threshold") != new_vad_threshold
-            or old_vad.get("min_silence_ms") != new_vad_silence
-        ):
-            restart_needed = True
-
-        self.config["vad"]["threshold"] = new_vad_threshold
-        self.config["vad"]["min_silence_ms"] = new_vad_silence
+        self.config["vad"]["threshold"] = self.vad_threshold.value()
+        self.config["vad"]["energy_threshold"] = self.vad_energy_threshold.value()
+        self.config["vad"]["min_silence_ms"] = self.vad_min_silence.value()
 
         # === Local polish ===
         if "local_polish" not in self.config:
             self.config["local_polish"] = {}
         self.config["local_polish"]["model_path"] = self.local_model_path.text()
+        self.config["local_polish"]["n_gpu_layers"] = self.local_n_gpu_layers.value()
+        self.config["local_polish"]["n_ctx"] = self.local_n_ctx.value()
         # Auto-enable local polish when fast mode is selected
         self.config["local_polish"]["enabled"] = self.radio_fast.isChecked()
 
@@ -1911,13 +1704,13 @@ class SettingsWindow(QMainWindow):
         if "output" not in self.config:
             self.config["output"] = {}
         self.config["output"]["typewriter_mode"] = self.chk_typewriter_mode.isChecked()
+        self.config["output"]["typewriter_delay_ms"] = self.typewriter_delay.value()
         self.config["output"]["check_elevation"] = self.chk_elevation_check.isChecked()
-        # Keep existing typewriter_delay_ms if set, otherwise use default
-        if "typewriter_delay_ms" not in self.config["output"]:
-            self.config["output"]["typewriter_delay_ms"] = 15
 
-        # === Translation settings ===
-        self.config["translation"] = {"output_mode": self.translate_mode.currentData()}
+        # === Translation settings (merge-update to preserve future keys) ===
+        if "translation" not in self.config:
+            self.config["translation"] = {}
+        self.config["translation"]["output_mode"] = self.translate_mode.currentData()
 
         # === Wakeword - save to wakeword.json ===
         wakeword_path = self.config_path.parent / "wakeword.json"
@@ -1961,7 +1754,7 @@ class SettingsWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "设置已保存",
-                    "设置已保存。\n\n⚠️ 语音识别/VAD 设置更改需要重启应用才能生效。",
+                    "设置已保存。\n\n⚠️ 语音识别引擎设置更改需要重启应用才能生效。\n（VAD 和输出设置会自动热重载，无需重启）",
                 )
             else:
                 # Visual feedback: temporarily change button text to confirm save
@@ -1979,6 +1772,8 @@ class SettingsWindow(QMainWindow):
     def _populate_audio_devices(self):
         """Populate audio device dropdown at startup."""
         self.audio_device.clear()
+        # First item: system default (saves as "" for auto-detect)
+        self.audio_device.addItem("系统默认 (自动检测)", userData="")
         devices = get_audio_input_devices()
         for name, device_id in devices:
             self.audio_device.addItem(name, userData=device_id)
@@ -2156,13 +1951,17 @@ $Shortcut.Save()
         Set polish mode from external source (e.g., popup menu).
 
         Args:
-            mode: "fast" or "quality"
+            mode: "off", "fast", or "quality"
         """
-        if mode == "fast":
+        if mode == "off":
+            self.radio_off.setChecked(True)
+        elif mode == "fast":
             self.radio_fast.setChecked(True)
         else:
             self.radio_quality.setChecked(True)
 
     def get_polish_mode(self) -> str:
         """Get current polish mode selection."""
+        if self.radio_off.isChecked():
+            return "off"
         return "fast" if self.radio_fast.isChecked() else "quality"

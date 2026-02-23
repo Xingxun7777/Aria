@@ -48,12 +48,10 @@ Aria/
 │   └── __main__.py        # module 入口
 │
 ├── core/                  # 核心模块
-│   ├── asr/               # 语音识别引擎 (4个)
+│   ├── asr/               # 语音识别引擎 (2个)
 │   │   ├── __init__.py    # ASR 基类接口
 │   │   ├── qwen3_engine.py   # Qwen3-ASR (默认)
-│   │   ├── funasr_engine.py   # FunASR Paraformer
-│   │   ├── whisper_engine.py  # Whisper (faster-whisper)
-│   │   └── fireredasr_engine.py # FireRedASR
+│   │   └── funasr_engine.py   # FunASR Paraformer
 │   ├── audio/
 │   │   ├── capture.py     # 音频捕获 (sounddevice, 有界队列)
 │   │   └── vad.py         # Silero-VAD (阈值0.3, 线程安全)
@@ -65,6 +63,7 @@ Aria/
 │   │   └── local_polish.py # Layer3: 本地 LLM 润色 (llama.cpp)
 │   ├── selection/         # 选区指令 (润色/翻译/扩写/问AI)
 │   ├── wakeword/          # 唤醒词系统
+│   ├── command/           # 语音键盘命令 (检测+执行)
 │   ├── command/           # 语音命令检测
 │   ├── action/            # UI 动作类型 (Translation/Chat Action)
 │   ├── debug.py           # DebugConfig + DebugSession (JSON 日志)
@@ -73,10 +72,9 @@ Aria/
 │   └── utils/             # 工具函数
 │
 ├── system/                # 系统交互
-│   ├── hotkey.py          # 全局热键 (Windows low-level hook)
+│   ├── hotkey.py          # 全局热键 (Win32 RegisterHotKey)
 │   ├── output.py          # 文本输出 (剪贴板+Ctrl+V / typewriter模式)
-│   ├── admin.py           # 管理员权限检测
-│   └── platform/          # 平台特定代码
+│   └── admin.py           # 管理员权限检测
 │
 ├── ui/                    # 用户界面
 │   ├── qt/

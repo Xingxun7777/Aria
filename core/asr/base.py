@@ -12,8 +12,9 @@ from enum import Enum, auto
 
 class TranscriptType(Enum):
     """Type of transcription result."""
-    INTERIM = auto()    # Temporary, may change
-    FINAL = auto()      # Confirmed, won't change
+
+    INTERIM = auto()  # Temporary, may change
+    FINAL = auto()  # Confirmed, won't change
 
 
 @dataclass
@@ -24,6 +25,7 @@ class ASRResult:
     Supports both interim (unstable) and final (stable) results
     for optimistic UI display.
     """
+
     text: str
     type: TranscriptType = TranscriptType.FINAL
 
@@ -60,9 +62,8 @@ class ASREngine(ABC):
     Abstract base class for ASR engines.
 
     Implementations:
-    - WhisperEngine: OpenAI Whisper (local)
-    - DeepgramEngine: Deepgram API (cloud, streaming)
-    - AssemblyAIEngine: AssemblyAI (cloud)
+    - Qwen3ASREngine: Qwen3-ASR (local, default)
+    - FunASREngine: FunASR Paraformer (local)
     """
 
     @abstractmethod
@@ -80,8 +81,7 @@ class ASREngine(ABC):
 
     @abstractmethod
     def transcribe_stream(
-        self,
-        audio_generator: Generator[bytes, None, None]
+        self, audio_generator: Generator[bytes, None, None]
     ) -> Generator[ASRResult, None, None]:
         """
         Streaming transcription.

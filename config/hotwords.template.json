@@ -1,11 +1,5 @@
 {
   "asr_engine": "qwen3",
-  "whisper": {
-    "device": "cuda",
-    "language": "zh",
-    "compute_type": "float16",
-    "model_name": "large-v3-turbo"
-  },
   "funasr": {
     "device": "cuda",
     "enable_vad": false,
@@ -15,7 +9,8 @@
   "qwen3": {
     "model_name": "auto",
     "device": "cuda",
-    "language": "Chinese"
+    "language": "Chinese",
+    "torch_dtype": "bfloat16"
   },
   "enable_initial_prompt": true,
   "hotwords": [],
@@ -40,17 +35,16 @@
     "n_ctx": 512
   },
   "general": {
-    "hotkey": "`",
+    "hotkey": "grave",
     "audio_device": "",
     "auto_startup": false,
     "minimize_to_tray": false,
-    "start_active": true,
-    "input_mode": "toggle",
-    "ptt_key": "right_ctrl"
+    "start_active": true
   },
   "vad": {
-    "threshold": 0.3,
-    "min_silence_ms": 1200
+    "threshold": 0.2,
+    "min_silence_ms": 1200,
+    "energy_threshold": 0.003
   },
   "output": {
     "typewriter_mode": false,

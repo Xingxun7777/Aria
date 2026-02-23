@@ -43,11 +43,11 @@ class _StreamingLabel(QLabel):
     so all visual layers are drawn by QPainter in paintEvent.
     """
 
-    _BG = QColor(28, 25, 38, 130)          # warm purple-dark, ~51 % opacity
-    _HL_TOP = QColor(255, 255, 255, 18)    # glass highlight start
-    _HL_END = QColor(255, 255, 255, 0)     # glass highlight fade
-    _BORDER = QColor(255, 255, 255, 20)    # barely-visible edge
-    _R = 10.0                              # corner radius
+    _BG = QColor(28, 25, 38, 130)  # warm purple-dark, ~51 % opacity
+    _HL_TOP = QColor(255, 255, 255, 18)  # glass highlight start
+    _HL_END = QColor(255, 255, 255, 0)  # glass highlight fade
+    _BORDER = QColor(255, 255, 255, 20)  # barely-visible edge
+    _R = 10.0  # corner radius
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -99,7 +99,6 @@ class FloatingBall(QWidget):
     lockToggled = Signal(bool)  # Middle-click: lock state changed
     enableToggled = Signal(bool)  # From popup menu: enable/disable
     modeChanged = Signal(str)  # From popup menu: polish mode changed
-    inputModeChanged = Signal(str)  # From popup menu: input mode changed
 
     # Ball states
     STATE_IDLE = "idle"
@@ -484,7 +483,6 @@ class FloatingBall(QWidget):
         self._popup_menu = PopupMenu()
         self._popup_menu.enableToggled.connect(self._on_menu_enable_toggled)
         self._popup_menu.modeChanged.connect(self._on_menu_mode_changed)
-        self._popup_menu.inputModeChanged.connect(self._on_menu_input_mode_changed)
         self._popup_menu.settingsRequested.connect(self._on_menu_settings)
         self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
         self._popup_menu.streamingToggled.connect(self._on_menu_streaming_toggled)
@@ -496,10 +494,6 @@ class FloatingBall(QWidget):
     def _on_menu_mode_changed(self, mode):
         """Handle mode change from popup menu."""
         self.modeChanged.emit(mode)
-
-    def _on_menu_input_mode_changed(self, mode):
-        """Handle input mode change from popup menu."""
-        self.inputModeChanged.emit(mode)
 
     def _on_menu_settings(self):
         """Handle settings request from popup menu."""
@@ -1549,7 +1543,9 @@ class FloatingBall(QWidget):
 
     def _force_shrink(self):
         """Fallback: Force shrink if on_insert_complete didn't arrive in time."""
-        self._log(f">>> FALLBACK_SHRINK triggered, processing={self._is_processing}, state={self._state}")
+        self._log(
+            f">>> FALLBACK_SHRINK triggered, processing={self._is_processing}, state={self._state}"
+        )
         # Don't force shrink during active recording — voice activity drives the scale
         if self._state in (self.STATE_RECORDING, self.STATE_SELECTION_LISTENING):
             self._log(">>> FALLBACK_SHRINK: still recording, skipped")
@@ -1646,7 +1642,7 @@ class FloatingBall(QWidget):
         Set the current ASR engine name for popup display.
 
         Args:
-            engine_name: Engine name, e.g., "FunASR", "Whisper (large-v3)", "Qwen3-ASR (1.7B)"
+            engine_name: Engine name, e.g., "FunASR", "Qwen3-ASR (1.7B)"
         """
         self._engine_info = engine_name
         self._log(f"ENGINE_INFO: {engine_name}")

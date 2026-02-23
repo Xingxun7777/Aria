@@ -3,12 +3,11 @@ FunASR Engine (Paraformer/SenseVoice)
 =====================================
 Alternative ASR engine using Alibaba's FunASR models.
 
-Advantages over Whisper:
+Features:
 - Paraformer-zh: Optimized for Chinese, non-autoregressive (no hallucination loops)
 - SenseVoice: Multilingual with emotion detection
 - Built-in VAD and punctuation restoration
 - Native hotword support
-- Generally faster than Whisper for Chinese
 
 Models:
 - paraformer-zh: Best for Chinese-only, ~700MB
@@ -136,13 +135,13 @@ class FunASRConfig:
     model_name: str = "paraformer-zh"  # or "iic/SenseVoiceSmall"
     device: str = "cuda"  # "cuda" or "cpu"
 
-    # VAD settings (built-in)
-    enable_vad: bool = True
+    # VAD settings (built-in) - Aria has its own VAD, so disable FunASR's
+    enable_vad: bool = False
     vad_model: str = "fsmn-vad"
     max_single_segment_time: int = 30000  # ms
 
-    # Punctuation restoration (Paraformer only)
-    enable_punc: bool = True
+    # Punctuation restoration (Paraformer only) - Aria handles punctuation separately
+    enable_punc: bool = False
     punc_model: str = "ct-punc"
 
     # Hotword support

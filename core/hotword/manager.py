@@ -40,10 +40,12 @@ class HotWordConfig:
 
     # ASR engine type - affects polish layer behavior
     # Qwen3 handles English well at ASR layer, so we reduce English hotwords to LLM
-    asr_engine_type: str = "qwen3"  # "qwen3", "funasr", "whisper", "fireredasr"
+    asr_engine_type: str = "qwen3"  # "qwen3", "funasr"
 
     # Layer 3: Polish mode and configs
-    polish_mode: str = "fast"  # "fast" = local Qwen, "quality" = Gemini API
+    polish_mode: str = (
+        "quality"  # "off" = disabled, "fast" = local LLM, "quality" = API polish
+    )
     polish_config: Optional[PolishConfig] = None  # For quality mode
     local_polish_config: Optional[LocalPolishConfig] = None  # For fast mode
 
@@ -74,17 +76,17 @@ class HotWordConfig:
             )
 
             # Load polish mode
-            self.polish_mode = data.get("polish_mode", "fast")
+            self.polish_mode = data.get("polish_mode", "quality")
 
             # Load quality mode (API) polish config if present
             polish_data = data.get("polish", {})
             if polish_data:
                 config_kwargs = {
                     "enabled": polish_data.get("enabled", False),
-                    "api_url": polish_data.get("api_url", "http://localhost:3000"),
+                    "api_url": polish_data.get("api_url", "https://openrouter.ai/api"),
                     "api_key": polish_data.get("api_key", ""),
                     "model": polish_data.get(
-                        "model", "google/gemini-2.5-flash-lite-preview-09-2025"
+                        "model", "deepseek/deepseek-chat-v3.1:free"
                     ),
                     "timeout": polish_data.get("timeout", 10.0),
                     # 智能轮询配置（备用 API）
@@ -236,12 +238,11 @@ class HotWordManager:
 
     def build_initial_prompt(self) -> str:
         """
-        Build Whisper initial_prompt from hotwords.
+        Build ASR initial_prompt from hotwords.
 
-        Format optimized based on Codex+Gemini analysis:
-        - Natural sentence structure for better Whisper bias
+        Format optimized for ASR engine bias:
+        - Natural sentence structure for better recognition bias
         - Explicit instruction to keep English casing
-        - Important hotwords at the start (224 token limit)
         - Only includes hotwords with weight >= 0.5 (low weight = excluded)
         """
         if not self.config.enable_initial_prompt:
@@ -265,8 +266,8 @@ class HotWordManager:
                 pass
 
         # Filter: only include words with weight >= 0.5
-        # This allows users to set low weight (0.3) to exclude from Whisper prompt
-        # while keeping them available for DeepSeek polish reference
+        # This allows users to set low weight (0.3) to exclude from initial_prompt
+        # while keeping them available for AI polish reference
         MIN_WEIGHT_FOR_PROMPT = 0.5
         filtered_words = [
             word
@@ -282,7 +283,7 @@ class HotWordManager:
         # Use comma-separated list instead of Chinese punctuation for better tokenization
         vocab_str = ", ".join(filtered_words)
         logger.debug(
-            f"Whisper prompt includes {len(filtered_words)}/{len(self.config.prompt_words)} hotwords (weight >= {MIN_WEIGHT_FOR_PROMPT})"
+            f"initial_prompt includes {len(filtered_words)}/{len(self.config.prompt_words)} hotwords (weight >= {MIN_WEIGHT_FOR_PROMPT})"
         )
 
         # Natural sentence with explicit instruction to preserve English
@@ -512,13 +513,16 @@ class HotWordManager:
         Get the polisher based on current polish_mode setting.
 
         Returns:
+            - None if mode is "off"
             - LocalPolishEngine if mode is "fast" and local_polish enabled
             - AIPolisher if mode is "quality" and polish enabled
             - None if no polisher available
 
         Note: Both polisher types have polish() and polish_with_debug() methods.
         """
-        if self.config.polish_mode == "fast":
+        if self.config.polish_mode == "off":
+            return None
+        elif self.config.polish_mode == "fast":
             polisher = self.get_local_polisher()
             if polisher:
                 return polisher
@@ -543,20 +547,23 @@ class HotWordManager:
         Set polish mode and update active polisher.
 
         Args:
-            mode: "fast" (local Qwen) or "quality" (Gemini API)
+            mode: "off" (disabled), "fast" (local Qwen), or "quality" (Gemini API)
         """
-        if mode not in ("fast", "quality"):
+        if mode not in ("off", "fast", "quality"):
             logger.warning(f"Unknown polish mode: {mode}, defaulting to 'fast'")
             mode = "fast"
 
         self.config.polish_mode = mode
 
-        # Auto-enable/disable local polish based on mode
+        # Auto-enable/disable polishers based on mode
         if self.config.local_polish_config:
             self.config.local_polish_config.enabled = mode == "fast"
+        if self.config.polish_config:
+            self.config.polish_config.enabled = mode == "quality"
 
         logger.info(
-            f"Polish mode changed to: {mode} (local_polish.enabled={mode == 'fast'})"
+            f"Polish mode changed to: {mode} "
+            f"(local={mode == 'fast'}, api={mode == 'quality'})"
         )
 
         # Save to config file
@@ -618,10 +625,10 @@ class HotWordManager:
         - Repetition works (transformer attention mechanism)
         - Example sentences are most effective for biasing
 
-        V3 Strategy:
-        1. Critical words: repeat 3x (increases attention weight)
-        2. Reference words: list once
-        3. Example sentences: most effective biasing mechanism
+        V3.1 Strategy (weight-aware):
+        1. Critical words (weight >= 1.0): repeat 3x (maximum bias)
+        2. Reference words (weight >= 0.5): list once (light bias)
+        3. Hint words (weight = 0.3): EXCLUDED from context (post-processing only)
         4. NO instructional text (Qwen3 doesn't follow instructions)
 
         Returns:
@@ -640,13 +647,14 @@ class HotWordManager:
             critical_repeated = " ".join([w for w in critical for _ in range(3)])
             parts.append(critical_repeated)
 
-        # Part 2: Reference + Hint terms - list once (weight >= 0.3)
-        # In Qwen3, both tiers get same treatment (single occurrence = light bias)
-        # Keeping hint tier ensures words like "Lora" aren't silently dropped
+        # Part 2: Reference terms - list once (weight >= 0.5)
+        # Qwen3 context is binary (word present = bias), so 0.3 hint tier
+        # is excluded from ASR context to prevent false positives.
+        # 0.3 words are handled by post-processing layers only (polish/regex).
         reference = [
             word
             for word in self.config.prompt_words
-            if 0.3 <= weights.get(word, 0.5) < 1.0
+            if 0.5 <= weights.get(word, 0.5) < 1.0
         ]
         if reference:
             parts.append(" ".join(reference))

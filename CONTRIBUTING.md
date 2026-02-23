@@ -40,7 +40,7 @@ Aria_debug.bat
 
 | 目录 | 说明 |
 |------|------|
-| `core/asr/` | 语音识别引擎（FunASR、Whisper、FireRedASR、Qwen3） |
+| `core/asr/` | 语音识别引擎（Qwen3-ASR、FunASR、Whisper、FireRedASR） |
 | `core/audio/` | 音频采集 + VAD |
 | `core/hotword/` | 四层热词纠错 + AI 润色 |
 | `core/selection/` | 选区指令（润色、翻译等） |

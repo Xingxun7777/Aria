@@ -3,6 +3,12 @@
 All notable changes to Aria will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Removed
+- **按住说话 (PTT)** - 移除 PTT 模式及相关代码，简化为单一切换模式
+- 移除 pynput 依赖
+
 ## [1.1.2] - 2026-02-20
 
 ### Added

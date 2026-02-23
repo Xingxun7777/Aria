@@ -1,7 +1,7 @@
 """
 Streaming Transcription Integration Test
 =========================================
-Tests the full pipeline: AudioCapture + VAD + WhisperEngine + StreamingDisplay
+Tests the full pipeline: AudioCapture + VAD + ASR + StreamingDisplay
 """
 
 import sys
@@ -34,9 +34,9 @@ def test_imports():
 
         print("  [OK] ASR base classes imported")
 
-        from aria.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+        from aria.core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 
-        print("  [OK] WhisperEngine imported")
+        print("  [OK] Qwen3ASREngine imported")
 
         from aria.ui.streaming_display import (
             DisplayBuffer,
@@ -170,26 +170,18 @@ def test_asr_result():
     return True
 
 
-def test_whisper_engine_init():
-    """Test WhisperEngine initialization (without loading model)."""
+def test_qwen3_engine_init():
+    """Test Qwen3ASREngine configuration (without loading model)."""
     print("\n" + "=" * 60)
-    print("Test 5: WhisperEngine Configuration")
+    print("Test 5: Qwen3ASREngine Configuration")
     print("=" * 60)
 
-    from aria.core.asr.whisper_engine import WhisperEngine, WhisperConfig
+    from aria.core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 
     # Default config
-    config = WhisperConfig()
-    assert config.model_name == "base"
+    config = Qwen3Config()
     assert config.sample_rate == 16000
-    print("  [OK] Default config: model='base', sr=16000")
-
-    # Custom config
-    config = WhisperConfig(model_name="small", language="zh", chunk_length_s=3.0)
-    engine = WhisperEngine(config)
-    assert not engine.is_loaded
-    assert engine.config.language == "zh"
-    print("  [OK] Custom config: model='small', language='zh'")
+    print("  [OK] Default config: sr=16000")
 
     return True
 
@@ -285,7 +277,7 @@ def run_all_tests():
         ("DisplayBuffer State Machine", test_display_buffer),
         ("TranscriptSegment Styles", test_transcript_segment),
         ("ASRResult Properties", test_asr_result),
-        ("WhisperEngine Configuration", test_whisper_engine_init),
+        ("Qwen3ASREngine Configuration", test_qwen3_engine_init),
         ("StreamingManager Setup", test_streaming_manager_setup),
         ("Simulated Pipeline", test_simulated_pipeline),
     ]

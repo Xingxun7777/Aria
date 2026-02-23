@@ -10,7 +10,7 @@ import time
 import subprocess
 import threading
 
-# Fix OpenMP conflict between PyTorch and faster-whisper (MUST be before any imports)
+# Fix OpenMP conflict between PyTorch libraries (MUST be before any imports)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # === Fix stdout/stderr for pythonw.exe / AriaRuntime.exe ===
@@ -429,7 +429,7 @@ def log(msg):
         f.write(msg + "\n")
 
 
-# Patch subprocess to hide console windows on Windows (for ffmpeg calls from whisper)
+# Patch subprocess to hide console windows on Windows (for ffmpeg and other subprocess calls)
 if sys.platform == "win32":
     _orig_popen_init = subprocess.Popen.__init__
 
@@ -644,6 +644,14 @@ try:
             config = json.load(f)
         asr_engine = config.get("asr_engine", "qwen3")
         log(f"ASR engine from config: '{asr_engine}'")
+        # Backward compatibility: removed engines fall back to qwen3
+        if asr_engine in ("whisper", "fireredasr"):
+            log(
+                f"ASR engine '{asr_engine}' is no longer supported, falling back to Qwen3-ASR"
+            )
+            print(f"[WARN] ASR engine '{asr_engine}' removed, using Qwen3-ASR instead")
+            asr_engine = "qwen3"
+
         if asr_engine == "funasr":
             log("Pre-loading FunASR (before Qt imports)...")
             print("Pre-loading FunASR model (before Qt)...")
@@ -658,6 +666,8 @@ try:
                 vad_model=funasr_cfg.get("vad_model", "fsmn-vad"),
                 punc_model=funasr_cfg.get("punc_model", "ct-punc"),
                 device=funasr_cfg.get("device", "cuda"),
+                enable_vad=funasr_cfg.get("enable_vad", False),
+                enable_punc=funasr_cfg.get("enable_punc", False),
             )
             _preloaded_asr = FunASREngine(pre_config)
             with LoadingHeartbeat(
@@ -670,111 +680,6 @@ try:
             log("FunASR pre-loaded successfully")
             emit_progress("asr_model", "模型加载完成", 50)
             print("FunASR model pre-loaded!")
-        elif asr_engine == "fireredasr":
-            log("Pre-loading FireRedASR (before Qt imports)...")
-            print("Pre-loading FireRedASR model (before Qt)...")
-            # Add FireRedASR repo to path (check config first, then sibling directory)
-            firered_cfg = config.get("fireredasr", {})
-            fireredasr_path = firered_cfg.get("repo_path", "")
-            if not fireredasr_path or not os.path.exists(fireredasr_path):
-                # Try sibling directory (../FireRedASR)
-                fireredasr_path = os.path.join(parent_dir, "FireRedASR")
-            if os.path.exists(fireredasr_path) and fireredasr_path not in sys.path:
-                sys.path.insert(0, fireredasr_path)
-                log(f"Added FireRedASR to path: {fireredasr_path}")
-            from aria.core.asr.fireredasr_engine import (
-                FireRedASREngine,
-                FireRedASRConfig,
-            )
-
-            # Default model path: look in FireRedASR sibling directory
-            model_type = firered_cfg.get("model_type", "aed")
-            default_model_path = os.path.join(
-                fireredasr_path, "pretrained_models", "FireRedASR-AED-L"
-            )
-            emit_progress(
-                "firered_model", f"初始化 FireRedASR ({model_type.upper()})...", 15
-            )
-
-            pre_config = FireRedASRConfig(
-                model_type=model_type,
-                model_path=firered_cfg.get("model_path", default_model_path),
-                use_gpu=firered_cfg.get("use_gpu", True),
-                beam_size=firered_cfg.get("beam_size", 2),
-            )
-            _preloaded_asr = FireRedASREngine(pre_config)
-            with LoadingHeartbeat(
-                "firered_model", f"加载模型中 ({model_type.upper()})", 25, interval=0.6
-            ):
-                _preloaded_asr.load()
-            import aria
-
-            aria._preloaded_asr_engine = _preloaded_asr
-            log("FireRedASR pre-loaded successfully")
-            emit_progress("asr_model", "模型加载完成", 50)
-            print("FireRedASR model pre-loaded!")
-        elif asr_engine == "whisper":
-            log("Pre-loading Whisper model (before Qt imports)...")
-            print("Pre-loading Whisper model (before Qt)...")
-
-            # Step 0: 检查 faster-whisper 是否已安装
-            try:
-                import faster_whisper  # noqa: F401
-            except ImportError:
-                log("faster-whisper not installed, cannot use Whisper engine")
-                emit_progress("whisper_error", "Whisper 引擎依赖未安装", 50)
-                raise ImportError(
-                    "faster-whisper not installed. Run: pip install faster-whisper"
-                )
-
-            # 设置 HuggingFace 国内镜像（加速中国用户下载）
-            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-            log("Set HF_ENDPOINT to hf-mirror.com for China users")
-
-            from aria.core.asr.whisper_engine import WhisperEngine, WhisperConfig
-            from pathlib import Path
-
-            whisper_cfg = config.get("whisper", {})
-            model_name = whisper_cfg.get("model_name", "large-v3-turbo")
-
-            # 检测模型是否已存在
-            cache_dir = (
-                Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-                / "hub"
-            )
-            model_pattern = f"models--Systran--faster-whisper-{model_name}"
-            model_exists = (cache_dir / model_pattern).exists()
-
-            if model_exists:
-                emit_progress("whisper_load", f"初始化 Whisper ({model_name})...", 15)
-            else:
-                emit_progress(
-                    "whisper_download",
-                    f"首次使用，正在下载 Whisper ({model_name})...\n"
-                    "这可能需要 2-5 分钟，请耐心等待",
-                    15,
-                )
-
-            pre_config = WhisperConfig(
-                model_name=model_name,
-                device=whisper_cfg.get("device", "cuda"),
-                language=whisper_cfg.get("language", "zh"),
-                compute_type=whisper_cfg.get("compute_type", "float16"),
-            )
-            _preloaded_asr = WhisperEngine(pre_config)
-            with LoadingHeartbeat(
-                "whisper_load",
-                f"加载模型中 ({model_name})",
-                25,
-                interval=0.6,
-            ):
-                _preloaded_asr.load()
-            import aria
-
-            aria._preloaded_asr_engine = _preloaded_asr
-            log("Whisper model pre-loaded successfully")
-            emit_progress("asr_model", "模型加载完成", 50)
-            print("Whisper model pre-loaded!")
         elif asr_engine == "qwen3":
             log("Pre-loading Qwen3-ASR model (before Qt imports)...")
             print("Pre-loading Qwen3-ASR model (before Qt)...")
@@ -794,7 +699,26 @@ try:
             from aria.core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 
             qwen3_cfg = config.get("qwen3", {})
-            model_name = qwen3_cfg.get("model_name", "Qwen/Qwen3-ASR-1.7B")
+            model_name = qwen3_cfg.get("model_name", "auto")
+
+            # Resolve "auto" model selection based on VRAM
+            if model_name == "auto":
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        vram_gb = torch.cuda.get_device_properties(0).total_mem / (
+                            1024**3
+                        )
+                        model_name = (
+                            "Qwen/Qwen3-ASR-1.7B"
+                            if vram_gb >= 5
+                            else "Qwen/Qwen3-ASR-0.6B"
+                        )
+                    else:
+                        model_name = "Qwen/Qwen3-ASR-0.6B"
+                except Exception:
+                    model_name = "Qwen/Qwen3-ASR-0.6B"
 
             # Extract short model name for display (e.g., "1.7B" or "0.6B")
             short_name = "1.7B" if "1.7B" in model_name else "0.6B"
@@ -829,7 +753,7 @@ try:
             pre_config = Qwen3Config(
                 model_name=model_name,
                 device=qwen3_cfg.get("device", "cuda"),
-                torch_dtype=qwen3_cfg.get("torch_dtype", "float16"),
+                torch_dtype=qwen3_cfg.get("torch_dtype", "bfloat16"),
                 language=qwen3_cfg.get("language", "Chinese"),
             )
             _preloaded_asr = Qwen3ASREngine(pre_config)

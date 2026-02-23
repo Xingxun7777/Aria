@@ -72,7 +72,7 @@ class ASRDebugInfo:
     raw_text: str = ""
     transcribe_time_ms: float = 0.0
 
-    # Whisper internals (if available)
+    # ASR internals (if available)
     segments: List[Dict] = field(default_factory=list)
     language_detected: str = ""
     language_probability: float = 0.0

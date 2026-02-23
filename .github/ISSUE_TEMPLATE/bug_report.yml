@@ -51,8 +51,6 @@ body:
       options:
         - "Qwen3-ASR（默认）"
         - "FunASR"
-        - "Whisper"
-        - "FireRedASR"
         - "不确定"
     validations:
       required: true

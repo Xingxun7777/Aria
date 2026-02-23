@@ -6,7 +6,7 @@ Main application that orchestrates all components.
 Usage:
     python -m aria.app
 
-Press CapsLock to toggle recording.
+Press the hotkey (default: backtick `) to toggle recording.
 Press Ctrl+C to exit.
 """
 
@@ -120,7 +120,6 @@ except Exception:
 
 from .core.audio.capture import AudioCapture, AudioConfig
 from .core.audio.vad import VADConfig
-from .core.asr.whisper_engine import WhisperEngine, WhisperConfig
 from .core.asr.funasr_engine import FunASREngine, FunASRConfig
 from .core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 from .core.hotword import (
@@ -141,7 +140,7 @@ from .core.selection import (
     CommandType,
 )
 from .core.action import TranslationAction, ChatAction
-from .system.hotkey import HotkeyManager, PTTHandler
+from .system.hotkey import HotkeyManager
 from .system.output import OutputInjector, OutputConfig
 from .ui.streaming_display import DisplayBuffer, DisplayState
 from .core.logging import get_system_logger
@@ -175,28 +174,29 @@ class AriaApp:
     Main Aria application.
 
     Orchestrates:
-    - Hotkey listening (CapsLock toggle)
+    - Hotkey listening (default: backtick ` toggle)
     - Audio capture with VAD
-    - ASR transcription
+    - ASR transcription (Qwen3/FunASR)
     - HotWord correction:
       - Layer 1: ASR initial_prompt (zero latency)
       - Layer 2: Regex replacement (zero latency)
+      - Layer 2.5: Pinyin fuzzy match (zero latency)
       - Layer 3: AI polish via LLM (optional, ~100ms)
     - Text insertion
 
     Usage (Qt mode):
-        app = AriaApp(hotkey="capslock")
+        app = AriaApp(hotkey="grave")
         app.set_bridge(bridge)  # QtBridge for UI updates
         app.start()  # Non-blocking
         ...
         app.stop()  # Cleanup
 
     Usage (CLI mode):
-        app = AriaApp(hotkey="capslock")
+        app = AriaApp(hotkey="grave")
         app.run()  # Blocking
     """
 
-    def __init__(self, hotkey: str = "capslock"):
+    def __init__(self, hotkey: str = "grave"):
         self.hotkey = hotkey
         self.state = AppState.IDLE
         self._lock = threading.Lock()
@@ -208,13 +208,13 @@ class AriaApp:
         # Components
         self.hotkey_manager = HotkeyManager()
         self.audio_capture: AudioCapture = None
-        self.asr_engine: WhisperEngine = None
+        self.asr_engine: ASREngine = None
         # Output injector with config (supports typewriter mode for game compatibility)
         output_config = self._load_output_config()
         self.output_injector = OutputInjector(output_config)
         self._clipboard_lock = threading.Lock()  # Thread-safe clipboard access
         self.output_injector.set_clipboard_lock(self._clipboard_lock)
-        self._asr_engine_type: str = "qwen3"  # "qwen3", "funasr", "whisper", "fireredasr"
+        self._asr_engine_type: str = "qwen3"  # "qwen3" or "funasr"
         self.display = DisplayBuffer()
 
         # HotWord system (Layer 1: ASR prompt + Layer 2: Regex + Layer 2.5: Fuzzy + Layer 3: AI Polish)
@@ -257,21 +257,14 @@ class AriaApp:
         # Auto-send control (press Enter after text insertion)
         self._auto_send_enabled = False
 
+        # Pre-ASR energy gate (configurable from settings, updated by hot-reload)
+        self._energy_threshold = 0.003
+
         # Sleeping mode: ignore all input except wakeword commands
         self._is_sleeping = False
 
         # Disabled mode: hotkey toggles back to enabled (for elevation dialog)
         self._is_disabled = False
-
-        # PTT (Push-to-Talk) mode
-        self._input_mode: str = "toggle"  # "toggle" (default) or "ptt"
-        self._ptt_handler: PTTHandler = None
-        self._ptt_active: bool = False  # True while PTT key is held down
-        self._ptt_max_timer: threading.Timer = None  # 60s safety limit
-        self._ptt_key: str = "right_ctrl"  # Default PTT key
-        self._ptt_text_segments: list = []  # Accumulated transcribed text during PTT
-        self._ptt_transcribe_queue: queue.Queue = queue.Queue()  # VAD segments → transcribe thread
-        self._ptt_transcribe_thread: threading.Thread = None
 
         # Config file watcher (hot-reload)
         self._config_path = get_config_path("hotwords.json")
@@ -419,7 +412,9 @@ class AriaApp:
 
     def _emit_insert_complete(self) -> None:
         """Emit insert complete notification to UI bridge."""
-        _pipeline_log("STATE", f"emit_insert_complete (bridge={'YES' if self._bridge else 'NO'})")
+        _pipeline_log(
+            "STATE", f"emit_insert_complete (bridge={'YES' if self._bridge else 'NO'})"
+        )
         if self._bridge:
             self._bridge.emit_insert_complete()
 
@@ -435,7 +430,7 @@ class AriaApp:
 
     def _is_hallucination(self, text: str) -> bool:
         """
-        Detect Whisper hallucinations (random outputs when no real speech).
+        Detect ASR hallucinations (random outputs when no real speech).
 
         Common hallucination patterns:
         - IP addresses (192.168.x.x)
@@ -466,7 +461,7 @@ class AriaApp:
             return True
 
         # Pattern 5: Repeated sentences (same phrase 3+ times = hallucination)
-        # Note: 2x repetition is handled by _deduplicate_sentences (Whisper bug, not hallucination)
+        # Note: 2x repetition is handled by _deduplicate_sentences (ASR bug, not hallucination)
         sentences = re.split(r"[。！？，,\.!?]", text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 3]
         if len(sentences) >= 3:
@@ -498,9 +493,9 @@ class AriaApp:
 
     def _deduplicate_sentences(self, text: str) -> str:
         """
-        Fix Whisper's sentence repetition bug.
+        Fix ASR sentence repetition bug.
 
-        Whisper sometimes outputs the same sentence twice:
+        ASR engines sometimes output the same sentence twice:
         "我现在在进行一个新的测试。我现在在进行一个新的测试。"
 
         This extracts unique sentences while preserving order.
@@ -588,7 +583,6 @@ class AriaApp:
             general = data.get("general", {})
             return {
                 "engine": data.get("asr_engine", "qwen3"),
-                "whisper": data.get("whisper", {}),
                 "funasr": data.get("funasr", {}),
                 "qwen3": data.get("qwen3", {}),
                 "vad": data.get("vad", {}),
@@ -598,7 +592,6 @@ class AriaApp:
             logger.warning(f"Failed to load ASR config: {e}, using defaults")
             return {
                 "engine": "qwen3",
-                "whisper": {},
                 "funasr": {},
                 "qwen3": {},
                 "vad": {},
@@ -661,10 +654,15 @@ class AriaApp:
 
         # VAD config with validation (clamp to valid ranges)
         vad_cfg = asr_cfg.get("vad", {})
-        vad_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.35)))
+        vad_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
         vad_min_speech = max(50, min(1000, vad_cfg.get("min_speech_ms", 150)))
-        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 500)))
+        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 1200)))
         vad_max_speech = max(3000, min(30000, vad_cfg.get("max_speech_ms", 8000)))
+
+        # Pre-ASR energy gate (configurable from settings)
+        self._energy_threshold = max(
+            0.0005, min(0.02, vad_cfg.get("energy_threshold", 0.003))
+        )
 
         # Find audio device ID from config name
         audio_device_name = asr_cfg.get("audio_device")
@@ -701,6 +699,14 @@ class AriaApp:
         # ASR engine selection
         engine_type = asr_cfg["engine"]
 
+        # Backward compatibility: old configs with removed engines fall back to qwen3
+        if engine_type in ("whisper", "fireredasr"):
+            logger.warning(
+                f"ASR engine '{engine_type}' is no longer supported, falling back to Qwen3-ASR"
+            )
+            print(f"[WARN] ASR engine '{engine_type}' removed, using Qwen3-ASR instead")
+            engine_type = "qwen3"
+
         if engine_type == "funasr":
             # FunASR (Paraformer/SenseVoice)
             self._asr_engine_type = "funasr"
@@ -717,64 +723,12 @@ class AriaApp:
                 asr_config = FunASRConfig(
                     model_name=funasr_cfg.get("model_name", "paraformer-zh"),
                     device=funasr_cfg.get("device", "cuda"),
-                    enable_vad=funasr_cfg.get("enable_vad", True),
-                    enable_punc=funasr_cfg.get("enable_punc", True),
+                    enable_vad=funasr_cfg.get("enable_vad", False),
+                    enable_punc=funasr_cfg.get("enable_punc", False),
                 )
                 self.asr_engine = FunASREngine(asr_config)
                 self.asr_engine.load()
             print(f"FunASR ready!")
-        elif engine_type == "whisper":
-            # Whisper (faster-whisper, supports English hotwords via initial_prompt)
-            self._asr_engine_type = "whisper"
-            # Check for pre-loaded engine (loaded before Qt to avoid conflict)
-            import aria
-
-            preloaded = getattr(aria, "_preloaded_asr_engine", None)
-            if preloaded is not None and isinstance(preloaded, WhisperEngine):
-                print("Using pre-loaded Whisper engine")
-                self.asr_engine = preloaded
-            else:
-                whisper_cfg = asr_cfg.get("whisper", {})
-                print("Loading Whisper model (this may take a few seconds)...")
-                asr_config = WhisperConfig(
-                    model_name=whisper_cfg.get("model_name", "large-v3-turbo"),
-                    device=whisper_cfg.get("device", "cuda"),
-                    language=whisper_cfg.get("language", "zh"),
-                    compute_type=whisper_cfg.get("compute_type", "float16"),
-                )
-                self.asr_engine = WhisperEngine(asr_config)
-                self.asr_engine.load()
-            print(f"Whisper ready!")
-        elif engine_type == "fireredasr":
-            # FireRedASR (SOTA Chinese/English)
-            self._asr_engine_type = "fireredasr"
-            firered_cfg = asr_cfg.get("fireredasr", {})
-            model_type = firered_cfg.get("model_type", "aed")
-            # Check for pre-loaded engine
-            import aria
-
-            preloaded = getattr(aria, "_preloaded_asr_engine", None)
-            if preloaded is not None and preloaded.name.startswith("FireRedASR"):
-                print("Using pre-loaded FireRedASR engine")
-                self.asr_engine = preloaded
-            else:
-                print("Loading FireRedASR model (this may take a few seconds)...")
-                from .core.asr.fireredasr_engine import (
-                    FireRedASREngine,
-                    FireRedASRConfig,
-                )
-
-                # Default model path: models/FireRedASR-AED-L relative to app
-                default_model_path = str(get_models_path("FireRedASR-AED-L"))
-                asr_config = FireRedASRConfig(
-                    model_type=model_type,
-                    model_path=firered_cfg.get("model_path", default_model_path),
-                    use_gpu=firered_cfg.get("use_gpu", True),
-                    beam_size=firered_cfg.get("beam_size", 2),
-                )
-                self.asr_engine = FireRedASREngine(asr_config)
-                self.asr_engine.load()
-            print(f"FireRedASR ready! ({model_type.upper()})")
         elif engine_type == "qwen3":
             # Qwen3-ASR (Alibaba's latest, 52 languages, context biasing)
             self._asr_engine_type = "qwen3"
@@ -815,11 +769,12 @@ class AriaApp:
             )
             self._asr_engine_type = "qwen3"
             from .core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
+
             qwen3_cfg = asr_cfg.get("qwen3", {})
             asr_config = Qwen3Config(
                 model_name=qwen3_cfg.get("model_name", "auto"),
                 device=qwen3_cfg.get("device", "cuda"),
-                torch_dtype=qwen3_cfg.get("torch_dtype", "float16"),
+                torch_dtype=qwen3_cfg.get("torch_dtype", "bfloat16"),
             )
             self.asr_engine = Qwen3ASREngine(asr_config)
             self.asr_engine.load()
@@ -844,42 +799,11 @@ class AriaApp:
             print(
                 f"[HOTWORD] FunASR hotwords: {len(hotwords_with_score)} words (weight->score mapped)"
             )
-        elif engine_type == "fireredasr":
-            # FireRedASR: NO native hotword support, rely on Layer 2/3 post-processing
-            print(
-                f"[HOTWORD] FireRedASR: Using post-processing only (no native hotword support)"
-            )
         elif engine_type == "qwen3":
             # Qwen3-ASR: use context biasing (text-based, weight->repetition)
             context_string = self.hotword_manager.to_qwen3_context()
-            if context_string:
-                self.asr_engine.set_context(context_string)
-                print(f"[HOTWORD] Qwen3 context: {len(context_string)} chars")
-        else:
-            # Whisper: use initial_prompt
-            initial_prompt = self.hotword_manager.build_initial_prompt()
-            if initial_prompt:
-                self.asr_engine.set_initial_prompt(initial_prompt)
-                print(f"[HOTWORD] Initial prompt: {initial_prompt[:60]}...")
-
-        # GPU Warmup - MUST run AFTER initial_prompt is set (Gemini "Prompt Shock" fix)
-        # Previous warmup ran before initial_prompt, causing first sentence to fail
-        if self._asr_engine_type == "whisper":
-            try:
-                import numpy as np
-
-                # Use 1s of silence (zeros), not random noise
-                # - Silence matches what Whisper was trained on
-                # - Random noise can skew LayerNorm statistics
-                # - 16000 samples = 1 second @ 16kHz
-                warmup_audio = np.zeros(16000, dtype=np.float32)
-                print("[WARMUP] Pre-heating GPU with initial_prompt...")
-                _ = self.asr_engine.transcribe(warmup_audio)
-                print("[WARMUP] GPU ready (prompt-aware)!")
-            except Exception as e:
-                print(
-                    f"[WARMUP] Warning: warmup failed ({e}), first transcription may be slow"
-                )
+            self.asr_engine.set_context(context_string or "")
+            print(f"[HOTWORD] Qwen3 context: {len(context_string)} chars")
 
         self.hotword_processor = HotWordProcessor(
             self.hotword_manager.get_replacements()
@@ -961,9 +885,6 @@ class AriaApp:
         self._emit_voice_activity(True)
 
         # Start streaming ASR (interim results while speaking)
-        # FIX I4: Skip interim timer in PTT mode (audio is merged at release, not piecemeal)
-        if self._input_mode == "ptt" and self._ptt_active:
-            return
         self._last_interim_text = ""
         self._start_interim_timer()
 
@@ -973,14 +894,6 @@ class AriaApp:
         self._emit_voice_activity(False)
 
         if audio is None or len(audio) < 1600:  # < 0.1s
-            return
-
-        # PTT mode: send VAD segment to transcribe queue for real-time transcription
-        if self._input_mode == "ptt" and self._ptt_active:
-            import numpy as np
-            segment = np.array(audio, copy=True)
-            self._ptt_transcribe_queue.put(segment)
-            print(f"[PTT] Queued segment for transcription ({len(audio)/16000:.1f}s)")
             return
 
         # Health check: restart worker if it died (GPU error, uncaught exception, etc.)
@@ -1166,36 +1079,25 @@ class AriaApp:
             except queue.Empty:
                 continue
 
-            # PTT pre-transcribed text: skip ASR, go directly to post-processing
-            is_pretranscribed = isinstance(data, str)
-
+            audio = data
             self._worker_busy = True
 
-            if is_pretranscribed:
-                _pipeline_log(
-                    "ASR",
-                    f">>> Got pre-transcribed text (PTT): '{data[:80]}...', pending={self._asr_queue.qsize()}",
-                )
-                print(f"[PTT] Post-processing pre-transcribed text (queue: {self._asr_queue.qsize()} pending)")
-                audio = None  # No audio for pre-transcribed
-            else:
-                audio = data
-                _pipeline_log(
-                    "ASR",
-                    f">>> Got audio from queue: session={session_id}, samples={len(audio)}, pending={self._asr_queue.qsize()}",
-                )
-                print(f"[...] Transcribing... (queue: {self._asr_queue.qsize()} pending)")
+            _pipeline_log(
+                "ASR",
+                f">>> Got audio from queue: session={session_id}, samples={len(audio)}, pending={self._asr_queue.qsize()}",
+            )
+            print(f"[...] Transcribing... (queue: {self._asr_queue.qsize()} pending)")
 
-                # === Safety guards for corrupted/empty audio ===
-                if len(audio) == 0:
-                    _pipeline_log("ASR", "Empty audio segment, skipping")
-                    self._worker_busy = False
-                    self._asr_queue.task_done()
-                    continue
+            # === Safety guards for corrupted/empty audio ===
+            if len(audio) == 0:
+                _pipeline_log("ASR", "Empty audio segment, skipping")
+                self._worker_busy = False
+                self._asr_queue.task_done()
+                continue
 
-                if not np.isfinite(audio).all():
-                    _pipeline_log("ASR", "Audio contains NaN/Inf, sanitizing")
-                    audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+            if not np.isfinite(audio).all():
+                _pipeline_log("ASR", "Audio contains NaN/Inf, sanitizing")
+                audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Create debug session
             debug = DebugSession(session_id=session_id, enabled=DebugConfig.enabled)
@@ -1204,165 +1106,142 @@ class AriaApp:
             debug_dir = os.path.join(os.path.dirname(__file__), "DebugLog")
             debug_path = ""
 
-            if is_pretranscribed:
-                # Skip audio-specific processing for pre-transcribed text
-                audio_level_avg = 0.0
-                audio_level_max = 0.0
-            else:
-                # Audio level stats (always compute for logging)
-                audio_level_avg = float(np.abs(audio).mean())
-                audio_level_max = float(np.abs(audio).max())
+            # Audio level stats (always compute for logging)
+            audio_level_avg = float(np.abs(audio).mean())
+            audio_level_max = float(np.abs(audio).max())
 
-            if not is_pretranscribed:
-                try:
-                    if DebugConfig.enabled and DebugConfig.save_to_file:
-                        os.makedirs(debug_dir, exist_ok=True)
-                        debug_path = os.path.join(debug_dir, f"audio_{session_id}.wav")
-                        audio_int16 = (audio * 32767).astype("int16")
-                        with wave.open(debug_path, "wb") as wf:
-                            wf.setnchannels(1)
-                            wf.setsampwidth(2)
-                            wf.setframerate(16000)
-                            wf.writeframes(audio_int16.tobytes())
+            try:
+                if DebugConfig.enabled and DebugConfig.save_to_file:
+                    os.makedirs(debug_dir, exist_ok=True)
+                    debug_path = os.path.join(debug_dir, f"audio_{session_id}.wav")
+                    audio_int16 = (audio * 32767).astype("int16")
+                    with wave.open(debug_path, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(16000)
+                        wf.writeframes(audio_int16.tobytes())
 
-                    # Log audio debug info
-                    debug.log_audio(
-                        duration_seconds=len(audio) / 16000,
-                        sample_count=len(audio),
-                        sample_rate=16000,
-                        channels=1,
-                        vad_enabled=(
-                            self.audio_capture.config.enable_vad
-                            if self.audio_capture
-                            else True
-                        ),
-                        vad_threshold=(
-                            self.audio_capture.config.vad_config.threshold
-                            if self.audio_capture
-                            else 0.5
-                        ),
-                        audio_level_avg=audio_level_avg,
-                        audio_level_max=audio_level_max,
-                        audio_file_path=debug_path,
-                    )
-                    print(
-                        f"[DEBUG] Audio: {len(audio) / 16000:.1f}s, level_avg={audio_level_avg:.4f}, level_max={audio_level_max:.4f}"
-                    )
+                # Log audio debug info
+                debug.log_audio(
+                    duration_seconds=len(audio) / 16000,
+                    sample_count=len(audio),
+                    sample_rate=16000,
+                    channels=1,
+                    vad_enabled=(
+                        self.audio_capture.config.enable_vad
+                        if self.audio_capture
+                        else True
+                    ),
+                    vad_threshold=(
+                        self.audio_capture.config.vad_config.threshold
+                        if self.audio_capture
+                        else 0.5
+                    ),
+                    audio_level_avg=audio_level_avg,
+                    audio_level_max=audio_level_max,
+                    audio_file_path=debug_path,
+                )
+                print(
+                    f"[DEBUG] Audio: {len(audio) / 16000:.1f}s, level_avg={audio_level_avg:.4f}, level_max={audio_level_max:.4f}"
+                )
 
-                except Exception as e:
-                    logger.warning(f"Failed to save debug audio: {e}")
-                    debug.log_error(f"Audio save failed: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to save debug audio: {e}")
+                debug.log_error(f"Audio save failed: {e}")
 
             inserted = False
             final_text = ""
             asr_start = None  # Will be set when transcription starts
 
-            if is_pretranscribed:
-                # PTT path: text already transcribed, skip ASR entirely
-                import time as time_module
-                text = data
-                asr_start = time_module.time()
-                _pipeline_log("ASR", f"Pre-transcribed (PTT): '{text[:80]}...'")
-                print(f"[PTT] Pre-transcribed text entering post-processing: '{text}'")
-            else:
-                # === Pre-ASR Acoustic Gate ===
-                # Skip ASR entirely if audio energy is near-silence (saves 1-15s of transcription time).
-                # VAD can false-trigger on keyboard clicks, mouse clicks, etc. — this catches those.
-                PRE_ASR_ENERGY_GATE = 0.003  # avg amplitude threshold for float32 [-1,1] audio
-                if audio_level_avg < PRE_ASR_ENERGY_GATE:
-                    _pipeline_log(
-                        "ASR",
-                        f"Pre-ASR gate: audio too quiet (avg={audio_level_avg:.5f} < {PRE_ASR_ENERGY_GATE}), skipping ASR",
-                    )
-                    print(f"[ASR] Skipped: audio too quiet (avg={audio_level_avg:.5f})")
-                    self._worker_busy = False
-                    self._asr_queue.task_done()
-                    continue
+            # === Pre-ASR Acoustic Gate ===
+            # Skip ASR entirely if audio energy is near-silence (saves 1-15s of transcription time).
+            # VAD can false-trigger on keyboard clicks, mouse clicks, etc. — this catches those.
+            # Configurable via settings: vad.energy_threshold (default 0.003)
+            energy_gate = self._energy_threshold
+            if audio_level_avg < energy_gate:
+                _pipeline_log(
+                    "ASR",
+                    f"Pre-ASR gate: audio too quiet (avg={audio_level_avg:.5f} < {energy_gate}), skipping ASR",
+                )
+                print(f"[ASR] Skipped: audio too quiet (avg={audio_level_avg:.5f})")
+                self._worker_busy = False
+                self._asr_queue.task_done()
+                continue
 
             try:
-                if not is_pretranscribed:
-                    # Transcribe (Layer 1: initial_prompt already set)
-                    import time as time_module
-                    import concurrent.futures
+                # Transcribe (Layer 1: initial_prompt already set)
+                import time as time_module
+                import concurrent.futures
 
-                    _pipeline_log("ASR", "Starting transcription...")
-                    asr_start = time_module.time()
-                    # Use lock to prevent concurrent ASR (interim vs final)
-                    # Timeout protection: if transcribe hangs (GPU error, model crash),
-                    # don't block the worker forever — skip after 30 seconds.
-                    ASR_TIMEOUT_S = 30
-                    with self._asr_lock:
-                        with concurrent.futures.ThreadPoolExecutor(
-                            max_workers=1
-                        ) as executor:
-                            future = executor.submit(
-                                self.asr_engine.transcribe, audio
+                _pipeline_log("ASR", "Starting transcription...")
+                asr_start = time_module.time()
+                # Use lock to prevent concurrent ASR (interim vs final)
+                # Timeout protection: if transcribe hangs (GPU error, model crash),
+                # don't block the worker forever — skip after 30 seconds.
+                ASR_TIMEOUT_S = 30
+                with self._asr_lock:
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1
+                    ) as executor:
+                        future = executor.submit(self.asr_engine.transcribe, audio)
+                        try:
+                            result = future.result(timeout=ASR_TIMEOUT_S)
+                        except concurrent.futures.TimeoutError:
+                            print(
+                                f"[ASR] TIMEOUT: Transcription exceeded {ASR_TIMEOUT_S}s, skipping"
                             )
-                            try:
-                                result = future.result(timeout=ASR_TIMEOUT_S)
-                            except concurrent.futures.TimeoutError:
-                                print(
-                                    f"[ASR] TIMEOUT: Transcription exceeded {ASR_TIMEOUT_S}s, skipping"
-                                )
-                                _pipeline_log(
-                                    "ERROR",
-                                    f"ASR timeout after {ASR_TIMEOUT_S}s",
-                                )
-                                result = None
-                    asr_time = (time_module.time() - asr_start) * 1000
-                    text = (
-                        result.text.strip() if result and result.text else ""
-                    )
-                    _pipeline_log("ASR", f"Transcription done: '{text}' ({asr_time:.0f}ms)")
+                            _pipeline_log(
+                                "ERROR",
+                                f"ASR timeout after {ASR_TIMEOUT_S}s",
+                            )
+                            result = None
+                asr_time = (time_module.time() - asr_start) * 1000
+                text = result.text.strip() if result and result.text else ""
+                _pipeline_log("ASR", f"Transcription done: '{text}' ({asr_time:.0f}ms)")
 
-                    # Get initial prompt info
-                    initial_prompt = (
-                        self.hotword_manager.build_initial_prompt()
-                        if self.hotword_manager
-                        else ""
-                    )
-                    initial_prompt_enabled = (
-                        self.hotword_manager.config.enable_initial_prompt
-                        if self.hotword_manager
-                        else False
-                    )
+                # Get initial prompt info
+                initial_prompt = (
+                    self.hotword_manager.build_initial_prompt()
+                    if self.hotword_manager
+                    else ""
+                )
+                initial_prompt_enabled = (
+                    self.hotword_manager.config.enable_initial_prompt
+                    if self.hotword_manager
+                    else False
+                )
 
-                    # Log ASR debug info
-                    debug.log_asr(
-                        model_name=(
-                            self.asr_engine.config.model_name
-                            if self.asr_engine
-                            else "unknown"
-                        ),
-                        device=(
-                            self.asr_engine.config.device if self.asr_engine else "unknown"
-                        ),
-                        language=(
-                            self.asr_engine.config.language if self.asr_engine else "zh"
-                        ),
-                        audio_duration=len(audio) / 16000,
-                        initial_prompt=initial_prompt,
-                        initial_prompt_enabled=initial_prompt_enabled,
-                        raw_text=text,
-                        transcribe_time_ms=asr_time,
-                    )
-                    print(f"[ASR] raw: '{text}' ({asr_time:.0f}ms)")
+                # Log ASR debug info
+                debug.log_asr(
+                    model_name=(
+                        self.asr_engine.config.model_name
+                        if self.asr_engine
+                        else "unknown"
+                    ),
+                    device=(
+                        self.asr_engine.config.device if self.asr_engine else "unknown"
+                    ),
+                    language=(
+                        self.asr_engine.config.language if self.asr_engine else "zh"
+                    ),
+                    audio_duration=len(audio) / 16000,
+                    initial_prompt=initial_prompt,
+                    initial_prompt_enabled=initial_prompt_enabled,
+                    raw_text=text,
+                    transcribe_time_ms=asr_time,
+                )
+                print(f"[ASR] raw: '{text}' ({asr_time:.0f}ms)")
 
-                    # Fix Whisper sentence repetition bug (before hallucination check)
-                    if self._asr_engine_type == "whisper" and text:
-                        deduped = self._deduplicate_sentences(text)
-                        if deduped != text:
-                            print(f"[ASR] Deduplicated: '{text}' -> '{deduped}'")
-                            text = deduped
+                # Fix ASR sentence repetition bug (before hallucination check)
+                if text:
+                    deduped = self._deduplicate_sentences(text)
+                    if deduped != text:
+                        print(f"[ASR] Deduplicated: '{text}' -> '{deduped}'")
+                        text = deduped
 
-                # Filter Whisper hallucinations (skip for FunASR and PTT pre-transcribed text)
+                # Filter ASR hallucinations (applies to all engines)
                 # Enhanced: retry once on hallucination, then fallback to interim result
-                if (
-                    not is_pretranscribed
-                    and self._asr_engine_type == "whisper"
-                    and text
-                    and self._is_hallucination(text)
-                ):
+                if text and self._is_hallucination(text):
                     print(f"[ASR] Detected hallucination: '{text}'")
 
                     # Strategy 1: Retry transcription once (cold-start hallucinations often clear on retry)
@@ -1609,7 +1488,9 @@ class AriaApp:
 
             except Exception as e:
                 logger.error(f"Transcription error: {e}", exc_info=True)
-                _pipeline_log("ERROR", f"Transcription exception: {type(e).__name__}: {e}")
+                _pipeline_log(
+                    "ERROR", f"Transcription exception: {type(e).__name__}: {e}"
+                )
                 print(f"[ERR] {type(e).__name__}: {e}")
                 debug.log_error(f"Transcription error: {e}")
 
@@ -1618,6 +1499,7 @@ class AriaApp:
 
                 # Log total processing time for this segment
                 import time as _fin_time
+
                 total_time = (_fin_time.time() - asr_start) * 1000 if asr_start else -1
                 remaining = self._asr_queue.qsize()
                 _pipeline_log(
@@ -1704,7 +1586,10 @@ class AriaApp:
 
     def _start_hotkey_action_worker(self) -> None:
         """Start the hotkey action processing thread."""
-        if self._hotkey_action_thread is None or not self._hotkey_action_thread.is_alive():
+        if (
+            self._hotkey_action_thread is None
+            or not self._hotkey_action_thread.is_alive()
+        ):
             self._hotkey_action_thread = threading.Thread(
                 target=self._hotkey_action_worker, daemon=True, name="hotkey-action"
             )
@@ -1719,12 +1604,7 @@ class AriaApp:
                 continue
 
             try:
-                if action == "ptt_press":
-                    self._on_ptt_press()
-                elif action == "ptt_release":
-                    self._on_ptt_release()
-                else:
-                    self._handle_hotkey_action()
+                self._handle_hotkey_action()
             except Exception as e:
                 _pipeline_log("HOTKEY", f"Action error: {e}")
                 logger.error(f"Hotkey action error: {e}", exc_info=True)
@@ -1769,13 +1649,6 @@ class AriaApp:
             f"Current state: {self.state.name}, queue={self._asr_queue.qsize()}, "
             f"worker_alive={worker_alive}, worker_busy={self._worker_busy}",
         )
-
-        # FIX I3: If PTT is actively recording, F12 acts as emergency stop
-        # Delegate to _on_ptt_release() which handles transcribe thread cleanup
-        if self._input_mode == "ptt" and self._ptt_active and self.state == AppState.RECORDING:
-            _pipeline_log("HOTKEY", "PTT active, delegating to ptt_release...")
-            self._on_ptt_release()
-            return
 
         with self._lock:
             if self.state == AppState.IDLE:
@@ -1834,6 +1707,7 @@ class AriaApp:
 
         # Stop capture and get any remaining audio
         import time as _stop_time
+
         stop_start = _stop_time.time()
         _pipeline_log("RECORD", "Stopping audio capture...")
         final_audio = self.audio_capture.stop()
@@ -1881,308 +1755,6 @@ class AriaApp:
         self.state = AppState.IDLE
         # REMOVED: self._emit_state("IDLE") - moved to on_insert_complete flow
         print("[STATE] -> IDLE (internal, UI stays TRANSCRIBING)")
-
-    # =========================================================================
-    # PTT (Push-to-Talk) Methods
-    # =========================================================================
-
-    def _ptt_transcribe_worker(self, text_segments: list):
-        """PTT real-time transcription: transcribe each VAD segment as it arrives,
-        accumulate text into the given list, and emit streaming updates to the UI.
-
-        Args:
-            text_segments: The list to append transcribed text to.
-                           Shared with the finisher thread via direct reference.
-        """
-        import numpy as np
-        import concurrent.futures
-
-        while True:
-            try:
-                audio = self._ptt_transcribe_queue.get(timeout=0.5)
-            except queue.Empty:
-                if self._stop_event.is_set():
-                    break
-                continue
-            if audio is None:  # Sentinel = stop
-                break
-
-            # Energy gate: skip near-silent segments
-            energy = float(np.abs(audio).mean())
-            if energy < 0.003:
-                continue
-
-            # Transcribe (with lock to prevent concurrent ASR calls)
-            try:
-                ASR_TIMEOUT_S = 30
-                with self._asr_lock:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(self.asr_engine.transcribe, audio)
-                        try:
-                            result = future.result(timeout=ASR_TIMEOUT_S)
-                        except concurrent.futures.TimeoutError:
-                            print(f"[PTT-ASR] TIMEOUT: exceeded {ASR_TIMEOUT_S}s, skipping segment")
-                            continue
-                text = result.text.strip() if result and result.text else ""
-            except Exception as e:
-                print(f"[PTT-ASR] Error: {e}")
-                continue
-
-            if not text:
-                continue
-
-            # Accumulate text into the shared list + emit streaming update
-            with self._lock:
-                text_segments.append(text)
-                all_text = "".join(text_segments)
-            self._emit_text(all_text, is_final=False)
-            print(f"[PTT-ASR] +'{text}' | total: '{all_text}'")
-
-    def _on_ptt_press(self) -> None:
-        """Called when PTT key is pressed down."""
-        _pipeline_log("PTT", ">>> PTT key pressed")
-
-        if self._input_mode != "ptt":
-            return
-
-        # Only start if IDLE
-        with self._lock:
-            if self.state != AppState.IDLE:
-                print(f"[PTT] Ignored press (state={self.state.name})")
-                return
-
-        # Re-enable from disabled state (same as toggle mode)
-        if self._is_disabled:
-            self._is_disabled = False
-            if self._bridge:
-                self._bridge.emit_setting_changed("enabled", True)
-            return
-
-        # Allow in sleeping mode for wakeword detection
-        with self._lock:
-            is_sleeping = self._is_sleeping
-        if is_sleeping:
-            print("[PTT] Pressed in sleeping mode - wakeword detection enabled")
-
-        self._ptt_active = True
-        self._ptt_text_segments = []  # Clear accumulated text
-
-        # Drain transcribe queue (leftover from previous session)
-        while not self._ptt_transcribe_queue.empty():
-            try:
-                self._ptt_transcribe_queue.get_nowait()
-            except queue.Empty:
-                break
-
-        # Start PTT transcribe thread (pass text_segments by reference)
-        self._ptt_transcribe_thread = threading.Thread(
-            target=self._ptt_transcribe_worker,
-            args=(self._ptt_text_segments,),
-            daemon=True, name="ptt-transcribe"
-        )
-        self._ptt_transcribe_thread.start()
-
-        # Start recording
-        with self._lock:
-            self._start_recording()
-
-        # Safety: 60s max recording timer
-        if self._ptt_max_timer:
-            self._ptt_max_timer.cancel()
-        self._ptt_max_timer = threading.Timer(60.0, self._on_ptt_timeout)
-        self._ptt_max_timer.daemon = True
-        self._ptt_max_timer.start()
-
-        print("[PTT] Recording started (hold key to continue, real-time transcription active)")
-
-    def _on_ptt_release(self) -> None:
-        """Called when PTT key is released. Must run on action worker thread.
-
-        NON-BLOCKING: Stop capture and hand off to a finisher thread that waits
-        for transcription to complete, so the hotkey action worker is immediately
-        freed to handle new key events.
-        """
-        _pipeline_log("PTT", ">>> PTT key released")
-
-        if not self._ptt_active:
-            return
-
-        # Cancel safety timer
-        if self._ptt_max_timer:
-            self._ptt_max_timer.cancel()
-            self._ptt_max_timer = None
-
-        # Check we're actually recording
-        with self._lock:
-            if self.state != AppState.RECORDING:
-                print(f"[PTT] Release ignored (state={self.state.name})")
-                self._ptt_active = False
-                # Send sentinel to stop transcribe thread (non-blocking cleanup)
-                self._ptt_transcribe_queue.put(None)
-                return
-
-        # Stop capture FIRST while _ptt_active is still True
-        # This ensures any last VAD callbacks still queue to _ptt_transcribe_queue
-        self._stop_interim_timer()
-        self._beep(400, 50)
-        self._emit_state("TRANSCRIBING")
-
-        import numpy as np
-        try:
-            final_audio = self.audio_capture.stop()
-        except Exception as e:
-            print(f"[PTT] audio_capture.stop() error: {e}")
-            final_audio = None
-
-        # NOW set _ptt_active=False (capture is stopped, no more VAD callbacks)
-        self._ptt_active = False
-
-        # Queue residual audio for transcription
-        if final_audio is not None and len(final_audio) > 1600:
-            self._ptt_transcribe_queue.put(np.array(final_audio, copy=True))
-
-        # Send sentinel → transcribe thread processes remaining items then exits
-        self._ptt_transcribe_queue.put(None)
-
-        # Set state to IDLE immediately so action worker is free for new PTT presses
-        self.state = AppState.IDLE
-        print("[PTT] -> IDLE (internal, UI stays TRANSCRIBING)")
-
-        # Snapshot: capture references for the finisher thread.
-        # The transcribe thread is still running and appending to self._ptt_text_segments.
-        # We do NOT replace the list here — the next _on_ptt_press will create a new list.
-        # After transcribe_thread.join(), all segments are finalized in the list.
-        transcribe_thread = self._ptt_transcribe_thread
-        self._ptt_transcribe_thread = None
-        session_id = self._session_count
-        text_segments_ref = self._ptt_text_segments  # Capture reference (same list object)
-
-        def _ptt_finisher():
-            """Wait for transcription thread, collect text, send to post-processing."""
-            try:
-                # Wait for transcribe thread to finish
-                if transcribe_thread:
-                    print("[PTT] Finisher: waiting for transcription to complete...")
-                    transcribe_thread.join(timeout=30.0)
-
-                # Thread is done — safe to read the captured list
-                all_text = "".join(text_segments_ref)
-
-                if not all_text.strip():
-                    print("[PTT] No text transcribed")
-                    self._emit_state("IDLE")
-                    self._emit_insert_complete()
-                    return
-
-                print(f"[PTT] Final text: '{all_text}'")
-
-                # Queue pre-transcribed text to main ASR worker → post-processing pipeline
-                try:
-                    self._asr_queue.put_nowait((session_id, all_text))
-                except queue.Full:
-                    print("[PTT] ASR queue full, dropping text")
-                    self._emit_state("IDLE")
-                    self._emit_insert_complete()
-            except Exception as e:
-                print(f"[PTT] Finisher error: {e}")
-                import traceback
-                traceback.print_exc()
-                self._emit_state("IDLE")
-                self._emit_insert_complete()
-
-        threading.Thread(target=_ptt_finisher, daemon=True, name="ptt-finisher").start()
-
-    def _on_ptt_timeout(self) -> None:
-        """Safety: auto-release after 60s max recording.
-
-        FIX C1: Queue the release action instead of calling directly from Timer thread.
-        This ensures _on_ptt_release runs on the action worker thread.
-        """
-        print("[PTT] 60s timeout reached, queuing auto-release")
-        _pipeline_log("PTT", "60s timeout, queuing ptt_release")
-        try:
-            self._hotkey_action_queue.put("ptt_release", timeout=2.0)
-        except queue.Full:
-            # Emergency: timer thread can't queue - force cleanup
-            _pipeline_log("PTT", "EMERGENCY: queue full on timeout, forcing cleanup")
-            self._ptt_active = False
-
-    def set_input_mode(self, mode: str) -> None:
-        """Switch between 'toggle' and 'ptt' input modes.
-
-        Thread-safe: can be called from UI thread.
-        """
-        if mode not in ("toggle", "ptt"):
-            print(f"[PTT] Unknown input mode: {mode}")
-            return
-
-        if mode == self._input_mode:
-            return
-
-        print(f"[PTT] Switching input mode: {self._input_mode} -> {mode}")
-        _pipeline_log("PTT", f"Input mode: {self._input_mode} -> {mode}")
-
-        # If currently recording, stop first
-        with self._lock:
-            if self.state == AppState.RECORDING:
-                if self._ptt_active:
-                    self._ptt_active = False
-                    if self._ptt_max_timer:
-                        self._ptt_max_timer.cancel()
-                        self._ptt_max_timer = None
-                    # Stop PTT transcribe thread
-                    if self._ptt_transcribe_thread and self._ptt_transcribe_thread.is_alive():
-                        self._ptt_transcribe_queue.put(None)
-                self._stop_recording()
-        # Join transcribe thread outside the lock to avoid deadlock
-        if self._ptt_transcribe_thread:
-            self._ptt_transcribe_thread.join(timeout=5.0)
-            self._ptt_transcribe_thread = None
-
-        old_mode = self._input_mode
-        self._input_mode = mode
-
-        if mode == "ptt":
-            # Start PTT handler
-            if not self._ptt_handler:
-                ptt_key = self._ptt_key
-                def _ptt_press_cb():
-                    try:
-                        self._hotkey_action_queue.put_nowait("ptt_press")
-                    except queue.Full:
-                        _pipeline_log("PTT", "Press dropped: action queue full")
-
-                def _ptt_release_cb():
-                    # FIX I2: Use put with timeout for release - release must not be lost
-                    try:
-                        self._hotkey_action_queue.put("ptt_release", timeout=2.0)
-                    except queue.Full:
-                        _pipeline_log("PTT", "CRITICAL: Release dropped after 2s wait!")
-                        self._ptt_active = False  # Emergency cleanup
-
-                self._ptt_handler = PTTHandler(
-                    key=ptt_key,
-                    on_press_cb=_ptt_press_cb,
-                    on_release_cb=_ptt_release_cb,
-                )
-            self._ptt_handler.start()
-            print(f"[PTT] PTT mode active (key={self._ptt_key})")
-        else:
-            # Stop PTT handler
-            if self._ptt_handler:
-                self._ptt_handler.stop()
-            self._ptt_text_segments = []
-            self._ptt_active = False
-            # Stop PTT transcribe thread if running
-            if self._ptt_transcribe_thread and self._ptt_transcribe_thread.is_alive():
-                self._ptt_transcribe_queue.put(None)
-                self._ptt_transcribe_thread.join(timeout=5.0)
-                self._ptt_transcribe_thread = None
-            print("[PTT] Toggle mode active")
-
-    def get_input_mode(self) -> str:
-        """Get current input mode."""
-        return self._input_mode
 
     # =========================================================================
     # Selection Mode Methods
@@ -2401,22 +1973,6 @@ class AriaApp:
             if hotkey_ok:
                 self.hotkey_manager.start()
 
-            # Load PTT config (default off)
-            try:
-                import json
-                with open(self._config_path, "r", encoding="utf-8") as f:
-                    _cfg = json.load(f)
-                self._ptt_key = _cfg.get("general", {}).get("ptt_key", "right_ctrl")
-                saved_mode = _cfg.get("general", {}).get("input_mode", "toggle")
-                _pipeline_log("PTT",f"Config loaded: input_mode={saved_mode}, ptt_key={self._ptt_key}")
-                if saved_mode == "ptt":
-                    self.set_input_mode("ptt")
-                    print(f"[PTT] Started in PTT mode (key={self._ptt_key})")
-                    _pipeline_log("PTT",f"set_input_mode('ptt') completed, handler={self._ptt_handler}, handler.running={self._ptt_handler.is_running if self._ptt_handler else 'N/A'}")
-            except Exception as e:
-                print(f"[PTT] Config load skipped: {e}")
-                _pipeline_log("PTT",f"Config load ERROR: {e}")
-
             self._running = True
 
             print()
@@ -2427,8 +1983,6 @@ class AriaApp:
                 print(
                     f"  Hotkey [{self.hotkey.upper()}] unavailable - use UI to toggle"
                 )
-            if self._input_mode == "ptt":
-                print(f"  PTT mode: hold [{self._ptt_key.upper()}] to record")
             print("=" * 60)
             print()
             print("Ready! Waiting for input...")
@@ -2449,17 +2003,6 @@ class AriaApp:
 
         # Stop streaming ASR timer first (prevent stale callbacks)
         self._stop_interim_timer()
-
-        # Stop PTT handler and transcribe thread
-        if self._ptt_handler:
-            self._ptt_handler.stop()
-        if self._ptt_max_timer:
-            self._ptt_max_timer.cancel()
-            self._ptt_max_timer = None
-        if self._ptt_transcribe_thread and self._ptt_transcribe_thread.is_alive():
-            self._ptt_transcribe_queue.put(None)  # Sentinel to stop
-            self._ptt_transcribe_thread.join(timeout=5.0)
-            self._ptt_transcribe_thread = None
 
         # Stop recording if active
         if self.audio_capture and self.audio_capture.is_recording:
@@ -2538,19 +2081,10 @@ class AriaApp:
                     ):
                         # Qwen3: update context string (structured V2 format)
                         context_string = self.hotword_manager.to_qwen3_context()
-                        if context_string:
-                            self.asr_engine.set_context(context_string)
-                            print(
-                                f"[HOT-RELOAD] Updated Qwen3 context: {len(context_string)} chars"
-                            )
-                    elif hasattr(self.asr_engine, "set_initial_prompt"):
-                        # Whisper: update initial_prompt
-                        initial_prompt = self.hotword_manager.build_initial_prompt()
-                        if initial_prompt:
-                            self.asr_engine.set_initial_prompt(initial_prompt)
-                            print(
-                                f"[HOT-RELOAD] Updated initial_prompt: {initial_prompt[:50]}..."
-                            )
+                        self.asr_engine.set_context(context_string or "")
+                        print(
+                            f"[HOT-RELOAD] Updated Qwen3 context: {len(context_string)} chars"
+                        )
 
                 # Update Layer 2: Regex replacements
                 if self.hotword_processor:
@@ -2596,29 +2130,35 @@ class AriaApp:
                         f"[HOT-RELOAD] Updated wakeword: '{self.wakeword_detector.wakeword}'"
                     )
 
-                # Update VAD settings
-                if self.audio_capture and self.audio_capture._vad:
-                    try:
-                        import json
+                # Update VAD settings + energy gate
+                try:
+                    import json
 
-                        with open(self._config_path, "r", encoding="utf-8") as f:
-                            config = json.load(f)
-                        vad_cfg = config.get("vad", {})
-                        new_threshold = max(
-                            0.1, min(0.9, vad_cfg.get("threshold", 0.2))
-                        )
-                        new_min_silence = max(
-                            100, min(5000, vad_cfg.get("min_silence_ms", 1200))
-                        )
+                    with open(self._config_path, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    vad_cfg = config.get("vad", {})
+                    new_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
+                    new_min_silence = max(
+                        100, min(5000, vad_cfg.get("min_silence_ms", 1200))
+                    )
+                    new_energy = max(
+                        0.0005,
+                        min(0.02, vad_cfg.get("energy_threshold", 0.003)),
+                    )
 
-                        # Update VAD config in place
+                    # Update VAD config in place
+                    if self.audio_capture and self.audio_capture._vad:
                         self.audio_capture._vad.config.threshold = new_threshold
                         self.audio_capture._vad.config.min_silence_ms = new_min_silence
-                        print(
-                            f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, min_silence={new_min_silence}ms"
-                        )
-                    except Exception as e:
-                        print(f"[HOT-RELOAD] VAD update failed: {e}")
+
+                    # Update energy gate (used by ASR worker)
+                    self._energy_threshold = new_energy
+                    print(
+                        f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, "
+                        f"min_silence={new_min_silence}ms, energy_gate={new_energy}"
+                    )
+                except Exception as e:
+                    print(f"[HOT-RELOAD] VAD update failed: {e}")
 
                 # Update output settings (typewriter mode, elevation check)
                 if self.output_injector:
@@ -2711,7 +2251,7 @@ class AriaApp:
         Set polish mode from UI.
 
         Args:
-            mode: "fast" (local Qwen) or "quality" (Gemini API)
+            mode: "off" (disabled), "fast" (local Qwen), or "quality" (API)
         """
         if self.hotword_manager:
             try:
@@ -2730,11 +2270,11 @@ class AriaApp:
         Get current polish mode.
 
         Returns:
-            "fast" or "quality"
+            "off", "fast", or "quality"
         """
         if self.hotword_manager:
             return self.hotword_manager.polish_mode
-        return "fast"  # Default
+        return "quality"  # Default matches template
 
     def set_wakeword(self, wakeword: str) -> None:
         """
@@ -2770,7 +2310,7 @@ class AriaApp:
         Change the recording hotkey dynamically.
 
         Args:
-            hotkey: New hotkey string (e.g., "capslock", "ctrl+shift+space")
+            hotkey: New hotkey string (e.g., "grave", "capslock", "ctrl+shift+space")
 
         Returns:
             True if hotkey was changed successfully, False otherwise
@@ -2885,8 +2425,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Aria - Local AI Voice Dictation")
-    # Read hotkey from config file, fallback to capslock
-    default_hotkey = "capslock"
+    # Read hotkey from config file, fallback to grave (backtick key)
+    default_hotkey = "grave"
     try:
         import json
         from pathlib import Path
@@ -2895,7 +2435,7 @@ def main():
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            default_hotkey = cfg.get("general", {}).get("hotkey", "capslock")
+            default_hotkey = cfg.get("general", {}).get("hotkey", "grave")
     except Exception:
         pass
     parser.add_argument(
