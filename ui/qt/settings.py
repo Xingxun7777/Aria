@@ -1778,81 +1778,152 @@ class SettingsWindow(QMainWindow):
         for name, device_id in devices:
             self.audio_device.addItem(name, userData=device_id)
 
-    def _get_startup_shortcut_path(self) -> Path:
-        """Get the path to the startup folder shortcut."""
-        import os
+    # --- Auto-startup via Registry HKCU\Run (v2, replaces Startup folder .lnk) ---
 
-        startup_folder = (
-            Path(os.environ["APPDATA"])
-            / "Microsoft"
-            / "Windows"
-            / "Start Menu"
-            / "Programs"
-            / "Startup"
-        )
-        return startup_folder / "Aria.lnk"
+    _REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    _REGISTRY_VALUE_NAME = "AriaDictation"
+
+    def _detect_launch_config(self) -> dict:
+        """
+        Detect the correct launch configuration for the current environment.
+
+        Returns dict with keys:
+            target_path: Executable to run (absolute path)
+            arguments: Command-line arguments
+            working_dir: Working directory for the process
+            mode: "portable" or "dev"
+        """
+        import sys
+
+        project_dir = Path(__file__).parent.parent.parent.resolve()
+
+        # Portable build: has AriaRuntime.exe in _internal/
+        aria_runtime = project_dir / "_internal" / "AriaRuntime.exe"
+        aria_vbs = project_dir / "Aria.vbs"
+
+        if aria_runtime.exists() and aria_vbs.exists():
+            # Portable mode: use wscript.exe (absolute) + Aria.vbs
+            import os
+
+            system_root = os.environ.get("SystemRoot", r"C:\Windows")
+            wscript = Path(system_root) / "System32" / "wscript.exe"
+            return {
+                "target_path": str(wscript),
+                "arguments": f'"{aria_vbs}"',
+                "working_dir": str(project_dir),
+                "mode": "portable",
+            }
+
+        # Dev mode: use pythonw.exe (windowless Python)
+        pythonw = project_dir / ".venv" / "Scripts" / "pythonw.exe"
+        if not pythonw.exists():
+            # Fallback: sibling of current Python executable
+            exe_pythonw = Path(sys.executable).with_name("pythonw.exe")
+            if exe_pythonw.exists():
+                pythonw = exe_pythonw
+
+        launcher_py = project_dir / "launcher.py"
+
+        return {
+            "target_path": str(pythonw) if pythonw.exists() else "",
+            "arguments": f'"{launcher_py}"',
+            "working_dir": str(project_dir),
+            "mode": "dev",
+        }
+
+    def _build_startup_command(self) -> str:
+        """Build the startup command string for registry."""
+        config = self._detect_launch_config()
+        if not config["target_path"]:
+            return ""
+        return f'"{config["target_path"]}" {config["arguments"]}'
 
     def _is_auto_startup_enabled(self) -> bool:
-        """Check if auto startup shortcut exists."""
-        return self._get_startup_shortcut_path().exists()
+        """
+        Check if auto startup is enabled AND points to current install path.
+
+        Returns False if:
+        - Registry key doesn't exist
+        - Registry value doesn't match current expected command (stale/moved)
+        """
+        import winreg
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._REGISTRY_KEY) as key:
+                value, _ = winreg.QueryValueEx(key, self._REGISTRY_VALUE_NAME)
+                expected = self._build_startup_command()
+                return bool(expected) and value == expected
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            print(f"[AutoStartup] Registry read error: {e}")
+            return False
 
     def _set_auto_startup(self, enabled: bool) -> None:
-        """Create or remove startup shortcut."""
-        shortcut_path = self._get_startup_shortcut_path()
+        """
+        Set or remove auto-startup via Registry HKCU\\Run.
 
-        if enabled:
-            if shortcut_path.exists():
-                return  # Already enabled
+        Always reconciles: if enabled, overwrites any stale value with current path.
+        Also cleans up legacy Startup folder .lnk if present.
+        """
+        import winreg
 
-            try:
-                # Find Aria.vbs launcher
-                project_dir = Path(__file__).parent.parent.parent
-                launcher = project_dir / "Aria.vbs"
+        # Migrate: clean up old Startup folder shortcut if it exists
+        self._cleanup_legacy_startup_shortcut()
 
-                # For portable build, launcher is in dist folder
-                if not launcher.exists():
-                    # Try to find in parent directories
-                    for parent in [project_dir.parent, project_dir.parent.parent]:
-                        candidate = parent / "Aria.vbs"
-                        if candidate.exists():
-                            launcher = candidate
-                            break
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                self._REGISTRY_KEY,
+                0,
+                winreg.KEY_ALL_ACCESS,
+            ) as key:
+                if enabled:
+                    cmd = self._build_startup_command()
+                    if not cmd:
+                        QMessageBox.warning(
+                            self,
+                            "自启动设置失败",
+                            "未找到 Python 运行环境（pythonw.exe）。\n"
+                            "请确认 .venv 虚拟环境已正确安装。",
+                        )
+                        self.chk_auto_startup.setChecked(False)
+                        return
 
-                if not launcher.exists():
-                    print(f"[AutoStartup] Launcher not found, skipping")
-                    return
+                    # Always write (reconcile) — fixes stale path after project move
+                    winreg.SetValueEx(
+                        key, self._REGISTRY_VALUE_NAME, 0, winreg.REG_SZ, cmd
+                    )
+                    print(f"[AutoStartup] Registry set: {cmd}")
+                else:
+                    try:
+                        winreg.DeleteValue(key, self._REGISTRY_VALUE_NAME)
+                        print("[AutoStartup] Registry value removed")
+                    except FileNotFoundError:
+                        pass  # Already absent
+        except Exception as e:
+            QMessageBox.warning(self, "自启动设置失败", f"注册表操作异常：{e}")
+            self.chk_auto_startup.setChecked(False)
 
-                # Create shortcut using PowerShell
-                import subprocess
+    def _cleanup_legacy_startup_shortcut(self) -> None:
+        """Remove old Startup folder .lnk shortcut if it exists (migration from v1)."""
+        import os
 
-                ps_script = f"""
-$WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("{shortcut_path}")
-$Shortcut.TargetPath = "wscript.exe"
-$Shortcut.Arguments = '"{launcher}"'
-$Shortcut.WorkingDirectory = "{launcher.parent}"
-$Shortcut.Description = "Aria - Local AI Voice Dictation"
-$Shortcut.Save()
-"""
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_script],
-                    capture_output=True,
-                    creationflags=(
-                        subprocess.CREATE_NO_WINDOW
-                        if hasattr(subprocess, "CREATE_NO_WINDOW")
-                        else 0
-                    ),
-                )
-                print(f"[AutoStartup] Created shortcut: {shortcut_path}")
-            except Exception as e:
-                print(f"[AutoStartup] Failed to create shortcut: {e}")
-        else:
-            if shortcut_path.exists():
-                try:
-                    shortcut_path.unlink()
-                    print(f"[AutoStartup] Removed shortcut: {shortcut_path}")
-                except Exception as e:
-                    print(f"[AutoStartup] Failed to remove shortcut: {e}")
+        try:
+            startup_folder = (
+                Path(os.environ.get("APPDATA", ""))
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "Startup"
+            )
+            legacy_lnk = startup_folder / "Aria.lnk"
+            if legacy_lnk.exists():
+                legacy_lnk.unlink()
+                print(f"[AutoStartup] Cleaned up legacy shortcut: {legacy_lnk}")
+        except Exception:
+            pass  # Best-effort cleanup, don't block
 
     def _hotkey_to_qt(self, hotkey: str) -> str:
         """Convert Aria hotkey format to Qt QKeySequence format."""
