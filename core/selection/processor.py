@@ -109,8 +109,20 @@ class SelectionProcessor:
         Call LLM with the prompt.
 
         Uses the polisher's API configuration but with custom prompt.
+        Requires AIPolisher (API-based) — LocalPolishEngine is not supported
+        because selection commands (translate, rewrite, etc.) need chat-capable models.
         """
         if not self.polisher:
+            return None
+
+        # Guard: LocalPolishEngine has no API config — selection needs API polisher
+        from aria.core.hotword.polish import AIPolisher
+
+        if not isinstance(self.polisher, AIPolisher):
+            print(
+                "[SELECTION] Local polisher does not support selection commands, "
+                "please switch to quality mode or configure API polish"
+            )
             return None
 
         import httpx

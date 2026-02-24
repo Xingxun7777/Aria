@@ -2053,15 +2053,26 @@ class AriaApp:
         """Check if the application is running."""
         return self._running
 
+    _RELOAD_DEBOUNCE_S = 0.5  # Minimum interval between reloads
+
     def reload_config(self) -> None:
         """Reload configuration from hotwords.json (hot-reload support).
 
         Thread-safe: Uses self._lock to prevent race conditions with ASR worker.
+        Debounced: ignores rapid successive calls within 500ms.
         """
         try:
             with self._lock:
                 if not self.hotword_manager:
                     return
+
+                # Debounce: skip if last reload was too recent
+                now = time.time()
+                last = getattr(self, "_last_reload_time", 0.0)
+                if now - last < self._RELOAD_DEBOUNCE_S:
+                    print("[RELOAD] Debounced (too soon after last reload)")
+                    return
+                self._last_reload_time = now
 
                 self.hotword_manager.reload()
 
