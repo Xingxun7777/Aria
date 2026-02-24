@@ -3,7 +3,7 @@ HotWord System
 ==============
 Four-layer hotword correction for Aria.
 
-Layer 1: ASR initial_prompt (zero latency) - bias Whisper output
+Layer 1: ASR initial_prompt (zero latency) - bias ASR output
 Layer 2: Regex replacement (zero latency) - exact pattern fixes
 Layer 2.5: Pinyin fuzzy match (zero latency) - phonetic near-miss correction
 Layer 3: LLM polish (optional, ~100ms) - AI refinement

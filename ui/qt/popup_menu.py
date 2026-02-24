@@ -131,8 +131,7 @@ class PopupMenu(QWidget):
 
     # Signals
     enableToggled = Signal(bool)
-    modeChanged = Signal(str)  # "quality" or "fast"
-    inputModeChanged = Signal(str)  # "toggle" or "ptt"
+    modeChanged = Signal(str)  # "off", "quality", or "fast"
     settingsRequested = Signal()
     lockToggled = Signal(bool)  # Lock position toggle
     sleepToggled = Signal(bool)  # Sleep/wake toggle
@@ -143,8 +142,7 @@ class PopupMenu(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._enabled = True
-        self._current_mode = "fast"  # Default matches config
-        self._current_input_mode = "toggle"  # "toggle" or "ptt"
+        self._current_mode = "quality"  # Default matches template
         self._is_locked = False
         self._is_sleeping = False
         self._engine_info = "FunASR"  # Current ASR engine name
@@ -221,72 +219,6 @@ class PopupMenu(QWidget):
         separator.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
         container_layout.addWidget(separator)
 
-        # --- Input Mode Section ---
-        input_mode_label = QLabel("输入模式")
-        input_mode_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.6);
-                font-size: 11px;
-            }
-        """
-        )
-        container_layout.addWidget(input_mode_label)
-
-        input_mode_row = QHBoxLayout()
-        input_mode_row.setSpacing(8)
-
-        self.input_mode_group = QButtonGroup(self)
-        self.input_mode_group.setExclusive(True)
-
-        input_btn_style = """
-            QPushButton {
-                background-color: rgba(60, 60, 70, 0.8);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 6px;
-                color: white;
-                font-size: 12px;
-                padding: 6px 12px;
-            }
-            QPushButton:hover {
-                background-color: rgba(80, 80, 95, 0.9);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }
-            QPushButton:checked {
-                background-color: rgba(76, 175, 80, 0.8);
-                border: 1px solid rgba(76, 175, 80, 0.5);
-            }
-        """
-
-        self.toggle_mode_btn = QPushButton("切换模式")
-        self.toggle_mode_btn.setCursor(Qt.PointingHandCursor)
-        self.toggle_mode_btn.setCheckable(True)
-        self.toggle_mode_btn.setChecked(True)
-        self.toggle_mode_btn.setStyleSheet(input_btn_style)
-        self.toggle_mode_btn.setToolTip("按一次开始，再按一次停止")
-        self.toggle_mode_btn.setProperty("mode_id", "toggle")
-
-        self.ptt_mode_btn = QPushButton("按住说话")
-        self.ptt_mode_btn.setCursor(Qt.PointingHandCursor)
-        self.ptt_mode_btn.setCheckable(True)
-        self.ptt_mode_btn.setStyleSheet(input_btn_style)
-        self.ptt_mode_btn.setToolTip("按住右Ctrl录音，松开自动识别")
-        self.ptt_mode_btn.setProperty("mode_id", "ptt")
-
-        self.input_mode_group.addButton(self.toggle_mode_btn)
-        self.input_mode_group.addButton(self.ptt_mode_btn)
-        self.input_mode_group.buttonClicked.connect(self._on_input_mode_clicked)
-
-        input_mode_row.addWidget(self.toggle_mode_btn)
-        input_mode_row.addWidget(self.ptt_mode_btn)
-        container_layout.addLayout(input_mode_row)
-
-        # --- Separator (before polish mode) ---
-        separator_input = QFrame()
-        separator_input.setFixedHeight(1)
-        separator_input.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
-        container_layout.addWidget(separator_input)
-
         # --- Polish Mode Label ---
         mode_label = QLabel("润色模式")
         mode_label.setStyleSheet(
@@ -304,6 +236,7 @@ class PopupMenu(QWidget):
         self.mode_group.setExclusive(True)
 
         modes = [
+            ("off", "关闭", "不润色，直接输出"),
             ("quality", "高质量", "Gemini API, ~1.7s"),
             ("fast", "快速", "本地 Qwen, ~155ms"),
         ]
@@ -504,13 +437,6 @@ class PopupMenu(QWidget):
             self._current_mode = mode_id
             self.modeChanged.emit(mode_id)
 
-    def _on_input_mode_clicked(self, button):
-        """Handle input mode button click."""
-        mode_id = button.property("mode_id")
-        if mode_id and mode_id != self._current_input_mode:
-            self._current_input_mode = mode_id
-            self.inputModeChanged.emit(mode_id)
-
     def _on_settings_clicked(self):
         """Handle settings button click."""
         self.close()
@@ -567,14 +493,6 @@ class PopupMenu(QWidget):
     def setStreaming(self, enabled):
         """Set the streaming display state."""
         self.streaming_toggle.setChecked(enabled)
-
-    def setInputMode(self, mode: str):
-        """Set the input mode ('toggle' or 'ptt')."""
-        self._current_input_mode = mode
-        if mode == "ptt":
-            self.ptt_mode_btn.setChecked(True)
-        else:
-            self.toggle_mode_btn.setChecked(True)
 
     def setTranslateMode(self, mode):
         """Set the translate output mode."""

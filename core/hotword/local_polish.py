@@ -15,16 +15,19 @@ from ..logging import get_system_logger
 logger = get_system_logger()
 
 # Default model path relative to aria package
-DEFAULT_MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+DEFAULT_MODEL_PATH = (
+    Path(__file__).parent.parent.parent / "models" / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+)
 
 
 @dataclass
 class LocalPolishConfig:
     """Local polish configuration."""
+
     enabled: bool = False
     model_path: str = str(DEFAULT_MODEL_PATH)
     n_gpu_layers: int = -1  # -1 = all layers on GPU
-    n_ctx: int = 1024  # Context window (needs space for prompt + text)
+    n_ctx: int = 512  # Context window (matches template default)
     n_threads: int = 4
 
     # Prompt template - focused on punctuation only (Qwen chat format)
@@ -90,7 +93,7 @@ class LocalPolishEngine:
                 n_gpu_layers=self.config.n_gpu_layers,
                 n_ctx=self.config.n_ctx,
                 n_threads=self.config.n_threads,
-                verbose=False
+                verbose=False,
             )
 
             load_time = time.time() - start
@@ -98,7 +101,9 @@ class LocalPolishEngine:
             return True
 
         except ImportError:
-            logger.error("llama-cpp-python not installed. Run: pip install llama-cpp-python")
+            logger.error(
+                "llama-cpp-python not installed. Run: pip install llama-cpp-python"
+            )
             return False
         except Exception as e:
             logger.error(f"Failed to load local model: {e}")
@@ -130,8 +135,15 @@ class LocalPolishEngine:
                 prompt,
                 max_tokens=len(text) + 30,  # Allow for punctuation
                 temperature=0.0,  # Deterministic output
-                stop=["\n", "<|im_end|>", "<|im_start|>", "1.", "2.", "原文"],  # Stop tokens
-                echo=False
+                stop=[
+                    "\n",
+                    "<|im_end|>",
+                    "<|im_start|>",
+                    "1.",
+                    "2.",
+                    "原文",
+                ],  # Stop tokens
+                echo=False,
             )
 
             result = output["choices"][0]["text"].strip()
@@ -148,18 +160,36 @@ class LocalPolishEngine:
 
             # Reject if output looks like instructions (numbered list, explanation)
             if result.startswith("1.") or result.startswith("首先") or "添加" in result:
-                logger.warning(f"Local polish returned instructions, using original: {result[:50]}")
+                logger.warning(
+                    f"Local polish returned instructions, using original: {result[:50]}"
+                )
                 return text
 
             # Reject if output looks like a conversational response (model misunderstood task)
-            response_patterns = ["好的", "明白了", "我知道", "我会", "我来", "可以的", "没问题", "收到"]
-            if any(result.startswith(p) for p in response_patterns) and len(result) < len(text) * 0.5:
-                logger.warning(f"Local polish returned response instead of text: {result[:30]}")
+            response_patterns = [
+                "好的",
+                "明白了",
+                "我知道",
+                "我会",
+                "我来",
+                "可以的",
+                "没问题",
+                "收到",
+            ]
+            if (
+                any(result.startswith(p) for p in response_patterns)
+                and len(result) < len(text) * 0.5
+            ):
+                logger.warning(
+                    f"Local polish returned response instead of text: {result[:30]}"
+                )
                 return text
 
             # Reject if output is too different from input (likely hallucination)
             if len(result) > len(text) * 1.5 or len(result) < len(text) * 0.7:
-                logger.warning(f"Local polish length mismatch ({len(result)} vs {len(text)}), using original")
+                logger.warning(
+                    f"Local polish length mismatch ({len(result)} vs {len(text)}), using original"
+                )
                 return text
 
             logger.debug(f"Local polished: '{text}' -> '{result}'")
@@ -192,7 +222,7 @@ class LocalPolishEngine:
             "http_status": 0,  # Not applicable for local
             # Local-specific extras
             "model_path": self.config.model_path,
-            "tokens_generated": 0
+            "tokens_generated": 0,
         }
 
         if not self.config.enabled:
@@ -217,13 +247,15 @@ class LocalPolishEngine:
                 max_tokens=len(text) + 50,
                 temperature=0.1,
                 stop=["\n", "原文", "请为"],
-                echo=False
+                echo=False,
             )
             inference_time = (time.time() - start_time) * 1000
             debug_info["api_time_ms"] = inference_time
 
             result = output["choices"][0]["text"].strip()
-            debug_info["tokens_generated"] = output.get("usage", {}).get("completion_tokens", 0)
+            debug_info["tokens_generated"] = output.get("usage", {}).get(
+                "completion_tokens", 0
+            )
 
             if not result or len(result) < 1:
                 debug_info["error"] = "Empty response from model"
@@ -234,9 +266,11 @@ class LocalPolishEngine:
                 result = result.split("原文")[0].strip()
 
             debug_info["output_text"] = result
-            debug_info["changed"] = (result != text)
+            debug_info["changed"] = result != text
 
-            logger.debug(f"Local polished: '{text}' -> '{result}' in {inference_time:.0f}ms")
+            logger.debug(
+                f"Local polished: '{text}' -> '{result}' in {inference_time:.0f}ms"
+            )
             return debug_info
 
         except Exception as e:
@@ -252,6 +286,8 @@ class LocalPolishEngine:
             self._load_attempted = False
 
 
-def create_local_polisher(config: Optional[LocalPolishConfig] = None) -> LocalPolishEngine:
+def create_local_polisher(
+    config: Optional[LocalPolishConfig] = None,
+) -> LocalPolishEngine:
     """Factory function to create local polish engine."""
     return LocalPolishEngine(config or LocalPolishConfig())

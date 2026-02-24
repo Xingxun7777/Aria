@@ -2,11 +2,10 @@
 Aria - Local AI Voice Dictation + Smart Completion Tool
 
 Core modules:
-- system: Platform integration (hotkeys, focus, devices)
-- scheduler: Task queue and orchestration
-- core: Audio capture, ASR, LLM, output injection
-- features: Voice cleanup, autocomplete
-- ui: Floating ball, system tray, settings
+- core: Audio capture, ASR engines, hotword correction, AI polish
+- system: Platform integration (hotkeys, text output, admin detection)
+- ui: Floating ball, system tray, settings, translation popup
+- config: Configuration templates and runtime config
 """
 
 __version__ = "1.1.2"

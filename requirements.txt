@@ -80,7 +80,6 @@ Pygments==2.19.2
 pyinstaller==6.18.0
 pyinstaller-hooks-contrib==2026.0
 pynndescent==0.6.0
-pynput==1.8.1
 pypinyin==0.55.0
 PySide6==6.8.0
 PySide6_Addons==6.8.0

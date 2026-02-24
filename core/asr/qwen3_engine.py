@@ -562,7 +562,9 @@ class Qwen3ASREngine(ASREngine):
                             )
                             text = ""
                         else:
-                            _qwen3_log("[RETRY] Retrying transcription without context...")
+                            _qwen3_log(
+                                "[RETRY] Retrying transcription without context..."
+                            )
                             try:
                                 retry_results = self._model.transcribe(
                                     audio=audio_tuple,
@@ -595,14 +597,16 @@ class Qwen3ASREngine(ASREngine):
                                 _qwen3_log(
                                     f"[RETRY] Recovered real speech: '{retry_text[:80]}'"
                                 )
-                                logger.info(
-                                    f"Qwen3 ASR: Leakage retry recovered text"
-                                )
+                                logger.info(f"Qwen3 ASR: Leakage retry recovered text")
                                 text = retry_text
                                 # Update detected language from retry result
                                 if retry_results and len(retry_results) > 0:
                                     detected_language = (
-                                        getattr(retry_results[0], "language", detected_language)
+                                        getattr(
+                                            retry_results[0],
+                                            "language",
+                                            detected_language,
+                                        )
                                         or detected_language
                                     )
                             else:
@@ -678,13 +682,15 @@ class Qwen3ASREngine(ASREngine):
         context_norm = context.lower().strip()
 
         # Acoustic-aware 3-tier detection: lower energy → stricter thresholds.
-        # Audio that reaches here already passed PRE_ASR_ENERGY_GATE (0.003) in app.py.
+        # Audio that reaches here already passed energy_threshold gate (configurable, default 0.003) in app.py.
         # Tiers: STRICT (< 0.008) → MODERATE (< 0.015) → STANDARD (>= 0.015)
-        STRICT_ENERGY = 0.008   # Near-silence: very likely noise/hallucination
+        STRICT_ENERGY = 0.008  # Near-silence: very likely noise/hallucination
         MODERATE_ENERGY = 0.015  # Quiet: possibly real but suspicious
         has_energy_info = audio_energy >= 0
         is_strict = has_energy_info and audio_energy < STRICT_ENERGY
-        is_moderate = has_energy_info and STRICT_ENERGY <= audio_energy < MODERATE_ENERGY
+        is_moderate = (
+            has_energy_info and STRICT_ENERGY <= audio_energy < MODERATE_ENERGY
+        )
 
         # Case 1: Output is EXACTLY the context or a continuous substring
         # (strongest indicator - almost certainly leakage)
