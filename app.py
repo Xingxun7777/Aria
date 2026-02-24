@@ -2190,6 +2190,15 @@ class AriaApp:
                     except Exception as e:
                         print(f"[HOT-RELOAD] Output config update failed: {e}")
 
+                # Sync watcher mtime to prevent double-reload
+                # (settings save triggers both signal + mtime change; without this,
+                # watcher would fire again ~2s later, bypassing the 0.5s debounce)
+                try:
+                    if self._config_path.exists():
+                        self._config_mtime = self._config_path.stat().st_mtime
+                except Exception:
+                    pass
+
                 logger.info("Configuration hot-reloaded (all 4 layers + VAD + output)")
                 print("[HOT-RELOAD] Config reloaded successfully!")
         except Exception as e:

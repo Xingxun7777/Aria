@@ -453,7 +453,11 @@ def main():
                 api_key = ""
                 model = "google/gemini-2.5-flash-lite-preview-09-2025"
 
-                if hasattr(backend, "polisher") and backend.polisher:
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
                     api_url = backend.polisher.config.api_url
                     api_key = backend.polisher.config.api_key
                     model = backend.polisher.config.model
@@ -461,7 +465,9 @@ def main():
 
                 if not api_url or not api_key:
                     _log("[MAIN] ERROR: API not configured")
-                    translation_popup.show_error("API 未配置", action.request_id)
+                    translation_popup.show_error(
+                        "API 未配置（本地模式不支持翻译）", action.request_id
+                    )
                     return
 
                 # Create and start translation worker
@@ -518,7 +524,11 @@ def main():
                 api_key = ""
                 model = "google/gemini-2.5-flash-lite-preview-09-2025"
 
-                if hasattr(backend, "polisher") and backend.polisher:
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
                     api_url = backend.polisher.config.api_url
                     api_key = backend.polisher.config.api_key
                     model = backend.polisher.config.model
@@ -582,7 +592,11 @@ def main():
                 api_key = ""
                 model = "google/gemini-2.5-flash-lite-preview-09-2025"
 
-                if hasattr(backend, "polisher") and backend.polisher:
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
                     api_url = backend.polisher.config.api_url
                     api_key = backend.polisher.config.api_key
                     model = backend.polisher.config.model
@@ -722,13 +736,17 @@ def main():
         api_key = ""
         model = "google/gemini-2.5-flash-lite-preview-09-2025"
 
-        if hasattr(backend, "polisher") and backend.polisher:
+        if (
+            hasattr(backend, "polisher")
+            and backend.polisher
+            and hasattr(backend.polisher.config, "api_url")
+        ):
             api_url = backend.polisher.config.api_url
             api_key = backend.polisher.config.api_key
             model = backend.polisher.config.model
 
         if not api_url or not api_key:
-            ai_chat_window.show_error("API 未配置")
+            ai_chat_window.show_error("API 未配置（本地模式不支持对话）")
             return
 
         # Get conversation and context from chat window
