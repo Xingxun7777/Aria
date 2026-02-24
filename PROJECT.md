@@ -54,7 +54,7 @@ Aria/
 │   │   └── funasr_engine.py   # FunASR Paraformer
 │   ├── audio/
 │   │   ├── capture.py     # 音频捕获 (sounddevice, 有界队列)
-│   │   └── vad.py         # Silero-VAD (阈值0.3, 线程安全)
+│   │   └── vad.py         # Silero-VAD (线程安全)
 │   ├── hotword/           # 4层热词纠错
 │   │   ├── manager.py     # 配置管理 + Layer1 initial_prompt
 │   │   ├── processor.py   # Layer2: 规则替换
@@ -64,7 +64,6 @@ Aria/
 │   ├── selection/         # 选区指令 (润色/翻译/扩写/问AI)
 │   ├── wakeword/          # 唤醒词系统
 │   ├── command/           # 语音键盘命令 (检测+执行)
-│   ├── command/           # 语音命令检测
 │   ├── action/            # UI 动作类型 (Translation/Chat Action)
 │   ├── debug.py           # DebugConfig + DebugSession (JSON 日志)
 │   ├── logging.py         # 系统日志
@@ -131,7 +130,7 @@ Aria/
   └→ 热键再次 → 状态 TRANSCRIBING
        │
        ├→ ASR Worker 线程消费队列
-       │    └→ 引擎识别 (FunASR/Whisper/Qwen3)
+       │    └→ 引擎识别 (Qwen3/FunASR)
        │
        ├→ Layer -1: 唤醒词检测 → 语音命令 (sleep/wake/auto-send)
        ├→ Layer  0: 选区指令检测 → AI 处理
@@ -216,8 +215,8 @@ config watcher 每 2 秒检查 `hotwords.json` 修改时间，变更时自动更
 | Python | 3.12.4 (venv) |
 | GPU | NVIDIA CUDA 12.x (推荐) |
 | VRAM | 4GB+ |
-| 关键依赖 | PySide6, torch, sounddevice, silero-vad, qwen-asr, funasr |
+| 关键依赖 | PySide6, torch 2.8+cu128, sounddevice, silero-vad, qwen-asr, funasr |
 
 ---
 
-*最后更新: 2026-02-20*
+*最后更新: 2026-02-24*

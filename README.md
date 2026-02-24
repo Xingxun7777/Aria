@@ -9,7 +9,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#系统要求)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 
-离线语音识别 · 四层智能纠错 · 语音指令 · 选区命令
+离线语音识别 · 四层智能纠错 · 语音指令 · 选区命令 · AI 对话
 
 [快速开始](#快速开始) · [功能介绍](#功能介绍) · [配置说明](#配置) · [常见问题](#常见问题)
 
@@ -21,7 +21,7 @@
 
 ## 功能介绍
 
-- **四引擎语音识别** — Qwen3-ASR（默认）/ FunASR / Whisper / FireRedASR，GPU 自动加速
+- **双引擎语音识别** — Qwen3-ASR（默认）/ FunASR，GPU 自动加速
 - **四层热词纠错** — ASR 引导 → 正则替换 → 拼音模糊 → AI 润色，每个热词可设权重
 - **切换模式录音** — 按一下开始，再按停止，支持长段落连续输入
 - **实时流式字幕** — 录音中毛玻璃面板显示中间识别结果
@@ -132,10 +132,8 @@ Aria.bat
 
 | 引擎 | 速度 | 语言 | 特点 |
 |------|------|------|------|
-| **Qwen3-ASR**（默认）| 中等 | 多语言 | 上下文热词增强 + 三级防幻觉系统 |
+| **Qwen3-ASR**（默认）| 中等 | 多语言 | 上下文热词增强 + 三级防幻觉系统，VRAM 自动选模型 |
 | **FunASR** | 最快 | 中文 | 离线即用，无需下载模型 |
-| **Whisper** | 中等 | 多语言 | large-v3-turbo，精度最高 |
-| **FireRedASR** | 中等 | 中文 | 需外部仓库 |
 
 <details>
 <summary>四层热词纠错详解</summary>
@@ -161,7 +159,7 @@ Aria.bat
 |------|------|--------|
 | `asr_engine` | 识别引擎 | `qwen3` |
 | `general.hotkey` | 全局热键 | `` ` `` |
-| `vad.threshold` | VAD 灵敏度 (0-1) | `0.3` |
+| `vad.threshold` | VAD 灵敏度 (0-1) | `0.2` |
 | `polish.enabled` | 启用 API 润色 | `false` |
 | `output.typewriter_mode` | 逐字输入模式 | `false` |
 
@@ -260,11 +258,9 @@ Aria/
 
 | 项目 | 许可证 | 说明 |
 |------|--------|------|
-| [FunASR](https://github.com/alibaba-damo-academy/FunASR) | MIT | 阿里达摩院语音识别 |
-| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | MIT | Whisper 优化实现 |
 | [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) | Apache 2.0 | 通义千问语音识别 |
+| [FunASR](https://github.com/alibaba-damo-academy/FunASR) | MIT | 阿里达摩院语音识别 |
 | [Silero-VAD](https://github.com/snakers4/silero-vad) | MIT | 语音活动检测 |
 | [PySide6](https://www.qt.io/) | LGPL v3 | Qt6 Python 绑定 |
 | [PyTorch](https://pytorch.org/) | BSD-3-Clause | 深度学习框架 |
-| [FireRedASR](https://github.com/FireRedTeam/FireRedASR) | Apache 2.0 | 火山引擎语音识别 |
 | [pypinyin](https://github.com/mozillazg/python-pinyin) | MIT | 汉字拼音转换 |

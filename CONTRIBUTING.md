@@ -40,7 +40,7 @@ Aria_debug.bat
 
 | 目录 | 说明 |
 |------|------|
-| `core/asr/` | 语音识别引擎（Qwen3-ASR、FunASR、Whisper、FireRedASR） |
+| `core/asr/` | 语音识别引擎（Qwen3-ASR、FunASR） |
 | `core/audio/` | 音频采集 + VAD |
 | `core/hotword/` | 四层热词纠错 + AI 润色 |
 | `core/selection/` | 选区指令（润色、翻译等） |
@@ -61,7 +61,7 @@ Aria_debug.bat
 DebugLog/
 ```
 
-目前没有自动化测试套件。测试以手动功能验证为主——启动后测试语音输入、热词纠错、选区指令等功能。
+自动化测试覆盖有限（`tests/` 目录下有基础集成测试）。主要依赖手动功能验证——启动后测试语音输入、热词纠错、选区指令等功能。
 
 ## 提交 Pull Request
 

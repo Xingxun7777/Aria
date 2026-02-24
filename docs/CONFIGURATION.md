@@ -10,7 +10,7 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `hotkey` | string | `` ` `` | 全局热键（反引号）|
+| `hotkey` | string | `"grave"` | 全局热键（`` ` `` 反引号键）|
 | `audio_device` | string | `""` | 音频设备名称（空字符串 = 自动检测）|
 | `auto_startup` | bool | `false` | 开机自启动 |
 | `minimize_to_tray` | bool | `false` | 启动后最小化到托盘 |
@@ -18,7 +18,7 @@
 
 ## 语音识别
 
-顶层字段 `asr_engine` 控制引擎选择（默认 `qwen3`）：`qwen3` / `funasr` / `whisper` / `fireredasr`
+顶层字段 `asr_engine` 控制引擎选择（默认 `qwen3`）：`qwen3` / `funasr`
 
 顶层字段 `enable_initial_prompt`（默认 `true`）控制是否启用 Layer 1 热词引导。
 
@@ -29,6 +29,7 @@
 | `model_name` | string | `"auto"` | `"auto"` 自动选择：VRAM >= 5GB 用 1.7B，否则 0.6B |
 | `device` | string | `"cuda"` | 计算设备：`"cuda"` / `"cpu"` |
 | `language` | string | `"Chinese"` | 识别语言 |
+| `torch_dtype` | string | `"bfloat16"` | 计算精度：`"bfloat16"` / `"float16"` / `"float32"`（不兼容时自动降级）|
 
 ### FunASR (`funasr`)
 
@@ -38,19 +39,6 @@
 | `device` | string | `"cuda"` | 计算设备：`"cuda"` / `"cpu"` |
 | `enable_vad` | bool | `false` | 启用 FunASR 内置 VAD（Aria 已有独立 VAD，通常关闭）|
 | `enable_punc` | bool | `false` | 启用 FunASR 内置标点恢复 |
-
-### Whisper (`whisper`)
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `model_name` | string | `"large-v3-turbo"` | 模型名称 |
-| `device` | string | `"cuda"` | 计算设备：`"cuda"` / `"cpu"` |
-| `language` | string | `"zh"` | 识别语言代码 |
-| `compute_type` | string | `"float16"` | 计算精度：`"float16"` / `"int8"` / `"float32"` |
-
-### FireRedASR (`fireredasr`)
-
-需外部安装 [FireRedASR](https://github.com/FireRedTeam/FireRedASR) 仓库。Aria 自动检测同级目录或 PATH 中的 FireRedASR。
 
 ## VAD 语音检测 (`vad`)
 
@@ -72,7 +60,7 @@
 
 ### 热词权重 (`hotword_weights`)
 
-每个热词可独立设置权重，控制在各纠错层的参与程度：
+每个热词可独立设置权重，控制在各纠错层的参与程度。**未在此处配置的热词默认权重为 0.5**（参考级）。
 
 ```json
 {
@@ -85,16 +73,19 @@
 
 **权重对照表：**
 
-| 权重 | ASR 分数 | 正则替换 | 拼音匹配 | LLM 提示 |
+| 权重 | ASR 分数 | 正则替换 | 拼音匹配 | LLM 润色 |
 |------|----------|----------|----------|----------|
-| 0 | 跳过 | - | - | 禁用 |
-| 0.3 | 30 (提示) | - | - | 仅提示 |
+| 0 | 跳过 | - | - | - |
+| 0.3 | 30 (提示) | - | - | - |
 | 0.5 | 60 (标准) | Yes | - | 参考 |
-| 0.7 | 60 (标准) | Yes | - | 强参考 |
-| 0.9 | 100 (锁定) | Yes | - | 强参考 |
+| 0.7 | 60 (标准) | Yes | - | 参考 |
+| 0.9 | 100 (锁定) | Yes | - | 参考 |
 | 1.0 | 100 (锁定) | Yes | Yes | 必须 |
 
-> 拼音模糊匹配（Layer 2.5）仅在权重 = 1.0 时激活。
+> - 拼音模糊匹配（Layer 2.5）仅在权重 = 1.0 时激活
+> - 权重 < 0.5 的热词不参与 LLM 润色（仅 ASR 层提示）
+> - ASR 分数列仅对 FunASR 生效；Qwen3 使用独立的 context 机制
+> - 两个引擎的 initial_prompt 和 context 阈值均为 0.5（权重 0.3 不进入 ASR 引导）
 
 ### 正则替换规则 (`replacements`)
 
@@ -121,6 +112,7 @@
 
 | 值 | 说明 |
 |------|------|
+| `"off"` | 禁用 Layer 3 润色（仅使用 L1-L2.5 纠错）|
 | `"quality"` | 使用 API 润色（OpenRouter），效果最好 |
 | `"fast"` | 使用本地 LLM 润色（llama.cpp），延迟最低 |
 
