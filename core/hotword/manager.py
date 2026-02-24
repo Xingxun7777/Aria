@@ -68,12 +68,12 @@ class HotWordConfig:
             # Optional: explicit replacements for edge cases (backward compatible)
             self.replacements = data.get("replacements", {})
 
-            # Build prompt_words: merge hotwords + replacements values + legacy prompt_words
+            # Build prompt_words: merge hotwords + legacy prompt_words (stable order)
+            # NOTE: replacement values are NOT included — they don't have explicit
+            # weights and would pollute ASR context with unintended bias.
+            # Replacements are applied in Layer 2 (regex) regardless.
             legacy_prompt_words = data.get("prompt_words", [])
-            replacement_values = list(set(self.replacements.values()))
-            self.prompt_words = list(
-                set(self.hotwords + replacement_values + legacy_prompt_words)
-            )
+            self.prompt_words = list(dict.fromkeys(self.hotwords + legacy_prompt_words))
 
             # Load polish mode
             self.polish_mode = data.get("polish_mode", "quality")
@@ -272,7 +272,7 @@ class HotWordManager:
         filtered_words = [
             word
             for word in self.config.prompt_words
-            if weights.get(word, 1.0) >= MIN_WEIGHT_FOR_PROMPT
+            if weights.get(word, 0.5) >= MIN_WEIGHT_FOR_PROMPT
         ]
 
         if not filtered_words:
@@ -463,9 +463,15 @@ class HotWordManager:
         logger.debug(f"FunASR hotwords: {len(result)} words with scores")
         return result
 
-    def get_polisher(self) -> Optional[AIPolisher]:
-        """Get AI polisher instance for quality mode (lazy init)."""
-        if self.config.polish_config and self.config.polish_config.enabled:
+    def get_polisher(self, ignore_enabled: bool = False) -> Optional[AIPolisher]:
+        """Get AI polisher instance for quality mode (lazy init).
+
+        Args:
+            ignore_enabled: If True, skip the .enabled check (used by fallback path).
+        """
+        if self.config.polish_config and (
+            ignore_enabled or self.config.polish_config.enabled
+        ):
             if self._polisher is None:
                 # Get tiered hotwords (weight >= 0.5 only)
                 tiers = self.get_polish_hotwords_tiered()
@@ -494,9 +500,17 @@ class HotWordManager:
             return self._polisher
         return None
 
-    def get_local_polisher(self) -> Optional[LocalPolishEngine]:
-        """Get local polisher instance for fast mode (lazy init)."""
-        if self.config.local_polish_config and self.config.local_polish_config.enabled:
+    def get_local_polisher(
+        self, ignore_enabled: bool = False
+    ) -> Optional[LocalPolishEngine]:
+        """Get local polisher instance for fast mode (lazy init).
+
+        Args:
+            ignore_enabled: If True, skip the .enabled check (used by fallback path).
+        """
+        if self.config.local_polish_config and (
+            ignore_enabled or self.config.local_polish_config.enabled
+        ):
             if self._local_polisher is None:
                 try:
                     self._local_polisher = LocalPolishEngine(
@@ -526,16 +540,16 @@ class HotWordManager:
             polisher = self.get_local_polisher()
             if polisher:
                 return polisher
-            # Fallback to API if local not available
+            # Fallback to API if local not available (bypass enabled check)
             logger.warning("Local polisher not available, falling back to API")
-            return self.get_polisher()
+            return self.get_polisher(ignore_enabled=True)
         else:  # "quality" mode
             polisher = self.get_polisher()
             if polisher:
                 return polisher
-            # Fallback to local if API not available
+            # Fallback to local if API not available (bypass enabled check)
             logger.warning("API polisher not available, falling back to local")
-            return self.get_local_polisher()
+            return self.get_local_polisher(ignore_enabled=True)
 
     @property
     def polish_mode(self) -> str:

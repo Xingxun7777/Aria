@@ -714,7 +714,7 @@ class AriaApp:
             import aria
 
             preloaded = getattr(aria, "_preloaded_asr_engine", None)
-            if preloaded is not None:
+            if preloaded is not None and isinstance(preloaded, FunASREngine):
                 print("Using pre-loaded FunASR engine")
                 self.asr_engine = preloaded
             else:
@@ -767,6 +767,7 @@ class AriaApp:
             logger.warning(
                 f"Unknown ASR engine '{engine_type}', falling back to Qwen3-ASR"
             )
+            engine_type = "qwen3"  # Canonicalize so hotword setup below works
             self._asr_engine_type = "qwen3"
             from .core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 
@@ -774,8 +775,11 @@ class AriaApp:
             asr_config = Qwen3Config(
                 model_name=qwen3_cfg.get("model_name", "auto"),
                 device=qwen3_cfg.get("device", "cuda"),
-                torch_dtype=qwen3_cfg.get("torch_dtype", "bfloat16"),
+                language=qwen3_cfg.get("language", "Chinese"),
             )
+            # Only override torch_dtype if explicitly set (match normal path)
+            if "torch_dtype" in qwen3_cfg:
+                asr_config.torch_dtype = qwen3_cfg["torch_dtype"]
             self.asr_engine = Qwen3ASREngine(asr_config)
             self.asr_engine.load()
             print(f"Qwen3-ASR model loaded (fallback): {asr_config.model_name}")
@@ -1180,9 +1184,8 @@ class AriaApp:
                 # don't block the worker forever — skip after 30 seconds.
                 ASR_TIMEOUT_S = 30
                 with self._asr_lock:
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=1
-                    ) as executor:
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
                         future = executor.submit(self.asr_engine.transcribe, audio)
                         try:
                             result = future.result(timeout=ASR_TIMEOUT_S)
@@ -1195,6 +1198,10 @@ class AriaApp:
                                 f"ASR timeout after {ASR_TIMEOUT_S}s",
                             )
                             result = None
+                    finally:
+                        # CRITICAL: shutdown(wait=False) prevents deadlock when
+                        # transcribe hangs — with-statement would call shutdown(wait=True)
+                        executor.shutdown(wait=False, cancel_futures=True)
                 asr_time = (time_module.time() - asr_start) * 1000
                 text = result.text.strip() if result and result.text else ""
                 _pipeline_log("ASR", f"Transcription done: '{text}' ({asr_time:.0f}ms)")
@@ -1342,6 +1349,14 @@ class AriaApp:
                         continue  # Skip all processing layers (HotWord, Polish, Insert)
 
                 if text:
+                    # Snapshot post-processing references under lock to prevent
+                    # race with reload_config() closing/replacing them mid-use.
+                    with self._lock:
+                        _snap_processor = self.hotword_processor
+                        _snap_fuzzy = self.fuzzy_matcher
+                        _snap_polisher = self.polisher
+                        _snap_manager = self.hotword_manager
+
                     # Layer 2: Apply regex corrections
                     _pipeline_log("POST", "Layer 2: HotWord regex starting...")
                     original_text = text
@@ -1350,10 +1365,8 @@ class AriaApp:
 
                     layer2_start = time_module.time()
 
-                    if self.hotword_processor:
-                        text, changes = self.hotword_processor.process_with_info(
-                            original_text
-                        )
+                    if _snap_processor:
+                        text, changes = _snap_processor.process_with_info(original_text)
                         layer2_replacements = [{"change": c} for c in changes]
                         if text != original_text:
                             print(f"[HOTWORD] '{original_text}' -> '{text}'")
@@ -1364,22 +1377,16 @@ class AriaApp:
                     debug.log_hotword(
                         layer1_enabled=initial_prompt_enabled,
                         layer1_prompt_words=(
-                            self.hotword_manager.config.prompt_words
-                            if self.hotword_manager
-                            else []
+                            _snap_manager.config.prompt_words if _snap_manager else []
                         ),
                         layer1_domain_context=(
-                            self.hotword_manager.config.domain_context
-                            if self.hotword_manager
-                            else ""
+                            _snap_manager.config.domain_context if _snap_manager else ""
                         ),
                         layer2_input=original_text,
                         layer2_output=text,
                         layer2_replacements_applied=layer2_replacements,
                         layer2_rules_count=(
-                            len(self.hotword_processor.replacements)
-                            if self.hotword_processor
-                            else 0
+                            len(_snap_processor.replacements) if _snap_processor else 0
                         ),
                         layer2_time_ms=layer2_time,
                     )
@@ -1390,11 +1397,9 @@ class AriaApp:
 
                     # Layer 2.5: Pinyin fuzzy matching
                     _pipeline_log("POST", "Layer 2.5: Fuzzy matching starting...")
-                    if self.fuzzy_matcher:
+                    if _snap_fuzzy:
                         before_fuzzy = text
-                        text, fuzzy_corrections = self.fuzzy_matcher.process_with_info(
-                            text
-                        )
+                        text, fuzzy_corrections = _snap_fuzzy.process_with_info(text)
                         if fuzzy_corrections:
                             for corr in fuzzy_corrections:
                                 print(
@@ -1406,9 +1411,9 @@ class AriaApp:
                     # Layer 3: AI Polish (optional)
                     _pipeline_log("POST", "Layer 3: Polish starting...")
                     polish_debug = None  # 初始化，防止未定义
-                    if self.polisher:
+                    if _snap_polisher:
                         before_polish = text
-                        polish_debug = self.polisher.polish_with_debug(text)
+                        polish_debug = _snap_polisher.polish_with_debug(text)
                         text = polish_debug["output_text"]
 
                         # Log Polish debug info
@@ -1442,7 +1447,7 @@ class AriaApp:
                         debug.log_polish(enabled=False)
 
                     # 记录 Polish 完成时间和 API 状态
-                    if self.polisher and polish_debug:
+                    if _snap_polisher and polish_debug:
                         api_status = (
                             "备用" if polish_debug.get("using_backup") else "主"
                         )
@@ -2257,7 +2262,11 @@ class AriaApp:
             try:
                 self.hotword_manager.set_polish_mode(mode)
                 # Update active polisher
-                self.polisher = self.hotword_manager.get_active_polisher()
+                with self._lock:
+                    self.polisher = self.hotword_manager.get_active_polisher()
+                    # Sync selection_processor polisher reference
+                    if self.selection_processor:
+                        self.selection_processor.polisher = self.polisher
                 logger.info(
                     f"Polish mode set to: {mode}, polisher: {type(self.polisher).__name__ if self.polisher else 'None'}"
                 )

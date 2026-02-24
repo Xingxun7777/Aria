@@ -639,6 +639,7 @@ try:
 
     config_path = Path(__file__).parent / "config" / "hotwords.json"
     config = {}  # 默认空配置，防止 JSON 解析失败时 NameError
+    asr_engine = "qwen3"  # Default before try block (prevents UnboundLocalError)
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
