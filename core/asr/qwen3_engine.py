@@ -262,6 +262,41 @@ class Qwen3ASREngine(ASREngine):
         }
         return dtype_map.get(dtype_str, torch.float16)
 
+    @staticmethod
+    def _resolve_local_model(model_name: str) -> str:
+        """
+        Check if a bundled local model exists and return its path.
+
+        For portable distributions, models are bundled under:
+            <base>/models/Qwen3-ASR-1.7B/  (or 0.6B)
+
+        If the local directory contains model files, use it directly
+        instead of downloading from HuggingFace Hub.
+
+        Args:
+            model_name: HuggingFace model ID (e.g., "Qwen/Qwen3-ASR-1.7B")
+
+        Returns:
+            Local path if bundled model exists, otherwise original model_name
+        """
+        if "/" not in model_name:
+            # Already a local path
+            return model_name
+
+        from ..utils.paths import get_models_path
+
+        # "Qwen/Qwen3-ASR-1.7B" → "Qwen3-ASR-1.7B"
+        local_name = model_name.split("/")[-1]
+        local_path = get_models_path(local_name)
+
+        # Verify it has actual model files (not just an empty directory)
+        if local_path.is_dir() and any(local_path.glob("*.safetensors")):
+            _qwen3_log(f"[MODEL] Using bundled local model: {local_path}")
+            logger.info(f"Using bundled local model: {local_path}")
+            return str(local_path)
+
+        return model_name
+
     @override
     def load(self) -> None:
         """Load the Qwen3-ASR model with automatic device/model/dtype selection."""
@@ -295,6 +330,9 @@ class Qwen3ASREngine(ASREngine):
             model_name, model_reason = select_optimal_model(vram_gb)
             _qwen3_log(f"[MODEL] Auto-selected: {model_name} ({model_reason})")
             logger.info(f"Auto-selected model: {model_name} ({model_reason})")
+
+        # Check for bundled local model (portable distribution)
+        model_name = self._resolve_local_model(model_name)
 
         # Try loading with graceful fallback on OOM
         self._load_with_fallback(model_name)
