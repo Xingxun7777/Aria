@@ -64,6 +64,7 @@ DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标�
 - 回答或补充内容
 - 改变句子原意
 - 把通顺的表达强行改成专业术语
+- 不要因为谨慎词汇表中存在某个词，就把原本通顺的表达强行改成该词
 
 原文：{text}
 修正："""
@@ -108,12 +109,13 @@ class PolishConfig:
 
     # Domain context and hotwords for intelligent correction
     domain_context: str = ""
-    hotwords: list = None  # List of hotword strings (all weight >= 0.5)
+    hotwords: list = None  # List of hotword strings (all weight >= 0.3, v3.3)
 
     # Tiered hotwords (set by HotWordManager, v3.1 with English support)
     hotwords_critical: list = None  # weight = 1.0: mandatory vocabulary (中英文)
     hotwords_strong: list = None  # weight = 0.5: Chinese reference words
     hotwords_english: list = None  # weight = 0.5: English reference (stricter rules)
+    hotwords_cautious: list = None  # weight = 0.1: strict LLM constraint only
     hotwords_context: list = None  # unused in v3.1 (kept for backwards compat)
 
     def __post_init__(self):
@@ -125,6 +127,8 @@ class PolishConfig:
             self.hotwords_strong = []
         if self.hotwords_english is None:
             self.hotwords_english = []
+        if self.hotwords_cautious is None:
+            self.hotwords_cautious = []
         if self.hotwords_context is None:
             self.hotwords_context = []
         # Validate api_url format
@@ -281,7 +285,7 @@ class AIPolisher:
 
         # Replace placeholders with graceful fallback chain
         try:
-            return template.format(
+            rendered = template.format(
                 text=text,
                 hotwords=hotwords_str,  # backwards compat
                 hotwords_chinese=hotwords_chinese_str,  # v3.1
@@ -309,7 +313,7 @@ class AIPolisher:
                 f"Template missing placeholder {e}, trying backwards compatible format"
             )
             try:
-                return template.format(
+                rendered = template.format(
                     text=text,
                     hotwords=hotwords_str,
                     domain_context=domain_context,
@@ -319,7 +323,74 @@ class AIPolisher:
                 logger.error(
                     f"Template also missing {e2}, using minimal format with hotwords"
                 )
-                return f"润色以下文字（参考词汇：{hotwords_str}）：\n\n{text}"
+                rendered = f"润色以下文字（参考词汇：{hotwords_str}）：\n\n{text}"
+
+        # v3.5: Post-inject cautious block before the TEMPLATE's final "原文：" anchor.
+        # FIX (tri-party R1): Must find anchor on raw template BEFORE format(), not after.
+        # If we searched rendered text, user input containing "原文：" would corrupt injection.
+        if self.config.hotwords_cautious:
+            cautious_str = ", ".join(self.config.hotwords_cautious[:10])
+            cautious_block = (
+                f"\n【谨慎词汇 — 仅乱码时替换】{cautious_str}\n"
+                "⚠️ 以上词汇极易误触发。仅当原文出现无意义音译乱码且发音接近时才可替换。"
+                "若原句表意完整通顺，即使读音相似也绝对不动。\n"
+                '正例：原文"啪因好听"→"琶音好听"（"啪因"无意义，是"琶音"的乱码）\n'
+                '反例：原文"爬音阶练习"→不替换（"爬音阶"通顺有意义，不是乱码）\n'
+            )
+            # Find anchor on the RAW TEMPLATE (before user text was injected).
+            # This guarantees we never match "原文：" inside user's speech content.
+            template_anchor = template.rfind("原文：")
+            if template_anchor > 0:
+                # Map template position to rendered position:
+                # Everything before the anchor in the template maps to rendered[:offset].
+                # We use the template prefix (before anchor) formatted with same args
+                # to find the exact rendered offset.
+                template_prefix = template[:template_anchor]
+                try:
+                    rendered_prefix = template_prefix.format(
+                        text=text,
+                        hotwords=hotwords_str,
+                        hotwords_chinese=hotwords_chinese_str,
+                        hotwords_english=hotwords_english_str,
+                        domain_context=domain_context,
+                        hotwords_critical=(
+                            ", ".join(self.config.hotwords_critical[:15])
+                            if self.config.hotwords_critical
+                            else "无"
+                        ),
+                        hotwords_strong=(
+                            ", ".join(self.config.hotwords_strong[:15])
+                            if self.config.hotwords_strong
+                            else "无"
+                        ),
+                        hotwords_context=(
+                            ", ".join(self.config.hotwords_context[:15])
+                            if self.config.hotwords_context
+                            else "无"
+                        ),
+                    )
+                    inject_pos = len(rendered_prefix)
+                except (KeyError, IndexError):
+                    # Fallback: if prefix format fails, use rfind on rendered
+                    # (acceptable since format already succeeded for full template)
+                    inject_pos = rendered.rfind("原文：")
+                    if inject_pos <= 0:
+                        inject_pos = 0
+
+                if inject_pos > 0:
+                    rendered = (
+                        rendered[:inject_pos]
+                        + cautious_block
+                        + "\n"
+                        + rendered[inject_pos:]
+                    )
+                else:
+                    rendered = cautious_block + "\n" + rendered
+            else:
+                # No anchor in template — prepend cautious block (defensive fallback)
+                rendered = cautious_block + "\n" + rendered
+
+        return rendered
 
     def polish(self, text: str) -> str:
         """

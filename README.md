@@ -4,7 +4,7 @@
 
 **Windows 本地 AI 语音输入工具**
 
-[![Version](https://img.shields.io/badge/version-1.1.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#系统要求)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
@@ -118,7 +118,7 @@ Aria.bat
 
 **发送** (Enter) · **换行** · **删除** (Backspace) · **撤销** (Ctrl+Z) · **重做** (Ctrl+Y) · **复制** · **粘贴** · **全选** · **保存** · **剪切**
 
-> 唤醒词默认 "遥遥"，可在设置中修改。命令可在 `config/commands.json` 自定义。
+> 唤醒词默认 "小助手"，可在设置中修改。命令可在 `config/commands.json` 自定义。
 
 ### 唤醒词控制
 

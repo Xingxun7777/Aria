@@ -272,7 +272,7 @@ class HotWordManager:
         filtered_words = [
             word
             for word in self.config.prompt_words
-            if weights.get(word, 0.5) >= MIN_WEIGHT_FOR_PROMPT
+            if weights.get(word, 0.3) >= MIN_WEIGHT_FOR_PROMPT
         ]
 
         if not filtered_words:
@@ -307,11 +307,23 @@ class HotWordManager:
         """
         Get hotwords for Polish, split into tiers by weight.
 
-        Simplified 3-tier system (v3.2):
+        5-tier system (v3.4, tri-party consensus):
         - critical (weight = 1.0): Mandatory vocabulary, LLM must use these spellings
         - reference (weight = 0.5): Reference words, LLM should prefer if phonetically similar
-        - hint (weight = 0.3): Hint only, sent to ASR but NOT to polish layer
+        - hint (weight = 0.3): Light reference, included in polish for safe correction
+        - cautious (weight = 0.1): Strict constraint, LLM only replaces garbled phonetic text
         - disabled (weight = 0): Completely excluded
+
+        v3.4 Change (cautious tier):
+        - 0.1 words completely bypass ASR (no bias at all)
+        - Only participate in L4 polish with independent strict constraint block
+        - LLM told "only replace when original text is meaningless garbled phonetics"
+
+        v3.3 Change (hint tier enabled for polish):
+        - 0.3 words were previously excluded from ALL layers for Qwen3 users
+        - Now included in L4 polish as low-priority hints (appended to reference tier)
+        - Still excluded from L1 Qwen3 context (prevents hallucination)
+        - This gives 0.3 words actual corrective power without ASR bias risk
 
         v3.2 Change (Qwen3 optimization):
         - Qwen3-ASR handles English hotwords well at ASR layer
@@ -319,7 +331,7 @@ class HotWordManager:
         - This prevents LLM over-replacement of normal English words
 
         Returns:
-            {"critical": [...], "reference": [...], "english_reference": [...]}
+            {"critical": [...], "reference": [...], "english_reference": [...], "cautious": [...]}
         """
         weights = self._load_weights()
 
@@ -330,9 +342,11 @@ class HotWordManager:
         critical_english = []  # Separate for Qwen3 mode filtering
         reference = []  # Chinese reference
         english_reference = []  # English reference
+        cautious = []  # Cautious tier (0.1): strict LLM constraint
+        cautious_english = []
 
         for word in self.config.prompt_words:
-            w = weights.get(word, 0.5)  # Default to reference tier
+            w = weights.get(word, 0.3)  # Default to hint tier
 
             # Check if English hotword
             is_english = is_english_hotword(word)
@@ -349,12 +363,29 @@ class HotWordManager:
                     english_reference.append(word)
                 else:
                     reference.append(word)
-            # weight < 0.5: NOT included in polish layer (hint/disabled)
+            elif w >= 0.3:
+                # Hint tier (v3.3): included in polish as low-priority reference
+                # Not in Qwen3 context (no ASR bias), but LLM can correct if needed
+                if is_english:
+                    english_reference.append(word)
+                else:
+                    reference.append(word)
+            elif w >= 0.1:
+                # Cautious tier (v3.4): no ASR bias, strict LLM constraint only
+                # Not affected by Qwen3 English filtering (0.1 words don't go through ASR,
+                # LLM is the only correction channel)
+                if is_english:
+                    cautious_english.append(word)
+                else:
+                    cautious.append(word)
+            # weight < 0.1 or 0: disabled, excluded from all layers
 
         # Qwen3 optimization: reduce English hotwords to LLM
         if is_qwen3_mode:
             # Only pass critical-tier English to LLM (音译乱码修正)
             # Reference-tier English already handled by Qwen3 ASR
+            # Note: cautious_english is NOT filtered — 0.1 words don't go through ASR,
+            # so LLM is their only correction channel
             logger.debug(
                 f"Qwen3 mode: skipping {len(english_reference)} reference-tier "
                 f"English hotwords for LLM polish"
@@ -364,10 +395,13 @@ class HotWordManager:
         # Merge critical tiers
         all_critical = critical + critical_english
 
+        # Merge cautious tiers (not affected by Qwen3 English filter)
+        all_cautious = (cautious + cautious_english)[:10]  # Cap at 10
+
         logger.debug(
             f"Polish tiers (asr={self.config.asr_engine_type}): "
             f"critical={len(all_critical)}, reference={len(reference)}, "
-            f"english_reference={len(english_reference)}"
+            f"english_reference={len(english_reference)}, cautious={len(all_cautious)}"
         )
 
         # Return structure with separate English tier
@@ -375,6 +409,7 @@ class HotWordManager:
             "critical": all_critical,
             "reference": reference,
             "english_reference": english_reference,
+            "cautious": all_cautious,
         }
 
     def _load_weights(self) -> Dict[str, float]:
@@ -393,10 +428,13 @@ class HotWordManager:
         """
         Get hotwords filtered by layer based on weight.
 
-        Weight-to-layer mapping (based on tri-party analysis):
-        - weight >= 0.3: Layer 1 (ASR) - hint to ASR
-        - weight >= 0.5: Layer 2 (Regex) - deterministic replacement
-        - weight >= 1.0: Layer 2.5 (Pinyin) - fuzzy matching allowed
+        Weight-to-layer mapping (v3.4, tri-party consensus):
+        - weight >= 0.3: Layer 1 (ASR) - hint to ASR (FunASR score only)
+        - weight >= 0.1: Layer 2 (Regex) - deterministic replacement (safe, no hallucination)
+        - weight >= 1.0: Layer 2.5 (Pinyin) - fuzzy matching allowed (aggressive)
+
+        Note: L2 regex is safe at 0.1 because it only fires on exact pattern match
+        in ASR output — cannot fabricate words that weren't spoken.
 
         Returns:
             {"layer1_asr": [...], "layer2_regex": [...], "layer2_5_pinyin": [...]}
@@ -404,15 +442,17 @@ class HotWordManager:
         weights = self._load_weights()
 
         layer1_asr = []  # weight >= 0.3
-        layer2_regex = []  # weight >= 0.5
+        layer2_regex = (
+            []
+        )  # weight >= 0.1 (v3.4: lowered from 0.3, deterministic = safe)
         layer2_5_pinyin = []  # weight >= 1.0
 
         for word in self.config.prompt_words:
-            w = weights.get(word, 0.5)  # Default 0.5
+            w = weights.get(word, 0.3)  # Default 0.3
 
             if w >= 0.3:
                 layer1_asr.append(word)
-            if w >= 0.5:
+            if w >= 0.1:
                 layer2_regex.append(word)
             if w >= 1.0:
                 layer2_5_pinyin.append(word)
@@ -447,10 +487,10 @@ class HotWordManager:
         result = []
 
         for word in self.config.prompt_words:
-            w = weights.get(word, 0.5)
+            w = weights.get(word, 0.3)
 
-            if w <= 0:
-                continue  # Disabled
+            if w < 0.3:
+                continue  # 0 = disabled, 0.1 = cautious (no ASR bias)
             elif w < 0.4:
                 score = 30  # Hint tier (0.3)
             elif w < 0.8:
@@ -473,7 +513,7 @@ class HotWordManager:
             ignore_enabled or self.config.polish_config.enabled
         ):
             if self._polisher is None:
-                # Get tiered hotwords (weight >= 0.5 only)
+                # Get tiered hotwords (v3.3: weight >= 0.3, includes hint tier)
                 tiers = self.get_polish_hotwords_tiered()
 
                 # Pass tiered structure to polisher config
@@ -482,20 +522,24 @@ class HotWordManager:
                 # - reference (0.5): Chinese reference words
                 # - english_reference (0.5): English reference with stricter rules
                 all_polish_hotwords = (
-                    tiers["critical"] + tiers["reference"] + tiers["english_reference"]
+                    tiers["critical"]
+                    + tiers["reference"]
+                    + tiers["english_reference"]
+                    + tiers["cautious"]
                 )
 
                 self.config.polish_config.hotwords = all_polish_hotwords
                 self.config.polish_config.hotwords_critical = tiers["critical"]
                 self.config.polish_config.hotwords_strong = tiers["reference"]
                 self.config.polish_config.hotwords_english = tiers["english_reference"]
+                self.config.polish_config.hotwords_cautious = tiers["cautious"]
                 # hotwords_context left as default [] (v3.1 simplified tiers)
                 self.config.polish_config.domain_context = self.config.domain_context
                 self._polisher = AIPolisher(self.config.polish_config)
                 logger.debug(
                     f"Polish hotwords: {len(all_polish_hotwords)}/{len(self.config.prompt_words)} "
                     f"(critical={len(tiers['critical'])}, chinese_ref={len(tiers['reference'])}, "
-                    f"english_ref={len(tiers['english_reference'])})"
+                    f"english_ref={len(tiers['english_reference'])}, cautious={len(tiers['cautious'])})"
                 )
             return self._polisher
         return None
@@ -584,51 +628,6 @@ class HotWordManager:
         if self.config.config_path:
             self.config.save_to_file()
 
-    def get_weighted_hotwords(self) -> List[str]:
-        """
-        Get hotwords with FunASR score format.
-
-        Simplified 3-tier mapping (v3.0):
-        - weight = 0 → disabled
-        - weight = 0.3 → score 30 (hint)
-        - weight = 0.5 → score 60 (reference)
-        - weight = 1.0 → score 100 (lock)
-
-        Returns:
-            List of "word score" strings for FunASR hotword parameter.
-        """
-        # Load weights from config file
-        weights = {}
-        if self.config.config_path:
-            try:
-                with open(self.config.config_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                weights = data.get("hotword_weights", {})
-            except Exception:
-                pass
-
-        # Simplified 3-tier score mapping
-        def weight_to_score(w: float) -> int:
-            if w <= 0:
-                return 0  # Disabled
-            elif w < 0.4:
-                return 30  # Hint tier (0.3)
-            elif w < 0.8:
-                return 60  # Reference tier (0.5)
-            else:
-                return 100  # Critical tier (1.0)
-
-        result = []
-        for word in self.config.hotwords:
-            ui_weight = weights.get(word, 0.5)  # Default to reference tier
-            score = weight_to_score(float(ui_weight))
-            if score <= 0:
-                continue  # Skip disabled words
-            # FunASR format: "word score" (e.g., "阿里巴巴 60")
-            result.append(f"{word} {score}")
-
-        return result
-
     def to_qwen3_context(self) -> str:
         """
         Build Qwen3-ASR context (V3: evidence-based format).
@@ -639,10 +638,10 @@ class HotWordManager:
         - Repetition works (transformer attention mechanism)
         - Example sentences are most effective for biasing
 
-        V3.1 Strategy (weight-aware):
+        V3.3 Strategy (weight-aware, tri-party consensus):
         1. Critical words (weight >= 1.0): repeat 3x (maximum bias)
         2. Reference words (weight >= 0.5): list once (light bias)
-        3. Hint words (weight = 0.3): EXCLUDED from context (post-processing only)
+        3. Hint words (weight = 0.3): EXCLUDED from context (handled by L2 regex + L4 polish)
         4. NO instructional text (Qwen3 doesn't follow instructions)
 
         Returns:
@@ -654,7 +653,7 @@ class HotWordManager:
         # Part 1: Critical terms - REPEAT for attention boost
         # Transformer attention mechanism responds to repetition
         critical = [
-            word for word in self.config.prompt_words if weights.get(word, 0.5) >= 1.0
+            word for word in self.config.prompt_words if weights.get(word, 0.3) >= 1.0
         ]
         if critical:
             # Repeat each critical word 3 times for maximum bias
@@ -664,11 +663,11 @@ class HotWordManager:
         # Part 2: Reference terms - list once (weight >= 0.5)
         # Qwen3 context is binary (word present = bias), so 0.3 hint tier
         # is excluded from ASR context to prevent false positives.
-        # 0.3 words are handled by post-processing layers only (polish/regex).
+        # 0.3 words are handled by post-processing layers: L2 regex + L4 polish (v3.3).
         reference = [
             word
             for word in self.config.prompt_words
-            if 0.5 <= weights.get(word, 0.5) < 1.0
+            if 0.5 <= weights.get(word, 0.3) < 1.0
         ]
         if reference:
             parts.append(" ".join(reference))
@@ -721,15 +720,6 @@ class HotWordManager:
         # DISABLED: Example sentences cause hallucination
         # See docstring for details. Do not re-enable without fixing.
         return []
-        if not self.config.config_path:
-            return []
-
-        try:
-            with open(self.config.config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get("example_sentences", [])
-        except Exception:
-            return []
 
     def _estimate_tokens(self, text: str) -> int:
         """

@@ -450,7 +450,7 @@ class SettingsWindow(QMainWindow):
 
         # Store reference for dynamic update based on engine
         self._hotword_guide_label = QLabel(
-            "权重越高，识别偏向越强。新词默认 0.5（标准）"
+            "权重越高，识别偏向越强。新词默认 0.3（轻量提示）"
         )
         self._hotword_guide_label.setStyleSheet(
             "color: #666; font-size: 12px; margin-bottom: 5px;"
@@ -460,6 +460,7 @@ class SettingsWindow(QMainWindow):
         # Threshold note with weight explanation (dynamic based on engine)
         self._hotword_threshold_note = QLabel(
             "0 禁用：完全排除，不参与任何流程\n"
+            "0.1 谨慎：不影响语音识别，仅在 AI 润色时严格约束（只纠正乱码）\n"
             "0.3 仅润色：不影响语音识别，仅在 AI 润色时作为参考\n"
             "0.5 标准：进入语音识别 + 正则替换 + AI 润色\n"
             "1 强制：识别偏置最大化 + 拼音模糊匹配 + 强制替换"
@@ -572,13 +573,15 @@ class SettingsWindow(QMainWindow):
         word_item.setFlags(word_item.flags() & ~Qt.ItemIsEditable)
         self.vocab_table.setItem(row, 0, word_item)
 
-        # 4-tier weight options (v3.1):
+        # 5-tier weight options (v3.4):
         # - 0: disabled (excluded from all layers)
-        # - 0.3: hint (post-processing only, excluded from Qwen3 ASR context)
-        # - 0.5: reference (ASR context + regex + polish) — default for new words
+        # - 0.1: cautious (no ASR bias, L4 polish strict constraint only)
+        # - 0.3: hint (post-processing only, excluded from Qwen3 ASR context) — default for new words
+        # - 0.5: reference (ASR context + regex + polish)
         # - 1.0: lock (ASR 3x repeat + pinyin fuzzy + force replace)
         weight_options = [
             (0, "0 - 禁用"),
+            (0.1, "0.1 - 谨慎"),
             (0.3, "0.3 - 仅润色"),
             (0.5, "0.5 - 标准"),
             (1.0, "1 - 强制"),
@@ -590,7 +593,7 @@ class SettingsWindow(QMainWindow):
         is_english = self._is_english_word(word)
 
         # Find closest weight option
-        closest_idx = 3  # Default to "1 - 锁定" (index 3)
+        closest_idx = 3  # Initial value, overwritten by loop below
         min_diff = float("inf")
         for i, (val, _) in enumerate(weight_options):
             diff = abs(val - weight)
@@ -648,7 +651,7 @@ class SettingsWindow(QMainWindow):
             if word in existing:
                 QMessageBox.warning(self, "重复", f"'{word}' 已在列表中")
                 return
-            self._add_vocab_row(word, 0.5)
+            self._add_vocab_row(word, 0.3)
 
     def _batch_import_words(self):
         """Batch import words from text input."""
@@ -668,7 +671,7 @@ class SettingsWindow(QMainWindow):
             for word in words:
                 word = word.strip()
                 if word and word not in existing:
-                    self._add_vocab_row(word, 0.5)
+                    self._add_vocab_row(word, 0.3)
                     existing.add(word)
                     added += 1
 
@@ -790,7 +793,7 @@ class SettingsWindow(QMainWindow):
 
         self.timeout = QSpinBox()
         self.timeout.setRange(5, 120)
-        self.timeout.setValue(30)
+        self.timeout.setValue(10)  # Match PolishConfig default (10s)
         self.timeout.setSuffix(" 秒")
         main_form.addRow("超时时间:", self.timeout)
 
@@ -1010,20 +1013,22 @@ class SettingsWindow(QMainWindow):
 
         if engine_index == 1:  # Qwen3
             self._hotword_guide_label.setText(
-                "Qwen3 模式 — 权重越高，识别偏向越强。新词默认 0.5（标准）"
+                "Qwen3 模式 — 权重越高，识别偏向越强。新词默认 0.3（轻量提示）"
             )
             self._hotword_threshold_note.setText(
                 "0 禁用：完全排除，不参与任何流程\n"
+                "0.1 谨慎：不影响语音识别，仅在 AI 润色时严格约束（只纠正乱码）\n"
                 "0.3 仅润色：不进入语音识别，仅在 AI 润色时作为参考词\n"
                 "0.5 标准：写入识别上下文（出现1次）+ 正则替换 + AI 润色\n"
                 "1 强制：识别上下文中重复3次（最强偏置）+ 拼音模糊 + 强制替换"
             )
         else:  # FunASR
             self._hotword_guide_label.setText(
-                "FunASR 模式 — 权重越高，识别偏向越强。新词默认 0.5（标准）"
+                "FunASR 模式 — 权重越高，识别偏向越强。新词默认 0.3（轻量提示）"
             )
             self._hotword_threshold_note.setText(
                 "0 禁用：完全排除，不参与任何流程\n"
+                "0.1 谨慎：不影响语音识别，仅在 AI 润色时严格约束（只纠正乱码）\n"
                 "0.3 仅润色：ASR 弱提示（分数30）+ AI 润色参考\n"
                 "0.5 标准：ASR 标准识别（分数60）+ 正则替换 + AI 润色\n"
                 "1 强制：ASR 强锁定（分数100）+ 拼音模糊匹配 + 强制替换"
@@ -1327,7 +1332,7 @@ class SettingsWindow(QMainWindow):
         words = self.config.get("hotwords", self.config.get("prompt_words", []))
         weights = self.config.get("hotword_weights", {})
         for word in words:
-            weight = weights.get(word, 0.5)
+            weight = weights.get(word, 0.3)
             self._add_vocab_row(word, weight)
 
         # Replacements
@@ -1716,12 +1721,15 @@ class SettingsWindow(QMainWindow):
         wakeword_path = self.config_path.parent / "wakeword.json"
         new_wakeword = self.wakeword_edit.text().strip() or "瑶瑶"
         try:
-            # Load existing wakeword config
+            # Load existing wakeword config (with corruption resilience)
+            wakeword_config = {"enabled": True, "wakeword": "瑶瑶", "commands": {}}
             if wakeword_path.exists():
-                with open(wakeword_path, "r", encoding="utf-8") as f:
-                    wakeword_config = json.load(f)
-            else:
-                wakeword_config = {"enabled": True, "wakeword": "瑶瑶", "commands": {}}
+                try:
+                    with open(wakeword_path, "r", encoding="utf-8") as f:
+                        wakeword_config = json.load(f)
+                except (json.JSONDecodeError, ValueError):
+                    # Corrupted file — use defaults (will be overwritten below)
+                    print(f"[WARN] wakeword.json corrupted, resetting to defaults")
 
             # Update wakeword
             wakeword_config["wakeword"] = new_wakeword
@@ -1767,6 +1775,14 @@ class SettingsWindow(QMainWindow):
 
             self.settingsSaved.emit(self.config)
         except Exception as e:
+            # Clean up stale .tmp file on failure
+            try:
+                import os as _cleanup_os
+                _tmp = str(self.config_path) + ".tmp"
+                if _cleanup_os.path.exists(_tmp):
+                    _cleanup_os.remove(_tmp)
+            except Exception:
+                pass
             QMessageBox.critical(self, "错误", f"保存失败: {e}")
 
     def _populate_audio_devices(self):

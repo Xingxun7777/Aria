@@ -232,7 +232,7 @@ class AriaApp:
         self.wakeword_executor: WakewordExecutor = None
 
         # ASR worker thread (non-blocking transcription)
-        self._asr_queue: queue.Queue = queue.Queue()
+        self._asr_queue: queue.Queue = queue.Queue(maxsize=5)
         self._asr_thread: threading.Thread = None
         self._stop_event = threading.Event()
         self._worker_busy = False  # True while worker is processing a segment
@@ -797,7 +797,7 @@ class AriaApp:
             self.asr_engine, "set_hotwords_with_score"
         ):
             # FunASR: use layer-aware hotwords with score (weight->score mapping)
-            # 0.3->20(hint), 0.5->50(standard), 1.0->80(lock)
+            # 0.3->30(hint), 0.5->60(reference), 1.0->100(critical)
             hotwords_with_score = self.hotword_manager.get_asr_hotwords_with_score()
             self.asr_engine.set_hotwords_with_score(hotwords_with_score)
             print(
@@ -2283,7 +2283,18 @@ class AriaApp:
                 self.hotword_manager.set_polish_mode(mode)
                 # Update active polisher
                 with self._lock:
+                    old_polisher = self.polisher
                     self.polisher = self.hotword_manager.get_active_polisher()
+                    # Close old polisher to free HTTP client resources
+                    if (
+                        old_polisher
+                        and old_polisher is not self.polisher
+                        and hasattr(old_polisher, "close")
+                    ):
+                        try:
+                            old_polisher.close()
+                        except Exception:
+                            pass
                     # Sync selection_processor polisher reference
                     if self.selection_processor:
                         self.selection_processor.polisher = self.polisher

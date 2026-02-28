@@ -478,7 +478,50 @@ def step_copy_site_packages():
     log(f"  Destination: {dest_sp}")
     log("  This may take a while for large dependencies...")
 
-    # Robust ignore filter using path parts (not substring matching)
+    # =========================================================================
+    # Size optimization: exclude ~3 GB of build-time-only / unused content
+    # =========================================================================
+
+    # Top-level packages not used by Aria at runtime
+    SKIP_PACKAGES = {
+        "pip",
+        "wheel",
+        "gradio",
+        "gradio_client",
+        "cython",
+        "pythonwin",
+        "setuptools",
+        "_distutils_hack",
+        "pkg_resources",
+    }
+
+    # torch subdirectories not needed for inference
+    TORCH_SKIP_DIRS = {
+        "include",  # C++ headers (36 MB)
+        "testing",  # test utilities (9 MB)
+        "test",  # test suite
+        "distributed",  # multi-GPU (8 MB)
+        "onnx",  # ONNX export (3 MB)
+        "_inductor",  # torch.compile backend (13 MB)
+        "bin",  # CLI tools (8 MB)
+    }
+
+    # PySide6 subdirectories not needed at runtime
+    PYSIDE6_SKIP_DIRS = {
+        "qml",
+        "translations",
+        "examples",
+        "metatypes",
+        "typesystems",
+        "include",
+        "scripts",
+    }
+
+    # Specific DLLs safe to remove (multi-GPU only)
+    TORCH_SKIP_DLLS = {
+        "cusolvermg64_11.dll",  # multi-GPU solver (150 MB)
+    }
+
     def ignore_filter(directory, names):
         base = Path(directory)
         ignored = []
@@ -496,28 +539,46 @@ def step_copy_site_packages():
                 ignored.append(name)
                 continue
 
-            # Skip pip and wheel (not needed at runtime)
-            if name_lower in {"pip", "wheel"}:
+            # Skip .lib files — static linker libraries, never needed by Python
+            # (saves ~2.7 GB, mostly dnnl.lib at 2.2 GB)
+            if name_lower.endswith(".lib"):
                 ignored.append(name)
                 continue
 
-            # PySide6 optimizations (use path parts for cross-platform)
+            # Skip unused top-level packages
+            if name_lower in SKIP_PACKAGES:
+                ignored.append(name)
+                continue
+
+            # Path-based exclusions using relative parts
             try:
                 rel = (base / name).relative_to(venv_sp)
                 parts = [p.lower() for p in rel.parts]
 
-                # Skip PySide6/Qt/qml
+                # torch: skip non-runtime subdirectories
+                if len(parts) >= 2 and parts[0] == "torch":
+                    if parts[1] in TORCH_SKIP_DIRS:
+                        ignored.append(name)
+                        continue
+
+                # torch/lib: skip specific multi-GPU DLLs
+                if (
+                    len(parts) >= 3
+                    and parts[0] == "torch"
+                    and parts[1] == "lib"
+                    and name_lower in TORCH_SKIP_DLLS
+                ):
+                    ignored.append(name)
+                    continue
+
+                # PySide6: skip non-runtime subdirectories
+                if len(parts) >= 2 and parts[0] == "pyside6":
+                    if parts[1] in PYSIDE6_SKIP_DIRS:
+                        ignored.append(name)
+                        continue
+
+                # PySide6/Qt/qml (nested path)
                 if len(parts) >= 3 and parts[:3] == ["pyside6", "qt", "qml"]:
-                    ignored.append(name)
-                    continue
-
-                # Skip PySide6/translations
-                if len(parts) >= 2 and parts[:2] == ["pyside6", "translations"]:
-                    ignored.append(name)
-                    continue
-
-                # Skip PySide6/examples
-                if len(parts) >= 2 and parts[:2] == ["pyside6", "examples"]:
                     ignored.append(name)
                     continue
 

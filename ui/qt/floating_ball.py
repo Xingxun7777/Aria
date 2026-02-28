@@ -95,10 +95,11 @@ class FloatingBall(QWidget):
     # Signals
     toggleRequested = Signal()  # Left-click: toggle ASR
     detailsRequested = Signal()  # From popup menu: open settings
-    menuRequested = Signal()  # Right-click: show popup menu
     lockToggled = Signal(bool)  # Middle-click: lock state changed
     enableToggled = Signal(bool)  # From popup menu: enable/disable
     modeChanged = Signal(str)  # From popup menu: polish mode changed
+    sleepToggled = Signal(bool)  # From popup menu: sleep/wake toggle
+    translateModeChanged = Signal(str)  # From popup menu: "popup" or "clipboard"
 
     # Ball states
     STATE_IDLE = "idle"
@@ -486,6 +487,10 @@ class FloatingBall(QWidget):
         self._popup_menu.settingsRequested.connect(self._on_menu_settings)
         self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
         self._popup_menu.streamingToggled.connect(self._on_menu_streaming_toggled)
+        self._popup_menu.sleepToggled.connect(self._on_menu_sleep_toggled)
+        self._popup_menu.translateModeChanged.connect(
+            self._on_menu_translate_mode_changed
+        )
 
     def _on_menu_enable_toggled(self, enabled):
         """Handle enable toggle from popup menu."""
@@ -502,6 +507,14 @@ class FloatingBall(QWidget):
     def _on_menu_streaming_toggled(self, enabled):
         """Handle streaming display toggle from popup menu."""
         self.set_streaming_display(enabled)
+
+    def _on_menu_sleep_toggled(self, sleeping):
+        """Handle sleep toggle from popup menu."""
+        self.sleepToggled.emit(sleeping)
+
+    def _on_menu_translate_mode_changed(self, mode):
+        """Handle translate mode change from popup menu."""
+        self.translateModeChanged.emit(mode)
 
     def _on_menu_lock_toggled(self, locked):
         """Handle lock toggle from popup menu."""
@@ -542,6 +555,8 @@ class FloatingBall(QWidget):
             self._popup_menu.setSleeping(is_sleeping)
             # Sync engine info
             self._popup_menu.setEngineInfo(self._engine_info)
+            # Note: enable state is NOT synced here — it's managed by
+            # set_enabled_state() calls from main.py and persists in popup_menu._enabled.
             # Position above the ball
             ball_center = self.mapToGlobal(self.rect().center())
             self._popup_menu.showAt(ball_center)
@@ -1586,6 +1601,26 @@ class FloatingBall(QWidget):
         """
         if self._popup_menu:
             self._popup_menu.setMode(mode)
+
+    def set_translate_mode(self, mode: str) -> None:
+        """
+        Set translate output mode on popup menu (for syncing with other UI components).
+
+        Args:
+            mode: "popup" or "clipboard"
+        """
+        if self._popup_menu:
+            self._popup_menu.setTranslateMode(mode)
+
+    def set_enabled_state(self, enabled: bool) -> None:
+        """
+        Set enable state on popup menu (for syncing with backend state).
+
+        Args:
+            enabled: True if ASR is enabled
+        """
+        if self._popup_menu:
+            self._popup_menu.setAppEnabled(enabled)
 
     def set_sleeping_state(self, is_sleeping: bool) -> None:
         """

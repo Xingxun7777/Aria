@@ -288,8 +288,7 @@ def main():
             ball.on_state_changed("SLEEPING" if value else "IDLE")
         elif setting == "enabled":
             # Update popup menu toggle when hotkey re-enables from disabled state
-            if ball._popup_menu:
-                ball._popup_menu.setEnabled(value)
+            ball.set_enabled_state(value)
 
     bridge.settingChanged.connect(on_setting_changed)
 
@@ -353,11 +352,8 @@ def main():
                     # 4. Sync UI toggle state (don't trigger signal, just update visual)
                     #    NOTE: Do NOT toggle False→True as it calls stop() which
                     #    unregisters hotkeys that start() won't re-register!
-                    if ball._popup_menu and hasattr(ball._popup_menu, "toggle"):
-                        ball._popup_menu.toggle.blockSignals(True)
-                        ball._popup_menu.toggle.setChecked(True)
-                        ball._popup_menu.toggle.blockSignals(False)
-                        _log("[STARTUP] Toggle switch synced to ON")
+                    ball.set_enabled_state(True)
+                    _log("[STARTUP] Toggle switch synced to ON")
                     _log("[Aria] System fully activated (start_active=True)")
                     _log("[STARTUP] System fully activated!")
 
@@ -852,54 +848,18 @@ def main():
 
     ball.modeChanged.connect(on_mode_changed)
 
-    # Handle sleep toggle from popup menu (fallback button)
+    # Handle sleep toggle from popup menu
     def on_sleep_toggled(sleeping):
         _log(f"[Aria] Sleep toggled via UI: {sleeping}")
         if hasattr(backend, "set_sleeping"):
             backend.set_sleeping(sleeping)
 
-    if ball._popup_menu:
-        ball._popup_menu.sleepToggled.connect(on_sleep_toggled)
+    ball.sleepToggled.connect(on_sleep_toggled)
 
-        # Handle translate output mode change from popup menu
-        def on_translate_mode_changed(mode):
-            """Handle translation output mode change from popup menu."""
-            _log(f"[Aria] Translate output mode changed: {mode}")
-            try:
-                import json
-                from aria.core.utils import get_config_path
-
-                config_path = get_config_path("hotwords.json")
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-
-                # Update translation config
-                if "translation" not in config:
-                    config["translation"] = {}
-                config["translation"]["output_mode"] = mode
-
-                import os
-
-                tmp_path = str(config_path) + ".tmp"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(config, f, ensure_ascii=False, indent=2)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, config_path)
-
-                _log(f"[Aria] Translate output mode saved: {mode}")
-                tray.showMessage(
-                    "Aria",
-                    f"翻译输出模式: {'弹窗显示' if mode == 'popup' else '复制到剪贴板'}",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    1500,
-                )
-            except Exception as e:
-                _log(f"[Aria] Failed to save translate mode: {e}")
-
-        ball._popup_menu.translateModeChanged.connect(on_translate_mode_changed)
-
-        # Load and sync initial translate mode
+    # Handle translate output mode change from popup menu
+    def on_translate_mode_changed(mode):
+        """Handle translation output mode change from popup menu."""
+        _log(f"[Aria] Translate output mode changed: {mode}")
         try:
             import json
             from aria.core.utils import get_config_path
@@ -907,10 +867,45 @@ def main():
             config_path = get_config_path("hotwords.json")
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            translate_mode = config.get("translation", {}).get("output_mode", "popup")
-            ball._popup_menu.setTranslateMode(translate_mode)
-        except Exception:
-            pass  # Default to popup mode
+
+            # Update translation config
+            if "translation" not in config:
+                config["translation"] = {}
+            config["translation"]["output_mode"] = mode
+
+            import os
+
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+
+            _log(f"[Aria] Translate output mode saved: {mode}")
+            tray.showMessage(
+                "Aria",
+                f"翻译输出模式: {'弹窗显示' if mode == 'popup' else '复制到剪贴板'}",
+                QSystemTrayIcon.MessageIcon.Information,
+                1500,
+            )
+        except Exception as e:
+            _log(f"[Aria] Failed to save translate mode: {e}")
+
+    ball.translateModeChanged.connect(on_translate_mode_changed)
+
+    # Load and sync initial translate mode
+    try:
+        import json
+        from aria.core.utils import get_config_path
+
+        config_path = get_config_path("hotwords.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        translate_mode = config.get("translation", {}).get("output_mode", "popup")
+        ball.set_translate_mode(translate_mode)
+    except Exception:
+        pass  # Default to popup mode
 
     # Sync initial mode from backend to popup menu
     if hasattr(backend, "get_polish_mode"):
@@ -1042,8 +1037,7 @@ def main():
         _log("[UI] User requested to temporarily disable from elevation dialog")
         on_enable_toggled(False)  # Reuse existing disable logic
         # Update popup menu UI state
-        if ball._popup_menu:
-            ball._popup_menu.setEnabled(False)
+        ball.set_enabled_state(False)
 
     # Connect elevation dialog signals (cleanup_and_quit is now defined)
     elevation_dialog.closeRequested.connect(on_elevation_close_requested)

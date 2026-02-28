@@ -53,13 +53,14 @@ class ToggleSwitch(QWidget):
     def isChecked(self):
         return self._checked
 
-    def setChecked(self, checked):
+    def setChecked(self, checked, emit=True):
         if self._checked != checked:
             self._checked = checked
             self._animation.setStartValue(self._circle_pos)
             self._animation.setEndValue(23 if checked else 3)
             self._animation.start()
-            self.toggled.emit(checked)
+            if emit:
+                self.toggled.emit(checked)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -462,10 +463,13 @@ class PopupMenu(QWidget):
         """Handle streaming display toggle."""
         self.streamingToggled.emit(enabled)
 
-    def setEnabled(self, enabled):
-        """Set the enable state."""
+    def setAppEnabled(self, enabled):
+        """Set the app enable state (programmatic, no signal).
+
+        Named setAppEnabled to avoid shadowing QWidget.setEnabled.
+        """
         self._enabled = enabled
-        self.toggle.setChecked(enabled)
+        self.toggle.setChecked(enabled, emit=False)
 
     def setMode(self, mode):
         """Set the current mode."""
@@ -476,14 +480,14 @@ class PopupMenu(QWidget):
                 break
 
     def setLocked(self, locked):
-        """Set the lock state."""
+        """Set the lock state (programmatic, no signal)."""
         self._is_locked = locked
-        self.lock_toggle.setChecked(locked)
+        self.lock_toggle.setChecked(locked, emit=False)
 
     def setSleeping(self, sleeping):
-        """Set the sleeping state."""
+        """Set the sleeping state (programmatic, no signal)."""
         self._is_sleeping = sleeping
-        self.sleep_toggle.setChecked(sleeping)
+        self.sleep_toggle.setChecked(sleeping, emit=False)
 
     # Alias for compatibility with floating_ball.py
     def set_sleeping_state(self, is_sleeping):
@@ -491,8 +495,8 @@ class PopupMenu(QWidget):
         self.setSleeping(is_sleeping)
 
     def setStreaming(self, enabled):
-        """Set the streaming display state."""
-        self.streaming_toggle.setChecked(enabled)
+        """Set the streaming display state (programmatic, no signal)."""
+        self.streaming_toggle.setChecked(enabled, emit=False)
 
     def setTranslateMode(self, mode):
         """Set the translate output mode."""
