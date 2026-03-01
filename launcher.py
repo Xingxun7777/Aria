@@ -580,10 +580,14 @@ try:
     # === Start Splash Screen ===
     splash_proc, reporter = start_splash()
 
+    _emit_lock = threading.Lock()
+
     def emit_progress(stage, message=None, percent=None):
-        """Helper to send progress - no-op if splash not available."""
+        """Helper to send progress - no-op if splash not available.
+        Thread-safe: multiple threads (LoadingHeartbeat, tqdm workers) may call this."""
         if reporter:
-            reporter.emit(stage, message, percent)
+            with _emit_lock:
+                reporter.emit(stage, message, percent)
 
     class LoadingHeartbeat:
         """
@@ -700,9 +704,13 @@ try:
                 emit_progress("qwen3_error", "Qwen3-ASR 引擎依赖未安装", 50)
                 raise ImportError("qwen-asr not installed. Run: pip install qwen-asr")
 
-            # 设置 HuggingFace 国内镜像（加速中国用户下载）
-            os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-            log("Set HF_ENDPOINT to hf-mirror.com for China users")
+            # HuggingFace endpoint: respect user's env, default to China mirror
+            os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+            if "HF_ENDPOINT" not in os.environ:
+                os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+                log("Set HF_ENDPOINT to hf-mirror.com (default for China users)")
+            else:
+                log(f"Using existing HF_ENDPOINT: {os.environ['HF_ENDPOINT']}")
 
             from aria.core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 
@@ -731,33 +739,235 @@ try:
             # Extract short model name for display (e.g., "1.7B" or "0.6B")
             short_name = "1.7B" if "1.7B" in model_name else "0.6B"
             model_size = "3.4GB" if "1.7B" in model_name else "1.2GB"
+            model_size_bytes = 3_400_000_000 if "1.7B" in model_name else 1_200_000_000
 
-            # 检测模型是否已存在（区分下载和加载状态）
+            # --- Model existence check (3 sources) ---
+            # 1. Bundled model (full/portable version with pre-packaged models)
+            has_bundled = False
+            if "/" in model_name:
+                from aria.core.utils.paths import get_models_path
+
+                local_model_name = model_name.split("/")[-1]
+                bundled_path = get_models_path(local_model_name)
+                has_bundled = bundled_path.is_dir() and any(
+                    bundled_path.glob("*.safetensors")
+                )
+                if has_bundled:
+                    log(f"Found bundled model at: {bundled_path}")
+
+            # 2. HF cache (previously downloaded via huggingface_hub)
             cache_dir = (
                 Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
                 / "hub"
             )
             model_dir_name = f"models--{model_name.replace('/', '--')}"
-            model_path = cache_dir / model_dir_name
-            model_exists = model_path.exists() and (model_path / "snapshots").exists()
+            model_cache_path = cache_dir / model_dir_name
+            has_cached = (
+                model_cache_path.exists() and (model_cache_path / "snapshots").exists()
+            )
+            if has_cached:
+                log(f"Found cached model at: {model_cache_path}")
 
-            # Phase 1: Show appropriate message based on model existence
-            if model_exists:
-                emit_progress(
-                    "qwen3_load",
-                    f"正在加载 Qwen3-ASR {short_name}...",
-                    15,
+            model_available = has_bundled or has_cached
+            needs_download = not model_available and "/" in model_name
+
+            # --- Phase 1: Pre-download with progress if model not available ---
+            if needs_download:
+                log(
+                    f"Model not found locally, will download from HuggingFace: {model_name}"
                 )
-                log(f"Loading existing Qwen3-ASR model: {model_name}")
-            else:
                 emit_progress(
                     "qwen3_download",
                     f"首次使用 Qwen3-ASR {short_name}\n"
                     f"正在下载模型 ({model_size})，请耐心等待...",
                     15,
                 )
-                log(f"Downloading Qwen3-ASR model: {model_name}")
 
+                # Custom tqdm class to relay download progress to splash screen.
+                # pythonw.exe has stdout=None, so normal tqdm output is invisible.
+                # This class also runs its own heartbeat thread to keep splash
+                # alive during large single-file downloads (snapshot_download only
+                # invokes tqdm_class at the file level, NOT per-byte).
+                class _SplashDownloadProgress:
+                    """Relay HF download progress to splash screen via IPC.
+
+                    Implements the tqdm interface required by huggingface_hub's
+                    snapshot_download (thread_map iterator wrapper).
+
+                    Also runs a self-contained heartbeat thread so the splash
+                    never looks frozen during multi-minute large file downloads.
+                    Only the heartbeat thread calls emit_progress, avoiding
+                    concurrent percent conflicts.
+                    """
+
+                    _file_count = 0
+                    _file_total = 0
+                    _current_percent = 15
+                    _current_message = ""
+                    _lock = threading.Lock()
+                    _heartbeat_stop = threading.Event()
+                    _heartbeat_thread = None
+
+                    def __init__(self, iterable=None, *args, **kwargs):
+                        self._iterable = iterable
+                        self.total = kwargs.get("total") or 0
+                        self.n = 0
+                        # If constructed with iterable, this is file-level progress
+                        if iterable is not None:
+                            with _SplashDownloadProgress._lock:
+                                _SplashDownloadProgress._file_total = self.total
+
+                    def __iter__(self):
+                        if self._iterable is not None:
+                            for item in self._iterable:
+                                yield item
+                                with _SplashDownloadProgress._lock:
+                                    _SplashDownloadProgress._file_count += 1
+                                    fc = _SplashDownloadProgress._file_count
+                                    ft = _SplashDownloadProgress._file_total
+                                    pct = 15 + min(34, fc * 34 // max(ft, 1))
+                                    _SplashDownloadProgress._current_percent = pct
+                                    _SplashDownloadProgress._current_message = (
+                                        f"下载 Qwen3-ASR {short_name}: "
+                                        f"文件 {fc}/{ft}"
+                                    )
+
+                    def __len__(self):
+                        if hasattr(self._iterable, "__len__"):
+                            return len(self._iterable)
+                        return self.total or 0
+
+                    def update(self, n=1):
+                        # Byte-level update (if future HF versions pass tqdm_class
+                        # to individual file downloads)
+                        self.n += n
+                        with _SplashDownloadProgress._lock:
+                            mb_done = self.n / (1024 * 1024)
+                            total = self.total or model_size_bytes
+                            mb_total = total / (1024 * 1024)
+                            pct = min(49, 15 + int(self.n / total * 34))
+                            _SplashDownloadProgress._current_percent = pct
+                            _SplashDownloadProgress._current_message = (
+                                f"下载 Qwen3-ASR {short_name}: "
+                                f"{mb_done:.0f}/{mb_total:.0f} MB"
+                            )
+
+                    def close(self):
+                        pass
+
+                    def refresh(self, *a, **kw):
+                        pass
+
+                    def set_description(self, *a, **kw):
+                        pass
+
+                    def set_postfix_str(self, *a, **kw):
+                        pass
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *a):
+                        pass
+
+                    @classmethod
+                    def get_lock(cls):
+                        return cls._lock
+
+                    @classmethod
+                    def set_lock(cls, lock):
+                        cls._lock = lock
+
+                    @classmethod
+                    def _start_heartbeat(cls):
+                        """Start background heartbeat to keep splash alive."""
+                        cls._heartbeat_stop.clear()
+                        cls._current_message = (
+                            f"下载 Qwen3-ASR {short_name} ({model_size})"
+                        )
+
+                        def _beat():
+                            dots = [".", "..", "...", ""]
+                            idx = 0
+                            while not cls._heartbeat_stop.is_set():
+                                with cls._lock:
+                                    msg = cls._current_message
+                                    pct = cls._current_percent
+                                emit_progress(
+                                    "qwen3_download", f"{msg}{dots[idx]}", pct
+                                )
+                                idx = (idx + 1) % len(dots)
+                                cls._heartbeat_stop.wait(2.5)
+
+                        cls._heartbeat_thread = threading.Thread(
+                            target=_beat, daemon=True
+                        )
+                        cls._heartbeat_thread.start()
+
+                    @classmethod
+                    def _stop_heartbeat(cls):
+                        """Stop the heartbeat thread."""
+                        cls._heartbeat_stop.set()
+                        if cls._heartbeat_thread:
+                            cls._heartbeat_thread.join(timeout=2.0)
+
+                # Disk space pre-check
+                import shutil
+
+                required_bytes = model_size_bytes + 500_000_000  # model + 500MB buffer
+                _, _, free_space = shutil.disk_usage(bundled_path.parent.anchor)
+                if free_space < required_bytes:
+                    free_gb = free_space / (1024**3)
+                    need_gb = required_bytes / (1024**3)
+                    raise RuntimeError(
+                        f"磁盘空间不足: 剩余 {free_gb:.1f}GB，需要 {need_gb:.1f}GB"
+                    )
+
+                try:
+                    from huggingface_hub import snapshot_download
+
+                    _SplashDownloadProgress._file_count = 0
+                    _SplashDownloadProgress._current_percent = 15
+                    # Download directly to bundled models/ dir (not HF cache)
+                    # This makes lite version "evolve" into full version after
+                    # download — no separate HF cache, truly portable
+                    bundled_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Self-contained heartbeat: only the heartbeat thread
+                    # calls emit_progress, __iter__/update only set class vars.
+                    # This avoids concurrent percent conflicts entirely.
+                    _SplashDownloadProgress._start_heartbeat()
+                    try:
+                        snapshot_download(
+                            model_name,
+                            local_dir=str(bundled_path),
+                            tqdm_class=_SplashDownloadProgress,
+                        )
+                    finally:
+                        _SplashDownloadProgress._stop_heartbeat()
+                    log(f"Model downloaded to: {bundled_path}")
+                    emit_progress("qwen3_download", "模型下载完成，正在加载...", 49)
+                except Exception as dl_err:
+                    log(f"Model download failed: {dl_err}")
+                    import traceback
+
+                    log(traceback.format_exc())
+                    emit_progress(
+                        "qwen3_download",
+                        f"模型下载失败: {type(dl_err).__name__}\n"
+                        f"请检查网络连接后重启应用",
+                        15,
+                    )
+                    raise  # Re-raise to be caught by outer except
+            else:
+                # Model already available (bundled or cached)
+                emit_progress(
+                    "qwen3_load",
+                    f"正在加载 Qwen3-ASR {short_name}...",
+                    15,
+                )
+                log(f"Loading existing Qwen3-ASR model: {model_name}")
+
+            # --- Phase 2: Load model into memory ---
             pre_config = Qwen3Config(
                 model_name=model_name,
                 device=qwen3_cfg.get("device", "cuda"),
@@ -766,19 +976,9 @@ try:
             )
             _preloaded_asr = Qwen3ASREngine(pre_config)
 
-            # Phase 2: Loading/downloading model (this is the slow part)
-            # Use heartbeat to show animation during blocking load
-            # Show different message based on whether downloading or loading
-            # IMPORTANT: Include "Qwen3-ASR" in message so user knows what's loading
-            heartbeat_stage = "qwen3_download" if not model_exists else "qwen3_load"
-            heartbeat_msg = (
-                f"正在下载 Qwen3-ASR {short_name} ({model_size})"
-                if not model_exists
-                else f"正在加载 Qwen3-ASR {short_name}"
-            )
             with LoadingHeartbeat(
-                heartbeat_stage,
-                heartbeat_msg,
+                "qwen3_load",
+                f"正在加载 Qwen3-ASR {short_name}",
                 25,
                 interval=0.6,
             ):

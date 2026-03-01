@@ -122,7 +122,8 @@ def main():
         poll_timer.timeout.connect(on_poll)
         poll_timer.start(50)  # 20 Hz polling
 
-        # Timeout - close splash after 60 seconds regardless
+        # Safety timeout - close splash after 30 minutes regardless
+        # (first-launch model download can take 10+ minutes on slow connections)
         def on_timeout():
             if not splash._closing:
                 log_error("Timeout - closing splash")
@@ -130,7 +131,7 @@ def main():
                 listener.close()
                 splash.fade_out_and_close()
 
-        QTimer.singleShot(60000, on_timeout)
+        QTimer.singleShot(1_800_000, on_timeout)
 
         # Run event loop
         splash.closed.connect(app.quit)
