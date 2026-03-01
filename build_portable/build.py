@@ -808,9 +808,78 @@ def step_summary():
 # =============================================================================
 
 
+def step_bundle_models():
+    """Step 4.6 (optional): Bundle ASR models for offline / full distribution."""
+    log("Step 4.6: Bundling local models...")
+
+    models_src = PROJECT_ROOT / "models"
+    models_dst = DIST_DIR / "_internal" / "app" / "aria" / "models"
+
+    if not models_src.exists():
+        log("  No models/ directory found, skipping.")
+        return
+
+    bundled = 0
+    for model_dir in models_src.iterdir():
+        if not model_dir.is_dir():
+            # Copy loose files (e.g., GGUF models for local_polish)
+            dst_file = models_dst / model_dir.name
+            models_dst.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(model_dir, dst_file)
+            size_mb = model_dir.stat().st_size / (1024 * 1024)
+            log(f"  Copied model file: {model_dir.name} ({size_mb:.0f} MB)")
+            bundled += 1
+            continue
+
+        # Check if directory has model files (safetensors, bin, gguf)
+        has_model = any(
+            model_dir.glob(pattern)
+            for pattern in ["*.safetensors", "*.bin", "*.gguf", "*.onnx"]
+        )
+        if not has_model:
+            log(f"  Skipping {model_dir.name} (no model files found)")
+            continue
+
+        dst = models_dst / model_dir.name
+        dst.mkdir(parents=True, exist_ok=True)
+
+        # Copy all files in model directory
+        size_total = 0
+        for f in model_dir.rglob("*"):
+            if f.is_file():
+                rel = f.relative_to(model_dir)
+                dst_file = dst / rel
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst_file)
+                size_total += f.stat().st_size
+
+        size_gb = size_total / (1024**3)
+        log(f"  Bundled: {model_dir.name} ({size_gb:.1f} GB)")
+        bundled += 1
+
+    if bundled == 0:
+        log("  No models to bundle.")
+    else:
+        log(f"  Total models bundled: {bundled}")
+
+
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Aria Portable Build")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Bundle ASR models for offline distribution (傻瓜版)",
+    )
+    args = parser.parse_args()
+
     log("Aria Portable Build v2.0")
     log(f"Project root: {PROJECT_ROOT}")
+    if args.full:
+        log("Mode: FULL (with bundled models)")
+    else:
+        log("Mode: LITE (no models, download on first run)")
     log("")
 
     try:
@@ -820,6 +889,8 @@ def main():
         step_configure_pth()
         step_copy_source()
         step_clean_sensitive_data()  # Clean API keys and sensitive paths
+        if args.full:
+            step_bundle_models()  # Bundle ASR models for offline use
         step_copy_site_packages()
         step_create_launcher()
         step_create_shortcut_generator()
