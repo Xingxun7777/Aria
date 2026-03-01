@@ -60,6 +60,15 @@ def check_qwen_asr_installed() -> bool:
         return False
 
 
+def _is_portable_runtime() -> bool:
+    """Check if running in portable (embedded Python) mode where pip is unavailable."""
+    import sys
+
+    # Portable build has no pip module and runs from _internal directory
+    exe_path = sys.executable or ""
+    return "_internal" in exe_path or "dist_portable" in exe_path
+
+
 def install_qwen_asr(parent=None) -> tuple[bool, str]:
     """
     动态安装 qwen-asr 包。
@@ -72,6 +81,14 @@ def install_qwen_asr(parent=None) -> tuple[bool, str]:
     """
     import subprocess
     import sys
+
+    # Portable mode: pip is not available, qwen-asr should be pre-bundled
+    if _is_portable_runtime():
+        return False, (
+            "便携版不支持动态安装依赖。\n"
+            "qwen-asr 应已包含在便携包中。\n"
+            "如仍缺失，请重新下载完整的便携包。"
+        )
 
     # 显示安装进度对话框
     from PySide6.QtWidgets import QProgressDialog
@@ -1778,6 +1795,7 @@ class SettingsWindow(QMainWindow):
             # Clean up stale .tmp file on failure
             try:
                 import os as _cleanup_os
+
                 _tmp = str(self.config_path) + ".tmp"
                 if _cleanup_os.path.exists(_tmp):
                     _cleanup_os.remove(_tmp)

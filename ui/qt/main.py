@@ -306,6 +306,7 @@ def main():
         # Read hotkey from config (before creating backend)
         config_path = get_config_path("hotwords.json")
         actual_hotkey = args.hotkey  # fallback to command line arg
+        config = {}  # Default empty config (prevents NameError if JSON load fails)
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)

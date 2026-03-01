@@ -23,10 +23,21 @@ from enum import Enum, auto
 from pathlib import Path
 
 # Fix Windows console UTF-8 encoding (skip if no console, e.g. pythonw.exe)
+# NOTE: Use reconfigure() instead of creating a new TextIOWrapper.
+# Under pythonw.exe, launcher.py sets sys.stdout = open(os.devnull, "w").
+# If we do sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...), the OLD wrapper
+# loses all references (sys.__stdout__ is still None), gets GC'd, and its close()
+# closes the shared buffer — causing "I/O operation on closed file" for all prints.
 if sys.platform == "win32" and sys.stdout is not None:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass  # Not a TextIOWrapper or not reconfigurable
 if sys.platform == "win32" and sys.stderr is not None:
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 # === Safe print for pythonw.exe (sys.stdout/stderr can be None) ===
 import builtins
@@ -40,8 +51,8 @@ def _safe_print(*args, **kwargs):
         return  # Silent fail when no console
     try:
         _original_print(*args, **kwargs)
-    except OSError:
-        pass  # Ignore [Errno 22] Invalid argument
+    except (OSError, ValueError):
+        pass  # OSError: [Errno 22] Invalid argument; ValueError: I/O operation on closed file
 
 
 builtins.print = _safe_print
@@ -764,13 +775,16 @@ class AriaApp:
             print(f"Qwen3-ASR ready!")
         else:
             # Unknown engine type - fall back to Qwen3-ASR
+            # NOTE: Do NOT import Qwen3ASREngine/Qwen3Config here!
+            # Python scoping: any `from X import Y` inside a function makes Y a
+            # LOCAL variable for the ENTIRE function, shadowing the module-level
+            # import at line 135. This causes UnboundLocalError when the normal
+            # qwen3 branch (line 762) tries to use Qwen3Config.
             logger.warning(
                 f"Unknown ASR engine '{engine_type}', falling back to Qwen3-ASR"
             )
             engine_type = "qwen3"  # Canonicalize so hotword setup below works
             self._asr_engine_type = "qwen3"
-            from .core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
-
             qwen3_cfg = asr_cfg.get("qwen3", {})
             asr_config = Qwen3Config(
                 model_name=qwen3_cfg.get("model_name", "auto"),

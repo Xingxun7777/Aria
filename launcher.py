@@ -422,11 +422,18 @@ if sys.platform == "win32":
         pass
 
 LOG_FILE = os.path.join(os.path.dirname(__file__), "launch_error.log")
+# Fallback log path if primary is not writable (e.g., Program Files, Controlled Folder Access)
+_LOG_FILE_FALLBACK = os.path.join(tempfile.gettempdir(), "aria_launch_error.log")
 
 
 def log(msg):
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(msg + "\n")
+    for path in (LOG_FILE, _LOG_FILE_FALLBACK):
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+            return
+        except (OSError, PermissionError):
+            continue
 
 
 # Patch subprocess to hide console windows on Windows (for ffmpeg and other subprocess calls)
@@ -518,7 +525,7 @@ def start_splash():
         # Use the directory containing this launcher as cwd
         launcher_dir = os.path.dirname(os.path.abspath(__file__))
         splash_proc = subprocess.Popen(
-            [python_exe, splash_script, str(port)],
+            [python_exe, "-s", splash_script, str(port)],
             cwd=launcher_dir,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             stdout=subprocess.DEVNULL,

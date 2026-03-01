@@ -81,11 +81,15 @@ def log(msg: str):
 
 
 def rmtree_force(path: Path):
-    """Remove directory tree, handling read-only files on Windows."""
+    """Remove directory tree, handling read-only and locked files on Windows."""
 
     def onerror(func, p, exc):
-        os.chmod(p, stat.S_IWRITE)
-        func(p)
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except PermissionError:
+            # File locked by OS (e.g. after segfault) — skip it
+            log(f"  WARN: Cannot delete locked file, skipping: {p}")
 
     if path.exists():
         shutil.rmtree(path, onerror=onerror)
@@ -223,17 +227,16 @@ def step_configure_pth():
     # 1. stdlib first (prevents shadowing)
     # 2. site-packages (dependencies)
     # 3. app (our code root)
-    # 4. app/aria (CRITICAL: allows "import core", "import ui" etc.)
-    # 5. import site (enables .pth processing, must be last)
+    # 4. import site (enables .pth processing, must be last)
     stdlib_zip = f"python{PYTHON_MAJOR}{PYTHON_MINOR}.zip"
 
     pth_lines = [
         stdlib_zip,  # stdlib first
+        ".",  # executable dir — stdlib .pyd extensions live here (_ctypes, winsound, etc.)
         "Lib\\site-packages",  # dependencies (use backslash for Windows)
-        "app",  # app root
-        "app\\aria",  # CRITICAL: inner package for relative imports
+        "app",  # app root (allows `import aria`)
         "",
-        "import site",  # MUST be last line
+        "import site",  # enables .pth processing in site-packages, MUST be last
     ]
 
     pth_file.write_text("\n".join(pth_lines) + "\n", encoding="utf-8")
@@ -468,9 +471,10 @@ def step_copy_site_packages():
     # Find venv site-packages
     venv_sp = PROJECT_ROOT / ".venv" / "Lib" / "site-packages"
     if not venv_sp.exists():
-        log("WARNING: .venv/Lib/site-packages not found!")
-        log("You need to manually copy dependencies.")
-        return
+        raise RuntimeError(
+            f".venv/Lib/site-packages not found at {venv_sp}!\n"
+            "Cannot build without dependencies. Run: python -m venv .venv && pip install -r requirements.txt"
+        )
 
     dest_sp = DIST_DIR / "_internal" / "Lib" / "site-packages"
 
@@ -493,16 +497,16 @@ def step_copy_site_packages():
         "setuptools",
         "_distutils_hack",
         "pkg_resources",
+        "numba",  # JIT compiler, not used by Aria
+        "llvmlite",  # LLVM backend for numba, not used by Aria
     }
 
     # torch subdirectories not needed for inference
+    # NOTE: Only skip dirs NOT referenced by torch/__init__.py.
+    # distributed, testing, onnx, _inductor are all imported at init → MUST keep.
     TORCH_SKIP_DIRS = {
-        "include",  # C++ headers (36 MB)
-        "testing",  # test utilities (9 MB)
-        "test",  # test suite
-        "distributed",  # multi-GPU (8 MB)
-        "onnx",  # ONNX export (3 MB)
-        "_inductor",  # torch.compile backend (13 MB)
+        "include",  # C++ headers (36 MB) — not Python code
+        "test",  # test suite (not same as "testing" module)
         "bin",  # CLI tools (8 MB)
     }
 
@@ -534,8 +538,15 @@ def step_copy_site_packages():
                 ignored.append(name)
                 continue
 
-            # Skip editable install artifacts (CRITICAL for portability)
+            # Skip editable install artifacts and orphaned .pth files
+            # (CRITICAL for portability — these reference dev machine paths)
             if name_lower.endswith(".egg-link") or name_lower == "easy-install.pth":
+                ignored.append(name)
+                continue
+
+            # Skip .pth files whose backing packages are excluded
+            # distutils-precedence.pth → needs _distutils_hack (excluded)
+            if name_lower == "distutils-precedence.pth":
                 ignored.append(name)
                 continue
 
@@ -692,27 +703,78 @@ pause
 
 
 def step_verify_build():
-    """Step 8: Verify the build is functional."""
+    """Step 8: Verify the build is functional (fail-fast on any issue)."""
     log("Step 8: Verifying build...")
 
     internal_dir = DIST_DIR / "_internal"
 
-    # Check critical files exist
+    # =========================================================================
+    # Phase 1: Check critical files exist
+    # =========================================================================
     checks = [
         internal_dir / "pythonw.exe",
         internal_dir / "python.exe",
         internal_dir / RUNTIME_EXE_NAME,
         internal_dir / f"python{PYTHON_MAJOR}{PYTHON_MINOR}.dll",
         internal_dir / "app" / "aria" / "launcher.py",
+        internal_dir / "app" / "aria" / "config" / "hotwords.json",
         internal_dir / "Lib" / "site-packages" / "numpy",
         internal_dir / "Lib" / "site-packages" / "torch",
+        internal_dir / "Lib" / "site-packages" / "PySide6",
     ]
 
+    missing = []
     for path in checks:
         if path.exists():
             log(f"  OK: {path.name}")
         else:
             log(f"  MISSING: {path}")
+            missing.append(str(path))
+
+    if missing:
+        raise RuntimeError(
+            f"Build verification failed! Missing {len(missing)} critical files:\n"
+            + "\n".join(f"  - {p}" for p in missing)
+        )
+
+    # =========================================================================
+    # Phase 2: Import smoke test using the embedded Python
+    # =========================================================================
+    log("  Running import smoke test...")
+    python_exe = internal_dir / "python.exe"
+    smoke_test = (
+        "import sys; "
+        "import ctypes; "
+        "import winsound; "
+        "import PySide6.QtCore; "
+        "import torch; "
+        "import numpy; "
+        "import qwen_asr; "
+        "from aria.app import AriaApp; "
+        "from aria.ui.qt.main import main; "
+        "from aria.core.asr.qwen3_engine import Qwen3ASREngine; "
+        "print('SMOKE_TEST_PASSED')"
+    )
+
+    import subprocess
+
+    result = subprocess.run(
+        [str(python_exe), "-s", "-c", smoke_test],
+        cwd=str(DIST_DIR),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if "SMOKE_TEST_PASSED" in result.stdout:
+        log("  Smoke test PASSED — all critical imports work")
+    else:
+        error_msg = result.stderr.strip() or result.stdout.strip() or "(no output)"
+        raise RuntimeError(
+            f"Build smoke test FAILED! The embedded Python cannot import critical modules.\n"
+            f"Exit code: {result.returncode}\n"
+            f"Error: {error_msg}"
+        )
 
     log("Verification complete.")
 
