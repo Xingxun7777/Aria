@@ -5,10 +5,10 @@ Creates a portable distribution using embedded Python.
 Reviewed and fixed by Codex + Gemini 三方会谈.
 
 Usage:
-    python build_portable/build.py
+    python build_portable/build.py [--full] [--dist-name NAME]
 
 Output:
-    dist_portable/Aria/  - Ready-to-distribute folder
+    dist_portable/<NAME>/  - Ready-to-distribute folder
 """
 
 import os
@@ -600,10 +600,173 @@ def step_copy_site_packages():
 
     rmtree_force(dest_sp)
     shutil.copytree(venv_sp, dest_sp, ignore=ignore_filter)
+    _patch_nagisa_unicode_path_support(dest_sp)
 
     # Calculate size
     total_size = sum(f.stat().st_size for f in dest_sp.rglob("*") if f.is_file())
     log(f"  Copied {total_size / 1024 / 1024:.1f} MB of packages")
+
+
+def _patch_nagisa_unicode_path_support(site_packages_dir: Path):
+    """Patch nagisa so its bundled model can load from non-ASCII install paths."""
+    tagger_py = site_packages_dir / "nagisa" / "tagger.py"
+    if not tagger_py.exists():
+        log("  nagisa not found, skipping Unicode-path patch")
+        return
+
+    text = tagger_py.read_text(encoding="utf-8").replace("\r\n", "\n")
+    patch_marker = "ARIA_PORTABLE_NAGISA_UNICODE_FIX"
+    if patch_marker in text:
+        log("  nagisa Unicode-path patch already applied")
+        return
+
+    import_block = "import os\nimport re\nimport sys\n"
+    patched_import_block = (
+        "import hashlib\n"
+        "import os\n"
+        "import re\n"
+        "import shutil\n"
+        "import sys\n"
+        "import tempfile\n"
+    )
+    if import_block not in text:
+        raise RuntimeError(
+            f"Cannot patch nagisa imports: expected block not found in {tagger_py}"
+        )
+    text = text.replace(import_block, patched_import_block, 1)
+
+    base_block = "base = os.path.dirname(os.path.abspath(__file__))\nsys.path.append(base)\n"
+    patched_base_block = """_PACKAGE_BASE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(_PACKAGE_BASE)
+
+# ARIA_PORTABLE_NAGISA_UNICODE_FIX
+def _path_is_ascii(path):
+    try:
+        path.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _get_windows_short_path(path):
+    if os.name != "nt":
+        return None
+
+    try:
+        import ctypes
+
+        size = ctypes.windll.kernel32.GetShortPathNameW(path, None, 0)
+        if size <= 0:
+            return None
+
+        buf = ctypes.create_unicode_buffer(size)
+        result = ctypes.windll.kernel32.GetShortPathNameW(path, buf, size)
+        if result <= 0:
+            return None
+
+        short_path = buf.value
+        if short_path and os.path.exists(short_path):
+            return short_path
+    except Exception:
+        return None
+
+    return None
+
+
+def _iter_ascii_cache_roots():
+    candidates = [
+        os.path.join(os.environ.get("PUBLIC", r"C:\\Users\\Public"), "Documents", "AriaRuntimeCache"),
+        os.path.join(os.environ.get("ProgramData", r"C:\\ProgramData"), "AriaRuntimeCache"),
+        tempfile.gettempdir(),
+        os.path.join(os.environ.get("SystemRoot", r"C:\\Windows"), "Temp"),
+        r"C:\\Temp",
+    ]
+    seen = set()
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        for current in (candidate, _get_windows_short_path(candidate)):
+            if not current or current in seen:
+                continue
+            seen.add(current)
+            if _path_is_ascii(current):
+                yield current
+
+
+def _get_safe_data_base(package_base):
+    if _path_is_ascii(package_base):
+        return package_base
+
+    short_path = _get_windows_short_path(package_base)
+    if short_path and _path_is_ascii(short_path):
+        return short_path
+
+    data_src = os.path.join(package_base, "data")
+    if not os.path.isdir(data_src):
+        return package_base
+
+    digest = hashlib.sha1(package_base.encode("utf-8")).hexdigest()[:12]
+    for cache_root in _iter_ascii_cache_roots():
+        safe_base = os.path.join(cache_root, "aria_nagisa", digest)
+        safe_data = os.path.join(safe_base, "data")
+
+        try:
+            model_file = os.path.join(safe_data, "nagisa_v001.model")
+            if not os.path.exists(model_file):
+                os.makedirs(safe_base, exist_ok=True)
+                if os.path.isdir(safe_data):
+                    shutil.rmtree(safe_data)
+                shutil.copytree(data_src, safe_data)
+            return safe_base
+        except Exception:
+            continue
+
+    return package_base
+
+
+_DATA_BASE = _get_safe_data_base(_PACKAGE_BASE)
+"""
+    if base_block not in text:
+        raise RuntimeError(
+            f"Cannot patch nagisa base path: expected block not found in {tagger_py}"
+        )
+    text = text.replace(base_block, patched_base_block, 1)
+
+    replacements = {
+        "base + '/data/nagisa_v001.dict'": "os.path.join(_DATA_BASE, 'data', 'nagisa_v001.dict')",
+        "base + '/data/nagisa_v001.model'": "os.path.join(_DATA_BASE, 'data', 'nagisa_v001.model')",
+        "base + '/data/nagisa_v001.hp'": "os.path.join(_DATA_BASE, 'data', 'nagisa_v001.hp')",
+    }
+    for old, new in replacements.items():
+        if old not in text:
+            raise RuntimeError(
+                f"Cannot patch nagisa default model path: '{old}' not found in {tagger_py}"
+            )
+        text = text.replace(old, new)
+
+    tagger_py.write_text(text, encoding="utf-8")
+    log("  Patched nagisa/tagger.py for non-ASCII portable paths")
+
+
+def _run_embedded_python(
+    python_exe: Path, code: str, cwd: Path, timeout: int = 120
+):
+    """Run code with the embedded Python and capture output consistently."""
+    import subprocess
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.run(
+        [str(python_exe), "-s", "-c", code],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=env,
+    )
 
 
 def step_create_launcher():
@@ -702,7 +865,7 @@ pause
     log("  Created CreateShortcut.ps1 and CreateShortcut.cmd")
 
 
-def step_verify_build():
+def step_verify_build(full_mode: bool = False):
     """Step 8: Verify the build is functional (fail-fast on any issue)."""
     log("Step 8: Verifying build...")
 
@@ -721,7 +884,20 @@ def step_verify_build():
         internal_dir / "Lib" / "site-packages" / "numpy",
         internal_dir / "Lib" / "site-packages" / "torch",
         internal_dir / "Lib" / "site-packages" / "PySide6",
+        internal_dir / "Lib" / "site-packages" / "nagisa_utils.cp312-win_amd64.pyd",
+        internal_dir
+        / "Lib"
+        / "site-packages"
+        / "nagisa"
+        / "data"
+        / "nagisa_v001.model",
     ]
+
+    # Full mode: verify both ASR models are bundled
+    if full_mode:
+        models_dir = internal_dir / "app" / "aria" / "models"
+        checks.append(models_dir / "Qwen3-ASR-1.7B")
+        checks.append(models_dir / "Qwen3-ASR-0.6B")
 
     missing = []
     for path in checks:
@@ -747,9 +923,11 @@ def step_verify_build():
         "import ctypes; "
         "import winsound; "
         "import PySide6.QtCore; "
+        "import nagisa; "
         "import torch; "
         "import numpy; "
-        "import qwen_asr; "
+        "from aria.core.asr.qwen3_engine import check_qwen3_installation; "
+        "assert check_qwen3_installation(); "
         "from aria.app import AriaApp; "
         "from aria.ui.qt.main import main; "
         "from aria.core.asr.qwen3_engine import Qwen3ASREngine; "
@@ -758,13 +936,7 @@ def step_verify_build():
 
     import subprocess
 
-    result = subprocess.run(
-        [str(python_exe), "-s", "-c", smoke_test],
-        cwd=str(DIST_DIR),
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    result = _run_embedded_python(python_exe, smoke_test, DIST_DIR, timeout=120)
 
     if "SMOKE_TEST_PASSED" in result.stdout:
         log("  Smoke test PASSED — all critical imports work")
@@ -773,6 +945,86 @@ def step_verify_build():
         raise RuntimeError(
             f"Build smoke test FAILED! The embedded Python cannot import critical modules.\n"
             f"Exit code: {result.returncode}\n"
+            f"Error: {error_msg}"
+        )
+
+    # =========================================================================
+    # Phase 3: Unicode path probe (portable users often extract to Chinese dirs)
+    # =========================================================================
+    log("  Running Unicode-path qwen_asr probe...")
+
+    verify_root = BUILD_DIR / ".verify_unicode"
+    link_path = verify_root / "语音Aria"
+
+    if link_path.exists():
+        subprocess.run(
+            ["cmd", "/c", "rmdir", str(link_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    if verify_root.exists():
+        rmtree_force(verify_root)
+    verify_root.mkdir(parents=True, exist_ok=True)
+
+    junction = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link_path), str(DIST_DIR)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    if junction.returncode != 0:
+        raise RuntimeError(
+            "Unicode-path probe setup failed.\n"
+            f"Exit code: {junction.returncode}\n"
+            f"Error: {junction.stderr.strip() or junction.stdout.strip() or '(no output)'}"
+        )
+
+    unicode_probe = (
+        "from aria.core.asr.qwen3_engine import check_qwen3_installation; "
+        "assert check_qwen3_installation(); "
+        "import qwen_asr; "
+        "import nagisa; "
+        "print('NAGISA_PATH=' + nagisa.__file__); "
+        "print('UNICODE_QWEN_IMPORT_OK')"
+    )
+
+    try:
+        unicode_result = subprocess.run(
+            [str(link_path / "_internal" / "python.exe"), "-s", "-c", unicode_probe],
+            cwd=str(link_path),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+    finally:
+        subprocess.run(
+            ["cmd", "/c", "rmdir", str(link_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        rmtree_force(verify_root)
+
+    if "UNICODE_QWEN_IMPORT_OK" in unicode_result.stdout:
+        log("  Unicode-path probe PASSED — qwen_asr imports correctly from Chinese paths")
+    else:
+        error_msg = (
+            unicode_result.stderr.strip()
+            or unicode_result.stdout.strip()
+            or "(no output)"
+        )
+        raise RuntimeError(
+            "Unicode-path qwen_asr probe FAILED!\n"
+            f"Exit code: {unicode_result.returncode}\n"
             f"Error: {error_msg}"
         )
 
@@ -787,7 +1039,7 @@ def step_summary():
     log(f"Output: {DIST_DIR}")
     log("")
     log("Directory structure:")
-    log("  Aria/")
+    log(f"  {DIST_DIR.name}/")
     log("  +-- Aria.cmd        <- Standard launcher")
     log("  +-- Aria.vbs        <- Silent launcher (recommended)")
     log("  +-- Aria_debug.bat  <- Debug mode (shows errors)")
@@ -808,6 +1060,64 @@ def step_summary():
 # =============================================================================
 
 
+def _ensure_qwen3_models(models_src: Path):
+    """Ensure both Qwen3-ASR models (1.7B + 0.6B) exist locally.
+
+    For --full builds, BOTH models must be bundled so the portable version
+    works offline regardless of user's GPU (auto selects 1.7B or 0.6B based
+    on VRAM). If a model is missing locally, download it from HuggingFace.
+    """
+    import os
+
+    # HuggingFace mirror for China users (same logic as launcher.py)
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+    if "HF_ENDPOINT" not in os.environ:
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+    REQUIRED_MODELS = [
+        ("Qwen/Qwen3-ASR-1.7B", "Qwen3-ASR-1.7B"),
+        ("Qwen/Qwen3-ASR-0.6B", "Qwen3-ASR-0.6B"),
+    ]
+
+    models_src.mkdir(parents=True, exist_ok=True)
+
+    for repo_id, local_name in REQUIRED_MODELS:
+        local_path = models_src / local_name
+        has_model = local_path.is_dir() and any(local_path.glob("*.safetensors"))
+
+        if has_model:
+            log(f"  Model already exists: {local_name}")
+            continue
+
+        log(f"  Model missing: {local_name}, downloading from {repo_id}...")
+        log(f"  (This may take a while for large models)")
+
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id,
+                local_dir=str(local_path),
+            )
+            # Verify download
+            if any(local_path.glob("*.safetensors")):
+                size_gb = sum(
+                    f.stat().st_size for f in local_path.rglob("*") if f.is_file()
+                ) / (1024**3)
+                log(f"  Downloaded: {local_name} ({size_gb:.1f} GB)")
+            else:
+                raise RuntimeError(
+                    f"Download completed but no .safetensors found in {local_path}"
+                )
+        except Exception as e:
+            log(f"  ERROR: Failed to download {repo_id}: {e}")
+            raise RuntimeError(
+                f"Cannot download {repo_id}. Check network and try again.\n"
+                f"You can also manually download it:\n"
+                f"  huggingface-cli download {repo_id} --local-dir {local_path}"
+            ) from e
+
+
 def step_bundle_models():
     """Step 4.6 (optional): Bundle ASR models for offline / full distribution."""
     log("Step 4.6: Bundling local models...")
@@ -815,12 +1125,19 @@ def step_bundle_models():
     models_src = PROJECT_ROOT / "models"
     models_dst = DIST_DIR / "_internal" / "app" / "aria" / "models"
 
+    # Ensure both Qwen3-ASR models exist (download if missing)
+    _ensure_qwen3_models(models_src)
+
     if not models_src.exists():
         log("  No models/ directory found, skipping.")
         return
 
     bundled = 0
     for model_dir in models_src.iterdir():
+        # Skip cache directories
+        if model_dir.name.startswith("."):
+            continue
+
         if not model_dir.is_dir():
             # Copy loose files (e.g., GGUF models for local_polish)
             dst_file = models_dst / model_dir.name
@@ -843,10 +1160,10 @@ def step_bundle_models():
         dst = models_dst / model_dir.name
         dst.mkdir(parents=True, exist_ok=True)
 
-        # Copy all files in model directory
+        # Copy all files in model directory (skip .cache subdirs)
         size_total = 0
         for f in model_dir.rglob("*"):
-            if f.is_file():
+            if f.is_file() and ".cache" not in f.parts:
                 rel = f.relative_to(model_dir)
                 dst_file = dst / rel
                 dst_file.parent.mkdir(parents=True, exist_ok=True)
@@ -865,6 +1182,7 @@ def step_bundle_models():
 
 def main():
     import argparse
+    global DIST_DIR
 
     parser = argparse.ArgumentParser(description="Aria Portable Build")
     parser.add_argument(
@@ -872,10 +1190,24 @@ def main():
         action="store_true",
         help="Bundle ASR models for offline distribution (傻瓜版)",
     )
+    parser.add_argument(
+        "--dist-name",
+        default="Aria",
+        help="Output directory name under dist_portable/ (default: Aria)",
+    )
     args = parser.parse_args()
+
+    dist_name = args.dist_name.strip()
+    if not dist_name or dist_name in {".", ".."}:
+        parser.error("--dist-name must be a non-empty directory name")
+    if Path(dist_name).name != dist_name:
+        parser.error("--dist-name must be a single directory name, not a path")
+
+    DIST_DIR = PROJECT_ROOT / "dist_portable" / dist_name
 
     log("Aria Portable Build v2.0")
     log(f"Project root: {PROJECT_ROOT}")
+    log(f"Output dir: {DIST_DIR}")
     if args.full:
         log("Mode: FULL (with bundled models)")
     else:
@@ -894,7 +1226,7 @@ def main():
         step_copy_site_packages()
         step_create_launcher()
         step_create_shortcut_generator()
-        step_verify_build()
+        step_verify_build(full_mode=args.full)
         step_summary()
 
     except Exception as e:

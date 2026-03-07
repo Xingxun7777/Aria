@@ -4,6 +4,48 @@
 
 ---
 
+## Issue: 便携版放在中文路径时，Qwen3-ASR 启动即崩（nagisa / dyNET Unicode 路径问题）
+
+**Date**: 2026-03-07
+
+**Symptom**:
+- 便携版放在 `E:\语音\Aria\...` 之类的中文目录下时，启动弹窗报错：
+  `Could not read model from ...nagisa/data/nagisa_v001.model`
+- 英文路径正常，中文路径失败
+- 错误在应用真正启动前就发生，导致用户感觉是“便携版打不开”
+
+**Root Cause**:
+1. `launcher.py` / `qwen3_engine.py` / `settings.py` 会触发 `qwen_asr` 导入
+2. `qwen_asr` 顶层又导入 `qwen3_forced_aligner`
+3. `qwen3_forced_aligner` 顶层 `import nagisa`
+4. `nagisa/__init__.py` 顶层立刻 `Tagger()`
+5. `Tagger()` 最终走到 `dyNET ParameterCollection.populate(params)`
+6. dyNET 读取 `nagisa_v001.model` 时**不兼容 Windows 非 ASCII 路径**
+
+**关键坑点**:
+- 不是“漏打包模型文件”，而是**文件存在但 native 库读不了 Unicode 路径**
+- Windows `Path.resolve()` 会把 Unicode junction 折叠回原始 ASCII 路径，**会掩盖问题**
+- 只在英文路径做 smoke test 会误判“可交付”
+
+**Solution**:
+1. 新增 `core/utils/import_workarounds.py`
+2. 在导入 `qwen_asr` 前，检测 `nagisa` 是否位于非 ASCII 路径
+3. 若是，则把 `nagisa/` 和 `nagisa_utils*.pyd` 镜像到 ASCII-only 缓存目录，并把该目录 prepend 到 `sys.path`
+4. 用 `check_qwen3_installation()` 统一导入入口，避免各处直接 `import qwen_asr`
+5. 在 `build_portable/build.py` 中增加 **Unicode 路径探针**（中文 junction + embedded python）
+
+**Verification**:
+- ASCII 路径：`nagisa` 正常导入
+- Unicode 路径：旧版本稳定复现 `Could not read model...`
+- 修复后：`build_portable/build.py` 的 smoke test + Unicode probe 均通过
+
+**Key Learning**:
+- Windows 便携版验证必须包含 **中文路径 / 非 ASCII 路径**
+- 遇到 native 库读模型失败，先区分“缺文件”还是“Unicode 路径不兼容”
+- `importlib`/`Path.resolve()` 可能把真实运行路径“洗白”，排查时要保留原始 import 路径
+
+---
+
 ## Issue: 第一句话必出问题（重复/截断）- Prompt Shock
 
 **Date**: 2025-12-28

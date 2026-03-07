@@ -1,6 +1,6 @@
 # Aria 发布审核清单
 
-> 最后更新: 2026-02-20 (v1.1.2)
+> 最后更新: 2026-03-07 (v1.0.0 lite/full split)
 
 ## 发布前检查
 
@@ -38,11 +38,13 @@
 ## Build 命令
 
 ```bash
-build_portable\release.bat
+build_portable\release-lite.bat
+build_portable\release-full.bat
 ```
 
 ## 压缩命令
 
 ```bash
-7z a Aria-v1.1.2.7z dist_portable\Aria\
+7z a Aria-v1.0.0-lite.7z dist_portable\Aria_release_lite\
+7z a Aria-v1.0.0-full.7z dist_portable\Aria_release_full\
 ```

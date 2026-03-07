@@ -38,6 +38,7 @@ config/hotwords.json
 data/
 
 # === Large Model Files ===
+models/
 models/*.gguf
 models/*.bin
 models/*.pt
@@ -67,5 +68,7 @@ debug_audio_*.wav
 .sisyphus/
 
 # === Temporary Archives ===
+*.7z
+*.zip
 *.tar
 .tmp_arxiv/

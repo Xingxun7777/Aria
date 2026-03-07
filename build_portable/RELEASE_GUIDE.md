@@ -3,17 +3,26 @@
 ## 快速发布（一键命令）
 
 ```powershell
-build_portable\release.bat
+build_portable\release-lite.bat
+build_portable\release-full.bat
 ```
 
 或手动分步执行：
 
 ```powershell
-.venv\Scripts\python.exe build_portable\build.py
-.venv\Scripts\python.exe build_portable\build_launcher_exe.py
+.venv\Scripts\python.exe build_portable\build.py --dist-name Aria_release_lite
+.venv\Scripts\python.exe build_portable\build_launcher_exe.py --dist-name Aria_release_lite
+
+.venv\Scripts\python.exe build_portable\build.py --full --dist-name Aria_release_full
+.venv\Scripts\python.exe build_portable\build_launcher_exe.py --dist-name Aria_release_full
 ```
 
-完成后，`dist_portable\Aria\` 就是可分发的便携版。
+完成后：
+
+- `dist_portable\Aria_release_lite\` = GitHub 发布用 Lite 包
+- `dist_portable\Aria_release_full\` = 网盘/云盘离线 Full 包
+
+`build_portable\release.bat lite/full` 仍可作为兼容入口使用。
 
 ---
 
@@ -39,34 +48,43 @@ git push
 ### 2. 打包便携版
 
 ```powershell
-# 运行打包脚本（自动使用 template 配置，清理敏感数据）
-.venv\Scripts\python.exe build_portable\build.py
+# Lite（GitHub 发布，首次运行自动下载模型）
+.venv\Scripts\python.exe build_portable\build.py --dist-name Aria_release_lite
+.venv\Scripts\python.exe build_portable\build_launcher_exe.py --dist-name Aria_release_lite
 
-# 编译 EXE 启动器
-.venv\Scripts\python.exe build_portable\build_launcher_exe.py
+# Full（网盘离线包，内置 Qwen3-ASR 0.6B + 1.7B）
+.venv\Scripts\python.exe build_portable\build.py --full --dist-name Aria_release_full
+.venv\Scripts\python.exe build_portable\build_launcher_exe.py --dist-name Aria_release_full
 ```
 
 ### 3. 验证便携版
 
 ```powershell
-# 测试启动
-dist_portable\Aria\Aria.exe
+# Lite 测试启动
+dist_portable\Aria_release_lite\Aria.exe
 
 # 检查敏感数据已清理（应无输出）
-findstr "sk-or-v1" dist_portable\Aria\_internal\app\aria\config\hotwords.json
+findstr "sk-or-v1" dist_portable\Aria_release_lite\_internal\app\aria\config\hotwords.json
+
+# Full 测试启动
+dist_portable\Aria_release_full\Aria.exe
+
+# Full 应内置两个 Qwen3-ASR 模型目录
+dir dist_portable\Aria_release_full\_internal\app\aria\models
 
 # 检查配置使用默认值
-python -c "import json; c=json.load(open('dist_portable/Aria/_internal/app/aria/config/hotwords.json','r',encoding='utf-8')); print('hotkey:', c['general']['hotkey']); print('vad:', c['vad']['threshold']); print('api_key:', c['polish']['api_key'][:10])"
+python -c "import json; c=json.load(open('dist_portable/Aria_release_lite/_internal/app/aria/config/hotwords.json','r',encoding='utf-8')); print('hotkey:', c['general']['hotkey']); print('vad:', c['vad']['threshold']); print('api_key:', c['polish']['api_key'][:10])"
 ```
 
 ### 4. 打包分发
 
 ```powershell
 # 使用 7-Zip 压缩（推荐）
-7z a -t7z -mx=9 Aria-v1.1.2.7z dist_portable\Aria\
+7z a -t7z -mx=9 Aria-v1.0.0-lite.7z dist_portable\Aria_release_lite\
+7z a -t7z -mx=9 Aria-v1.0.0-full.7z dist_portable\Aria_release_full\
 
 # 或 ZIP 格式
-7z a -tzip Aria-v1.1.2.zip dist_portable\Aria\
+7z a -tzip Aria-v1.0.0-lite.zip dist_portable\Aria_release_lite\
 ```
 
 ---
@@ -137,10 +155,13 @@ Aria/
 │   ├── build.py                主打包脚本
 │   ├── build_launcher_exe.py   EXE 编译脚本
 │   ├── launcher_stub.py        EXE 源码
-│   ├── release.bat             一键打包
+│   ├── release-lite.bat        Lite 打包（GitHub）
+│   ├── release-full.bat        Full 打包（网盘离线）
+│   ├── release.bat             兼容入口（lite/full 分发）
 │   └── RELEASE_GUIDE.md        本文件
 ├── dist_portable/              打包输出
-│   └── Aria/                   可分发的便携版
+│   ├── Aria_release_lite/      GitHub 发布用便携版
+│   └── Aria_release_full/      网盘离线用便携版
 └── assets/
     └── aria.ico                图标
 ```
@@ -156,10 +177,9 @@ Aria/
 - [ ] 开发版 `Aria_debug.bat` 测试通过
 - [ ] 版本号已更新 (`__init__.py`, `aria/__init__.py`, `CHANGELOG.md`)
 - [ ] git commit & push
-- [ ] `build.py` 运行成功
-- [ ] `build_launcher_exe.py` 运行成功
-- [ ] 便携版 `Aria.exe` 启动正常
+- [ ] Lite / Full 构建脚本运行成功
+- [ ] 对应的 `Aria.exe` 启动正常
 - [ ] 敏感数据已清理（API key, 日志, 音频）
 - [ ] 配置为默认值（热键=反引号, VAD=0.3）
-- [ ] 7z 压缩
-- [ ] 上传分发
+- [ ] Lite / Full 压缩包创建成功
+- [ ] GitHub 上传 Lite，网盘上传 Full

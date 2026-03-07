@@ -61,10 +61,13 @@ CPU 模式下所有功能正常，识别速度约为 GPU 的 2-5 倍时间。
 
 ### 便携版（推荐）
 
-1. 从 [Releases](../../releases) 下载最新版压缩包
+1. 从 [Releases](../../releases) 下载 **Lite 版**，或从单独网盘链接下载 **Full 傻瓜版**
 2. 解压到任意目录
 3. 双击 `Aria.exe`
 4. 按 `` ` `` 键开始说话，再按一次结束 → 文字自动输入到当前窗口
+
+> - **Lite**：GitHub 发布用，不内置 Qwen3-ASR 大模型；首次运行会自动下载模型
+> - **Full**：网盘/云盘发布用，内置 Qwen3-ASR `0.6B + 1.7B`，解压即用
 
 ### 从源码运行
 
@@ -168,10 +171,21 @@ Aria.bat
 ## 构建便携版
 
 ```bash
-build_portable\release.bat
+build_portable\release-lite.bat
+build_portable\release-full.bat
 ```
 
-输出到 `dist_portable/Aria/`（含完整 Python 运行环境和 CUDA 依赖，约 9 GB）。
+输出目录：
+
+- `dist_portable/Aria_release_lite/`：GitHub 发布用 Lite 包
+- `dist_portable/Aria_release_full/`：网盘/云盘发布用 Full 包
+
+兼容入口：
+
+```bash
+build_portable\release.bat lite
+build_portable\release.bat full
+```
 
 打包流程：下载嵌入式 Python → 复制源码 → 清理敏感数据 → 复制 site-packages → 编译 EXE 启动器 → 验证。
 
@@ -209,7 +223,9 @@ build_portable\release.bat
 <details>
 <summary><b>首次启动很慢？</b></summary>
 
-Qwen3-ASR 首次使用需下载模型（1.2-3.4 GB），下载后离线可用。切换到 FunASR 可免下载立即使用。
+- **Lite 版**：Qwen3-ASR 首次使用需自动下载模型（约 1.2-3.4 GB），下载后离线可用
+- **Full 版**：已内置模型，通常不会触发首次下载
+- 如想完全免下载，也可切换到 FunASR 立即使用
 
 </details>
 
@@ -244,7 +260,9 @@ Aria/
 │   └── commands.json        # 键盘命令定义
 └── build_portable/          # 便携版打包
     ├── build.py             # 打包脚本
-    ├── release.bat          # 一键打包
+    ├── release-lite.bat     # Lite 打包（GitHub 发布）
+    ├── release-full.bat     # Full 打包（网盘离线包）
+    ├── release.bat          # 兼容入口 / 模式分发
     └── RELEASE_GUIDE.md     # 发布指南
 ```
 

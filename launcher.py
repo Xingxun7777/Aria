@@ -697,12 +697,16 @@ try:
             print("Pre-loading Qwen3-ASR model (before Qt)...")
 
             # Step 0: 检查 qwen-asr 是否已安装
-            try:
-                import qwen_asr  # noqa: F401
-            except ImportError:
-                log("qwen-asr not installed, cannot use Qwen3 engine")
-                emit_progress("qwen3_error", "Qwen3-ASR 引擎依赖未安装", 50)
-                raise ImportError("qwen-asr not installed. Run: pip install qwen-asr")
+            from aria.core.asr.qwen3_engine import (
+                Qwen3ASREngine,
+                Qwen3Config,
+                check_qwen3_installation,
+            )
+
+            if not check_qwen3_installation():
+                log("qwen_asr unavailable, cannot use Qwen3 engine")
+                emit_progress("qwen3_error", "Qwen3-ASR 引擎不可用", 50)
+                raise ImportError("qwen-asr unavailable. Check startup logs for details.")
 
             # HuggingFace endpoint: respect user's env, default to China mirror
             os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -711,8 +715,6 @@ try:
                 log("Set HF_ENDPOINT to hf-mirror.com (default for China users)")
             else:
                 log(f"Using existing HF_ENDPOINT: {os.environ['HF_ENDPOINT']}")
-
-            from aria.core.asr.qwen3_engine import Qwen3ASREngine, Qwen3Config
 
             qwen3_cfg = config.get("qwen3", {})
             model_name = qwen3_cfg.get("model_name", "auto")
@@ -723,13 +725,18 @@ try:
                     import torch
 
                     if torch.cuda.is_available():
-                        vram_gb = torch.cuda.get_device_properties(0).total_mem / (
-                            1024**3
+                        props = torch.cuda.get_device_properties(0)
+                        total_vram = getattr(
+                            props, "total_memory", getattr(props, "total_mem", 0)
                         )
+                        vram_gb = total_vram / (1024**3)
                         model_name = (
                             "Qwen/Qwen3-ASR-1.7B"
                             if vram_gb >= 5
                             else "Qwen/Qwen3-ASR-0.6B"
+                        )
+                        log(
+                            f"Auto-selected Qwen3 model by VRAM: {vram_gb:.1f}GB -> {model_name}"
                         )
                     else:
                         model_name = "Qwen/Qwen3-ASR-0.6B"

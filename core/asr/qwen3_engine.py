@@ -29,6 +29,7 @@ from numpy.typing import NDArray
 
 from .base import ASREngine, ASRResult, TranscriptType
 from ..logging import get_system_logger
+from ..utils.import_workarounds import prepare_qwen_asr_import
 
 logger = get_system_logger()
 
@@ -49,6 +50,7 @@ def _qwen3_log(msg: str) -> None:
 # Lazy imports - qwen_asr is heavy
 Qwen3ASRModel: Any | None = None
 _qwen3_available: bool | None = None
+_qwen3_unavailable_reason: str = ""
 
 
 def check_cuda_available() -> tuple[bool, str]:
@@ -161,17 +163,21 @@ def select_optimal_model(vram_gb: float) -> tuple[str, str]:
 
 def check_qwen3_installation() -> bool:
     """Check if qwen_asr is available (lazy check)."""
-    global Qwen3ASRModel, _qwen3_available
+    global Qwen3ASRModel, _qwen3_available, _qwen3_unavailable_reason
     if _qwen3_available is not None:
         return _qwen3_available
     try:
+        prepare_qwen_asr_import()
         from qwen_asr import Qwen3ASRModel as _Qwen3ASRModel  # type: ignore[reportMissingTypeStubs]
 
         Qwen3ASRModel = _Qwen3ASRModel
         _qwen3_available = True
-    except ImportError:
+        _qwen3_unavailable_reason = ""
+    except Exception as exc:
         _qwen3_available = False
-        logger.warning("qwen_asr not installed. Run: pip install qwen-asr")
+        _qwen3_unavailable_reason = str(exc)
+        logger.warning(f"qwen_asr unavailable: {exc}")
+        _qwen3_log(f"[IMPORT] qwen_asr unavailable: {exc}")
     return _qwen3_available
 
 
@@ -302,7 +308,8 @@ class Qwen3ASREngine(ASREngine):
         """Load the Qwen3-ASR model with automatic device/model/dtype selection."""
         check_qwen3_installation()
         if not _qwen3_available:
-            raise RuntimeError("qwen_asr not installed. Run: pip install qwen-asr")
+            detail = _qwen3_unavailable_reason or "unknown reason"
+            raise RuntimeError(f"qwen_asr unavailable: {detail}")
         if Qwen3ASRModel is None:
             raise RuntimeError("Qwen3ASRModel unavailable after import")
 

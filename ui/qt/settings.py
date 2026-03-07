@@ -53,10 +53,10 @@ from aria.core.utils.phonetic import get_matcher
 def check_qwen_asr_installed() -> bool:
     """检查 qwen-asr 是否已安装。"""
     try:
-        import qwen_asr  # noqa: F401
+        from aria.core.asr.qwen3_engine import check_qwen3_installation
 
-        return True
-    except ImportError:
+        return check_qwen3_installation()
+    except Exception:
         return False
 
 

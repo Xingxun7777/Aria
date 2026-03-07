@@ -4,12 +4,13 @@ Build Aria.exe Launcher
 Compiles launcher_stub.py to a small EXE using PyInstaller.
 
 Usage:
-    python build_portable/build_launcher_exe.py
+    python build_portable/build_launcher_exe.py [--dist-name NAME]
 
 Output:
-    dist_portable/Aria/Aria.exe
+    dist_portable/<NAME>/Aria.exe
 """
 
+import argparse
 import subprocess
 import sys
 import shutil
@@ -21,7 +22,26 @@ DIST_DIR = PROJECT_ROOT / "dist_portable" / "Aria"
 
 
 def main():
+    global DIST_DIR
+
+    parser = argparse.ArgumentParser(description="Build Aria.exe launcher")
+    parser.add_argument(
+        "--dist-name",
+        default="Aria",
+        help="Output directory name under dist_portable/ (default: Aria)",
+    )
+    args = parser.parse_args()
+
+    dist_name = args.dist_name.strip()
+    if not dist_name or dist_name in {".", ".."}:
+        parser.error("--dist-name must be a non-empty directory name")
+    if Path(dist_name).name != dist_name:
+        parser.error("--dist-name must be a single directory name, not a path")
+
+    DIST_DIR = PROJECT_ROOT / "dist_portable" / dist_name
+
     print("[BUILD] Building Aria.exe launcher...")
+    print(f"[BUILD] Target dist dir: {DIST_DIR}")
 
     # Check PyInstaller
     try:
@@ -52,7 +72,7 @@ def main():
         "--clean",  # Clean build
         "--noconfirm",  # Overwrite without asking
         f"--name=Aria",  # Output name
-        f"--distpath={DIST_DIR}",  # Output to dist_portable/Aria/
+        f"--distpath={DIST_DIR}",  # Output to dist_portable/<NAME>/
         f"--workpath={BUILD_DIR}/.pyinstaller_build",
         f"--specpath={BUILD_DIR}",
     ]

@@ -101,7 +101,9 @@ Aria/
 │   ├── build.py           # 主打包脚本 (嵌入式Python + 代码 + 依赖)
 │   ├── build_launcher_exe.py  # 编译 Aria.exe 启动器
 │   ├── launcher_stub.py   # EXE 源码 (最小启动器)
-│   ├── release.bat        # 一键打包 (build + exe + 验证)
+│   ├── release-lite.bat   # Lite 打包 (GitHub 发布)
+│   ├── release-full.bat   # Full 打包 (网盘离线包)
+│   ├── release.bat        # 兼容入口 (lite/full 分发)
 │   └── RELEASE_GUIDE.md   # 发布指南
 │
 ├── assets/aria.ico        # 应用图标
@@ -163,12 +165,13 @@ Aria/
 ### 命令
 ```powershell
 cd Aria
-.\build_portable\release.bat
+.\build_portable\release-lite.bat
+.\build_portable\release-full.bat
 ```
 
 ### 打包流程
 1. 下载 Python 3.12.4 嵌入式 (缓存复用)
-2. 创建 `dist_portable/Aria/_internal/` 结构
+2. 创建 `dist_portable/<dist-name>/_internal/` 结构
 3. 配置 `python312._pth` (stdlib → site-packages → app → app\aria)
 4. 复制源码到 `_internal/app/aria/`
 5. **清理敏感数据** (用 template 替换用户配置, 日志/录音 → 删除)
@@ -179,7 +182,7 @@ cd Aria
 
 ### 输出
 ```
-dist_portable/Aria/
+dist_portable/Aria_release_lite/   # 或 Aria_release_full/
 ├── Aria.exe           # 主入口 (双击启动)
 ├── Aria.cmd           # 命令行启动
 ├── Aria.vbs           # 静默启动

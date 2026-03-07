@@ -1,48 +1,51 @@
 @echo off
+setlocal
 chcp 65001 >nul
-echo ================================================
-echo    Aria 便携版打包脚本
-echo ================================================
-echo.
 
-cd /d %~dp0..
-
-echo [1/3] 打包便携版...
-.venv\Scripts\python.exe build_portable\build.py
-if errorlevel 1 (
-    echo 打包失败！
-    pause
-    exit /b 1
+if /I "%~1"=="full" (
+    call "%~dp0release-full.bat" %~2
+    exit /b %errorlevel%
 )
 
-echo.
-echo [2/3] 编译 EXE 启动器...
-.venv\Scripts\python.exe build_portable\build_launcher_exe.py
-if errorlevel 1 (
-    echo EXE 编译失败！
-    pause
-    exit /b 1
+if /I "%~1"=="lite" (
+    call "%~dp0release-lite.bat" %~2
+    exit /b %errorlevel%
 )
 
-echo.
-echo [3/3] 验证敏感数据已清理...
-findstr /c:"sk-or-v1" dist_portable\Aria\_internal\app\aria\config\hotwords.json >nul 2>&1
-if not errorlevel 1 (
-    echo 警告：发现 API Key 未清理！
-    pause
-    exit /b 1
+if "%~1"=="" (
+    echo [INFO] 未指定模式，默认构建 lite 包。
+    echo [INFO] 如需完整离线傻瓜包，请运行: build_portable\release-full.bat
+    echo.
+    call "%~dp0release-lite.bat" %~2
+    exit /b %errorlevel%
 )
-echo API Key: 已清理 ✓
 
+if /I "%~1"=="help" goto :usage_ok
+if /I "%~1"=="--help" goto :usage_ok
+if /I "%~1"=="-h" goto :usage_ok
+
+echo [ERROR] 未知模式: %~1
 echo.
-echo ================================================
-echo    打包完成！
-echo ================================================
+:usage
+echo 用法:
+echo   build_portable\release.bat lite
+echo   build_portable\release.bat full
+echo   build_portable\release.bat lite dry-run
+echo   build_portable\release.bat full dry-run
 echo.
-echo 输出目录: dist_portable\Aria\
+echo 或直接使用:
+echo   build_portable\release-lite.bat
+echo   build_portable\release-full.bat
+exit /b 1
+
+:usage_ok
+echo 用法:
+echo   build_portable\release.bat lite
+echo   build_portable\release.bat full
+echo   build_portable\release.bat lite dry-run
+echo   build_portable\release.bat full dry-run
 echo.
-echo 下一步:
-echo   1. 测试: dist_portable\Aria\Aria.exe
-echo   2. 压缩: 7z a Aria-v1.0.0.7z dist_portable\Aria\
-echo.
-pause
+echo 或直接使用:
+echo   build_portable\release-lite.bat
+echo   build_portable\release-full.bat
+exit /b 0
