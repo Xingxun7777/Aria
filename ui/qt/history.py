@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QKeySequence, QCursor, QShortcut
 
+from . import styles
+
 
 class HistoryItem(QFrame):
     """Single history item - click anywhere to copy."""
@@ -41,23 +43,24 @@ class HistoryItem(QFrame):
         self, text: str, timestamp: str, index: int, filename: str = "", parent=None
     ):
         super().__init__(parent)
+        self._theme = styles.get_theme_palette()
         self.text = text
         self.index = index
         self.filename = filename  # Store filename for deletion
         self._delete_pending = False  # Flag to prevent copy when delete is clicked
 
         self.setStyleSheet(
-            """
-            HistoryItem {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+            f"""
+            HistoryItem {{
+                background-color: {self._theme.button_bg};
+                border: 1px solid {self._theme.border};
                 border-radius: 8px;
                 padding: 8px;
-            }
-            HistoryItem:hover {
-                background-color: rgba(255, 255, 255, 0.1);
-                border-color: rgba(100, 180, 255, 0.3);
-            }
+            }}
+            HistoryItem:hover {{
+                background-color: {self._theme.button_hover_bg};
+                border-color: {self._theme.accent_border};
+            }}
         """
         )
 
@@ -70,11 +73,11 @@ class HistoryItem(QFrame):
 
         time_label = QLabel(timestamp)
         time_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.5);
+            f"""
+            QLabel {{
+                color: {self._theme.text_muted};
                 font-size: 11px;
-            }
+            }}
         """
         )
         time_label.setAttribute(Qt.WA_TransparentForMouseEvents)  # Pass clicks through
@@ -85,11 +88,11 @@ class HistoryItem(QFrame):
         # Copy hint (shows on hover via CSS)
         self._copy_hint = QLabel("点击复制")
         self._copy_hint.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(100, 180, 255, 0.6);
+            f"""
+            QLabel {{
+                color: {self._theme.accent};
                 font-size: 10px;
-            }
+            }}
         """
         )
         self._copy_hint.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -100,19 +103,19 @@ class HistoryItem(QFrame):
         delete_btn.setFixedSize(20, 20)
         delete_btn.setCursor(Qt.PointingHandCursor)
         delete_btn.setStyleSheet(
-            """
-            QPushButton {
-                color: rgba(255, 255, 255, 0.4);
+            f"""
+            QPushButton {{
+                color: {self._theme.text_muted};
                 background: transparent;
                 border: none;
                 font-size: 14px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                color: rgba(255, 100, 100, 0.9);
-                background: rgba(255, 100, 100, 0.15);
+            }}
+            QPushButton:hover {{
+                color: {self._theme.danger};
+                background: {self._theme.danger_soft};
                 border-radius: 4px;
-            }
+            }}
         """
         )
         delete_btn.clicked.connect(self._on_delete_clicked)
@@ -124,12 +127,12 @@ class HistoryItem(QFrame):
         self._text_label = QLabel(text)
         self._text_label.setWordWrap(True)
         self._text_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.9);
+            f"""
+            QLabel {{
+                color: {self._theme.text_primary};
                 font-size: 13px;
                 line-height: 1.4;
-            }
+            }}
         """
         )
         # Make text label pass mouse events to parent for click-to-copy
@@ -174,6 +177,7 @@ class HistoryWindow(QWidget):
 
     def __init__(self, debug_log_dir: Optional[Path] = None, parent=None):
         super().__init__(parent)
+        self._theme = styles.get_theme_palette()
 
         self.debug_log_dir = (
             debug_log_dir or Path(__file__).parent.parent.parent / "DebugLog"
@@ -203,12 +207,12 @@ class HistoryWindow(QWidget):
         # Container with background
         self.container = QFrame()
         self.container.setStyleSheet(
-            """
-            QFrame {
-                background-color: rgba(35, 35, 40, 0.95);
+            f"""
+            QFrame {{
+                background-color: {self._theme.panel_bg};
                 border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }
+                border: 1px solid {self._theme.border};
+            }}
         """
         )
         container_layout = QVBoxLayout(self.container)
@@ -220,12 +224,12 @@ class HistoryWindow(QWidget):
 
         title = QLabel("历史记录 (原始ASR)")
         title.setStyleSheet(
-            """
-            QLabel {
-                color: white;
+            f"""
+            QLabel {{
+                color: {self._theme.text_primary};
                 font-size: 14px;
                 font-weight: bold;
-            }
+            }}
         """
         )
         title_row.addWidget(title)
@@ -235,20 +239,20 @@ class HistoryWindow(QWidget):
         self._clear_btn = QPushButton("清空")
         self._clear_btn.setCursor(Qt.PointingHandCursor)
         self._clear_btn.setStyleSheet(
-            """
-            QPushButton {
-                color: rgba(255, 150, 150, 0.8);
+            f"""
+            QPushButton {{
+                color: {self._theme.danger};
                 background: transparent;
-                border: 1px solid rgba(255, 150, 150, 0.3);
+                border: 1px solid {self._theme.danger_border};
                 border-radius: 4px;
                 padding: 3px 10px;
                 font-size: 11px;
-            }
-            QPushButton:hover {
-                color: rgba(255, 100, 100, 1.0);
-                background: rgba(255, 100, 100, 0.15);
-                border-color: rgba(255, 100, 100, 0.5);
-            }
+            }}
+            QPushButton:hover {{
+                color: {self._theme.danger};
+                background: {self._theme.danger_soft};
+                border-color: {self._theme.danger_border};
+            }}
         """
         )
         self._clear_btn.clicked.connect(self._clear_all)
@@ -259,12 +263,12 @@ class HistoryWindow(QWidget):
         # Hint
         hint = QLabel("显示未润色文本，点击复制")
         hint.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.5);
+            f"""
+            QLabel {{
+                color: {self._theme.text_muted};
                 font-size: 11px;
                 padding-bottom: 8px;
-            }
+            }}
         """
         )
         container_layout.addWidget(hint)
@@ -273,27 +277,27 @@ class HistoryWindow(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(
-            """
-            QScrollArea {
+            f"""
+            QScrollArea {{
                 border: none;
                 background: transparent;
-            }
-            QScrollBar:vertical {
-                background: rgba(255, 255, 255, 0.05);
+            }}
+            QScrollBar:vertical {{
+                background: {self._theme.scrollbar_track};
                 width: 8px;
                 border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(255, 255, 255, 0.2);
+            }}
+            QScrollBar::handle:vertical {{
+                background: {self._theme.scrollbar_handle};
                 border-radius: 4px;
                 min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(255, 255, 255, 0.3);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {self._theme.border_strong};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
-            }
+            }}
         """
         )
 
@@ -309,12 +313,12 @@ class HistoryWindow(QWidget):
         # Empty state label
         self.empty_label = QLabel("暂无历史记录")
         self.empty_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.4);
+            f"""
+            QLabel {{
+                color: {self._theme.text_muted};
                 font-size: 12px;
                 padding: 20px;
-            }
+            }}
         """
         )
         self.empty_label.setAlignment(Qt.AlignCenter)
@@ -333,7 +337,7 @@ class HistoryWindow(QWidget):
         """Apply drop shadow effect."""
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 100))
+        shadow.setColor(styles.qcolor(self._theme.popup_shadow))
         shadow.setOffset(0, 4)
         self.container.setGraphicsEffect(shadow)
 

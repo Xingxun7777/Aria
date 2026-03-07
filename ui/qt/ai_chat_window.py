@@ -45,6 +45,8 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 
+from . import styles
+
 
 @dataclass
 class ChatMessage:
@@ -58,9 +60,15 @@ class ChatMessage:
 class MessageBubble(QFrame):
     """A single message bubble in the chat."""
 
-    def __init__(self, message: ChatMessage, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        message: ChatMessage,
+        theme: styles.ThemePalette,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.message = message
+        self._theme = theme
         self._init_ui()
 
     def _init_ui(self):
@@ -80,30 +88,30 @@ class MessageBubble(QFrame):
         # Style based on role
         if self.message.role == "user":
             self.setStyleSheet(
-                """
-                MessageBubble {
-                    background: #2563EB;
+                f"""
+                MessageBubble {{
+                    background: {self._theme.user_bubble_bg};
                     border-radius: 12px;
                     margin-left: 40px;
-                }
-                QLabel {
-                    color: white;
+                }}
+                QLabel {{
+                    color: {self._theme.user_bubble_text};
                     font-size: 13px;
-                }
+                }}
             """
             )
         else:
             self.setStyleSheet(
-                """
-                MessageBubble {
-                    background: #374151;
+                f"""
+                MessageBubble {{
+                    background: {self._theme.assistant_bubble_bg};
                     border-radius: 12px;
                     margin-right: 40px;
-                }
-                QLabel {
-                    color: #E5E7EB;
+                }}
+                QLabel {{
+                    color: {self._theme.assistant_bubble_text};
                     font-size: 13px;
-                }
+                }}
             """
             )
 
@@ -128,7 +136,7 @@ class MessageBubble(QFrame):
         # Code blocks (```code```)
         text = re.sub(
             r"```(\w*)\n?(.*?)```",
-            r'<pre style="background:#1F2937;padding:8px;border-radius:4px;overflow-x:auto;"><code>\2</code></pre>',
+            f'<pre style="background:{self._theme.code_bg};padding:8px;border-radius:4px;overflow-x:auto;"><code>\\2</code></pre>',
             text,
             flags=re.DOTALL,
         )
@@ -136,7 +144,7 @@ class MessageBubble(QFrame):
         # Inline code (`code`)
         text = re.sub(
             r"`([^`]+)`",
-            r'<code style="background:#1F2937;padding:2px 4px;border-radius:2px;">\1</code>',
+            f'<code style="background:{self._theme.code_bg};padding:2px 4px;border-radius:2px;">\\1</code>',
             text,
         )
 
@@ -170,15 +178,15 @@ class AIChatWindow(QWidget):
     insertRequested = Signal(str)  # Emits text to insert
     closed = Signal()
 
-    # Style constants
     WINDOW_WIDTH = 400
     WINDOW_HEIGHT = 500
-    BG_COLOR = QColor(30, 30, 30, 250)
-    BORDER_COLOR = QColor(64, 64, 64)
-    HEADER_COLOR = QColor(40, 40, 40)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._theme = styles.get_theme_palette()
+        self.BG_COLOR = styles.qcolor(self._theme.panel_bg)
+        self.BORDER_COLOR = styles.qcolor(self._theme.border)
+        self.HEADER_COLOR = styles.qcolor(self._theme.header_bg)
 
         self.setWindowFlags(
             Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -207,8 +215,8 @@ class AIChatWindow(QWidget):
         container.setStyleSheet(
             f"""
             QFrame {{
-                background: {self.BG_COLOR.name()};
-                border: 1px solid {self.BORDER_COLOR.name()};
+                background: {self._theme.panel_bg};
+                border: 1px solid {self._theme.border};
                 border-radius: 8px;
             }}
         """
@@ -223,10 +231,10 @@ class AIChatWindow(QWidget):
         header.setStyleSheet(
             f"""
             QFrame {{
-                background: {self.HEADER_COLOR.name()};
+                background: {self._theme.header_bg};
                 border-top-left-radius: 8px;
                 border-top-right-radius: 8px;
-                border-bottom: 1px solid {self.BORDER_COLOR.name()};
+                border-bottom: 1px solid {self._theme.border};
             }}
         """
         )
@@ -234,7 +242,9 @@ class AIChatWindow(QWidget):
         header_layout.setContentsMargins(12, 0, 8, 0)
 
         title = QLabel("AI 对话")
-        title.setStyleSheet("color: #E5E7EB; font-size: 13px; font-weight: bold;")
+        title.setStyleSheet(
+            f"color: {self._theme.text_primary}; font-size: 13px; font-weight: bold;"
+        )
         header_layout.addWidget(title)
         header_layout.addStretch()
 
@@ -243,19 +253,19 @@ class AIChatWindow(QWidget):
         new_chat_btn.setFixedHeight(22)
         new_chat_btn.setCursor(Qt.PointingHandCursor)
         new_chat_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background: transparent;
-                color: #9CA3AF;
+                color: {self._theme.text_secondary};
                 font-size: 11px;
-                border: 1px solid #4B5563;
+                border: 1px solid {self._theme.border_strong};
                 border-radius: 4px;
                 padding: 0 8px;
-            }
-            QPushButton:hover {
-                background: #374151;
-                color: #E5E7EB;
-            }
+            }}
+            QPushButton:hover {{
+                background: {self._theme.button_hover_bg};
+                color: {self._theme.text_primary};
+            }}
         """
         )
         new_chat_btn.clicked.connect(self._new_chat)
@@ -266,19 +276,19 @@ class AIChatWindow(QWidget):
         save_btn.setFixedHeight(22)
         save_btn.setCursor(Qt.PointingHandCursor)
         save_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background: transparent;
-                color: #9CA3AF;
+                color: {self._theme.text_secondary};
                 font-size: 11px;
-                border: 1px solid #4B5563;
+                border: 1px solid {self._theme.border_strong};
                 border-radius: 4px;
                 padding: 0 8px;
-            }
-            QPushButton:hover {
-                background: #374151;
-                color: #E5E7EB;
-            }
+            }}
+            QPushButton:hover {{
+                background: {self._theme.button_hover_bg};
+                color: {self._theme.text_primary};
+            }}
         """
         )
         save_btn.clicked.connect(self._save_chat)
@@ -287,18 +297,18 @@ class AIChatWindow(QWidget):
         close_btn = QPushButton("×")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background: transparent;
-                color: #9CA3AF;
+                color: {self._theme.text_secondary};
                 font-size: 18px;
                 border: none;
                 border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #374151;
-                color: #EF4444;
-            }
+            }}
+            QPushButton:hover {{
+                background: {self._theme.button_hover_bg};
+                color: {self._theme.danger};
+            }}
         """
         )
         close_btn.clicked.connect(self.close)
@@ -309,14 +319,14 @@ class AIChatWindow(QWidget):
         # Context quote area
         self._quote_frame = QFrame()
         self._quote_frame.setStyleSheet(
-            """
-            QFrame {
-                background: #1F2937;
-                border-left: 3px solid #3B82F6;
+            f"""
+            QFrame {{
+                background: {self._theme.quote_bg};
+                border-left: 3px solid {self._theme.quote_border};
                 margin: 8px;
                 padding: 8px;
                 border-radius: 4px;
-            }
+            }}
         """
         )
         quote_layout = QVBoxLayout(self._quote_frame)
@@ -324,7 +334,9 @@ class AIChatWindow(QWidget):
 
         self._quote_label = QLabel()
         self._quote_label.setWordWrap(True)
-        self._quote_label.setStyleSheet("color: #9CA3AF; font-size: 12px;")
+        self._quote_label.setStyleSheet(
+            f"color: {self._theme.text_secondary}; font-size: 12px;"
+        )
         self._quote_label.setMaximumHeight(50)
         quote_layout.addWidget(self._quote_label)
 
@@ -335,20 +347,20 @@ class AIChatWindow(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setStyleSheet(
-            """
-            QScrollArea {
+            f"""
+            QScrollArea {{
                 border: none;
                 background: transparent;
-            }
-            QScrollBar:vertical {
-                background: #1F2937;
+            }}
+            QScrollBar:vertical {{
+                background: {self._theme.scrollbar_track};
                 width: 8px;
                 border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: #4B5563;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {self._theme.scrollbar_handle};
                 border-radius: 4px;
-            }
+            }}
         """
         )
 
@@ -366,8 +378,8 @@ class AIChatWindow(QWidget):
         input_frame.setStyleSheet(
             f"""
             QFrame {{
-                background: {self.HEADER_COLOR.name()};
-                border-top: 1px solid {self.BORDER_COLOR.name()};
+                background: {self._theme.header_bg};
+                border-top: 1px solid {self._theme.border};
                 border-bottom-left-radius: 8px;
                 border-bottom-right-radius: 8px;
             }}
@@ -381,18 +393,18 @@ class AIChatWindow(QWidget):
         self._input_edit.setPlaceholderText("输入问题...")
         self._input_edit.setMaximumHeight(60)
         self._input_edit.setStyleSheet(
-            """
-            QTextEdit {
-                background: #374151;
-                color: #E5E7EB;
-                border: 1px solid #4B5563;
+            f"""
+            QTextEdit {{
+                background: {self._theme.input_bg};
+                color: {self._theme.text_primary};
+                border: 1px solid {self._theme.border_strong};
                 border-radius: 4px;
                 padding: 4px 8px;
                 font-size: 13px;
-            }
-            QTextEdit:focus {
-                border-color: #3B82F6;
-            }
+            }}
+            QTextEdit:focus {{
+                border-color: {self._theme.accent};
+            }}
         """
         )
         input_layout.addWidget(self._input_edit, 1)
@@ -400,21 +412,21 @@ class AIChatWindow(QWidget):
         self._send_btn = QPushButton("发送")
         self._send_btn.setFixedSize(60, 32)
         self._send_btn.setStyleSheet(
-            """
-            QPushButton {
-                background: #3B82F6;
-                color: white;
+            f"""
+            QPushButton {{
+                background: {self._theme.accent};
+                color: {self._theme.text_inverse};
                 border: none;
                 border-radius: 4px;
                 font-size: 13px;
-            }
-            QPushButton:hover {
-                background: #2563EB;
-            }
-            QPushButton:disabled {
-                background: #4B5563;
-                color: #9CA3AF;
-            }
+            }}
+            QPushButton:hover {{
+                background: {self._theme.accent_hover};
+            }}
+            QPushButton:disabled {{
+                background: {self._theme.button_bg};
+                color: {self._theme.text_muted};
+            }}
         """
         )
         self._send_btn.clicked.connect(self._on_send_clicked)
@@ -436,21 +448,21 @@ class AIChatWindow(QWidget):
         for btn in [self._copy_btn, self._insert_btn, self._retry_btn]:
             btn.setFixedHeight(28)
             btn.setStyleSheet(
-                """
-                QPushButton {
-                    background: #374151;
-                    color: #E5E7EB;
-                    border: 1px solid #4B5563;
+                f"""
+                QPushButton {{
+                    background: {self._theme.button_bg};
+                    color: {self._theme.text_primary};
+                    border: 1px solid {self._theme.border_strong};
                     border-radius: 4px;
                     padding: 0 12px;
                     font-size: 12px;
-                }
-                QPushButton:hover {
-                    background: #4B5563;
-                }
-                QPushButton:disabled {
-                    color: #6B7280;
-                }
+                }}
+                QPushButton:hover {{
+                    background: {self._theme.button_hover_bg};
+                }}
+                QPushButton:disabled {{
+                    color: {self._theme.text_muted};
+                }}
             """
             )
 
@@ -558,7 +570,7 @@ class AIChatWindow(QWidget):
     def _add_message(self, message: ChatMessage) -> MessageBubble:
         """Add a message to the chat."""
         self._messages.append(message)
-        bubble = MessageBubble(message)
+        bubble = MessageBubble(message, self._theme)
 
         # Insert before the stretch
         self._messages_layout.insertWidget(self._messages_layout.count() - 1, bubble)
@@ -621,16 +633,17 @@ class AIChatWindow(QWidget):
                 f"错误: {error_msg}", is_streaming=False
             )
             self._current_bubble.setStyleSheet(
-                """
-                MessageBubble {
-                    background: #7F1D1D;
+                f"""
+                MessageBubble {{
+                    background: {self._theme.danger_soft};
+                    border: 1px solid {self._theme.danger_border};
                     border-radius: 12px;
                     margin-right: 40px;
-                }
-                QLabel {
-                    color: #FCA5A5;
+                }}
+                QLabel {{
+                    color: {self._theme.danger};
                     font-size: 13px;
-                }
+                }}
             """
             )
         self._is_generating = False
@@ -727,9 +740,9 @@ class AIChatWindow(QWidget):
 
                 for msg in self._messages:
                     if msg.role == "user":
-                        f.write(f"## 👤 用户\n\n{msg.content}\n\n")
+                        f.write(f"## 用户\n\n{msg.content}\n\n")
                     else:
-                        f.write(f"## 🤖 AI\n\n{msg.content}\n\n")
+                        f.write(f"## AI\n\n{msg.content}\n\n")
 
             print(f"[AIChatWindow] Saved chat to {path}")
         except Exception as e:

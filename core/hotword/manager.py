@@ -706,7 +706,7 @@ class HotWordManager:
         """
         Load example sentences from config file.
 
-        ⚠️ WARNING: Example sentences cause HALLUCINATION in Qwen3-ASR!
+        WARNING: Example sentences cause HALLUCINATION in Qwen3-ASR!
         When audio is short/ambiguous, the model outputs example sentences
         verbatim instead of actual speech. This feature is DISABLED.
 

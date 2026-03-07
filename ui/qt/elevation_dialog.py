@@ -136,7 +136,7 @@ class ElevationWarningDialog(QWidget):
         header_layout.addStretch()
 
         # Close button (X)
-        self._close_btn = QPushButton("\u2715")  # ✕
+        self._close_btn = QPushButton("×")
         self._close_btn.setFixedSize(24, 24)
         self._close_btn.setCursor(Qt.PointingHandCursor)
         self._close_btn.setStyleSheet(

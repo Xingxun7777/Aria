@@ -67,6 +67,8 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 
+from . import styles
+
 
 class TranslationPopup(QWidget):
     """
@@ -80,18 +82,18 @@ class TranslationPopup(QWidget):
     copyRequested = Signal(str)  # Emits translated text for copying
     closed = Signal()
 
-    # Style constants
     POPUP_WIDTH = 420
     MAX_HEIGHT = 520
     CORNER_RADIUS = 8
-    BG_COLOR = QColor(30, 30, 30, 242)  # #1E1E1E with 95% opacity
-    BORDER_COLOR = QColor(64, 64, 64)
-    TEXT_COLOR = QColor(229, 229, 229)
-    SOURCE_COLOR = QColor(156, 163, 175)  # Gray for source text
-    LOADING_COLOR = QColor(147, 197, 253)  # Light blue for loading
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._theme = styles.get_theme_palette()
+        self.BG_COLOR = styles.qcolor(self._theme.panel_bg)
+        self.BORDER_COLOR = styles.qcolor(self._theme.border)
+        self.TEXT_COLOR = styles.qcolor(self._theme.text_primary)
+        self.SOURCE_COLOR = styles.qcolor(self._theme.text_secondary)
+        self.LOADING_COLOR = styles.qcolor(self._theme.accent)
 
         # Window flags for non-activating popup
         self.setWindowFlags(
@@ -154,24 +156,24 @@ class TranslationPopup(QWidget):
         header_layout.addStretch()
 
         # Close button
-        self._close_btn = QPushButton("✕")
+        self._close_btn = QPushButton("×")
         self._close_btn.setFixedSize(20, 20)
         self._close_btn.setCursor(Qt.PointingHandCursor)
         self._close_btn.setStyleSheet(
-            """
-            QPushButton {
+            f"""
+            QPushButton {{
                 background: transparent;
                 border: none;
-                color: #9CA3AF;
+                color: {self._theme.text_secondary};
                 font-size: 14px;
                 font-weight: bold;
                 padding: 0;
-            }
-            QPushButton:hover {
-                color: #E5E5E5;
-                background: rgba(255, 255, 255, 0.1);
+            }}
+            QPushButton:hover {{
+                color: {self._theme.text_primary};
+                background: {self._theme.button_hover_bg};
                 border-radius: 4px;
-            }
+            }}
         """
         )
         self._close_btn.clicked.connect(self._on_close_clicked)
@@ -208,27 +210,27 @@ class TranslationPopup(QWidget):
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll_area.setStyleSheet(
-            """
-            QScrollArea {
+            f"""
+            QScrollArea {{
                 background: transparent;
                 border: none;
-            }
-            QScrollBar:vertical {
+            }}
+            QScrollBar:vertical {{
                 background: transparent;
                 width: 6px;
                 margin: 0;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(255, 255, 255, 0.3);
+            }}
+            QScrollBar::handle:vertical {{
+                background: {self._theme.scrollbar_handle};
                 border-radius: 3px;
                 min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(255, 255, 255, 0.5);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {self._theme.border_strong};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
-            }
+            }}
         """
         )
         self._scroll_area.setMinimumHeight(150)  # Ensure readable area
@@ -272,7 +274,7 @@ class TranslationPopup(QWidget):
         # Add shadow effect
         self._shadow = QGraphicsDropShadowEffect(self)
         self._shadow.setBlurRadius(20)
-        self._shadow.setColor(QColor(0, 0, 0, 80))
+        self._shadow.setColor(styles.qcolor(self._theme.popup_shadow))
         self._shadow.setOffset(0, 4)
         # Note: Shadow applied to content widget would interfere with opacity effect
         # So we draw the shadow in paintEvent instead
@@ -517,7 +519,7 @@ class TranslationPopup(QWidget):
         self._result_label.setStyleSheet(
             f"""
             QLabel {{
-                color: #EF4444;
+                color: {self._theme.danger};
                 font-size: 14px;
                 padding: 0;
                 background: transparent;

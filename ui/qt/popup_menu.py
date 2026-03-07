@@ -23,14 +23,17 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QFont
 
+from . import styles
+
 
 class ToggleSwitch(QWidget):
     """iOS-style toggle switch."""
 
     toggled = Signal(bool)
 
-    def __init__(self, parent=None):
+    def __init__(self, theme: styles.ThemePalette, parent=None):
         super().__init__(parent)
+        self._theme = theme
         self._checked = False
         self._circle_pos = 3
         self.setFixedSize(44, 24)
@@ -72,9 +75,9 @@ class ToggleSwitch(QWidget):
 
         # Background
         if self._checked:
-            bg_color = QColor(76, 175, 80)  # Green
+            bg_color = QColor(self._theme.success)
         else:
-            bg_color = QColor(180, 180, 180)  # Gray
+            bg_color = QColor(self._theme.border_strong)
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(bg_color)
@@ -88,8 +91,11 @@ class ToggleSwitch(QWidget):
 class ModeButton(QPushButton):
     """Styled mode selection button."""
 
-    def __init__(self, text, icon_char="", parent=None):
+    def __init__(
+        self, text, theme: styles.ThemePalette, icon_char="", parent=None
+    ):
         super().__init__(parent)
+        self._theme = theme
         self.setText(text)
         self._icon_char = icon_char
         self._selected = False
@@ -99,24 +105,24 @@ class ModeButton(QPushButton):
         self.setStyleSheet(self._get_style())
 
     def _get_style(self):
-        return """
-            ModeButton {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+        return f"""
+            ModeButton {{
+                background-color: {self._theme.button_bg};
+                border: 1px solid {self._theme.border};
                 border-radius: 8px;
-                color: rgba(255, 255, 255, 0.8);
+                color: {self._theme.text_primary};
                 font-size: 13px;
                 padding: 4px 12px;
-            }
-            ModeButton:hover {
-                background-color: rgba(255, 255, 255, 0.15);
-                border-color: rgba(255, 255, 255, 0.25);
-            }
-            ModeButton:checked {
-                background-color: rgba(100, 180, 255, 0.3);
-                border-color: rgba(100, 180, 255, 0.6);
-                color: white;
-            }
+            }}
+            ModeButton:hover {{
+                background-color: {self._theme.button_hover_bg};
+                border-color: {self._theme.border_strong};
+            }}
+            ModeButton:checked {{
+                background-color: {self._theme.accent_soft};
+                border-color: {self._theme.accent_border};
+                color: {self._theme.text_primary};
+            }}
         """
 
 
@@ -142,6 +148,7 @@ class PopupMenu(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._theme = styles.get_theme_palette()
         self._enabled = True
         self._current_mode = "quality"  # Default matches template
         self._is_locked = False
@@ -167,15 +174,7 @@ class PopupMenu(QWidget):
 
         # Container with background
         self.container = QFrame()
-        self.container.setStyleSheet(
-            """
-            QFrame {
-                background-color: rgba(35, 35, 40, 0.95);
-                border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }
-        """
-        )
+        self.container.setStyleSheet(self._container_style())
         container_layout = QVBoxLayout(self.container)
         container_layout.setContentsMargins(12, 12, 12, 12)
         container_layout.setSpacing(12)
@@ -183,16 +182,8 @@ class PopupMenu(QWidget):
         # --- Enable Toggle Row ---
         enable_row = QHBoxLayout()
         enable_label = QLabel("Aria")
-        enable_label.setStyleSheet(
-            """
-            QLabel {
-                color: white;
-                font-size: 14px;
-                font-weight: bold;
-            }
-        """
-        )
-        self.toggle = ToggleSwitch()
+        enable_label.setStyleSheet(self._label_style("title"))
+        self.toggle = ToggleSwitch(self._theme)
         self.toggle.setChecked(True)
         self.toggle.toggled.connect(self._on_enable_toggled)
 
@@ -202,34 +193,19 @@ class PopupMenu(QWidget):
         container_layout.addLayout(enable_row)
 
         # --- Engine Info Row ---
-        self.engine_label = QLabel(f"🎤 {self._engine_info}")
-        self.engine_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.5);
-                font-size: 11px;
-                padding: 2px 0;
-            }
-        """
-        )
+        self.engine_label = QLabel(f"ASR: {self._engine_info}")
+        self.engine_label.setStyleSheet(self._label_style("muted"))
         container_layout.addWidget(self.engine_label)
 
         # --- Separator ---
         separator = QFrame()
         separator.setFixedHeight(1)
-        separator.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        separator.setStyleSheet(self._separator_style())
         container_layout.addWidget(separator)
 
         # --- Polish Mode Label ---
         mode_label = QLabel("润色模式")
-        mode_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.6);
-                font-size: 11px;
-            }
-        """
-        )
+        mode_label.setStyleSheet(self._label_style("section"))
         container_layout.addWidget(mode_label)
 
         # --- Mode Buttons ---
@@ -243,7 +219,7 @@ class PopupMenu(QWidget):
         ]
 
         for mode_id, mode_name, tooltip in modes:
-            btn = ModeButton(mode_name)
+            btn = ModeButton(mode_name, self._theme)
             btn.setToolTip(tooltip)
             btn.setProperty("mode_id", mode_id)
             self.mode_group.addButton(btn)
@@ -257,19 +233,12 @@ class PopupMenu(QWidget):
         # --- Separator ---
         separator2 = QFrame()
         separator2.setFixedHeight(1)
-        separator2.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        separator2.setStyleSheet(self._separator_style())
         container_layout.addWidget(separator2)
 
         # --- Translation Output Mode Section ---
         translate_mode_label = QLabel("翻译输出模式")
-        translate_mode_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.6);
-                font-size: 11px;
-            }
-        """
-        )
+        translate_mode_label.setStyleSheet(self._label_style("section"))
         container_layout.addWidget(translate_mode_label)
 
         # Translation mode buttons row
@@ -279,23 +248,24 @@ class PopupMenu(QWidget):
         self.translate_mode_group = QButtonGroup(self)
         self.translate_mode_group.setExclusive(True)
 
-        mode_btn_style = """
-            QPushButton {
-                background-color: rgba(60, 60, 70, 0.8);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+        mode_btn_style = f"""
+            QPushButton {{
+                background-color: {self._theme.button_bg};
+                border: 1px solid {self._theme.border};
                 border-radius: 6px;
-                color: white;
+                color: {self._theme.text_primary};
                 font-size: 12px;
                 padding: 6px 12px;
-            }
-            QPushButton:hover {
-                background-color: rgba(80, 80, 95, 0.9);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-            }
-            QPushButton:checked {
-                background-color: rgba(76, 175, 80, 0.8);
-                border: 1px solid rgba(76, 175, 80, 0.5);
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {self._theme.button_hover_bg};
+                border: 1px solid {self._theme.border_strong};
+            }}
+            QPushButton:checked {{
+                background-color: {self._theme.accent_soft};
+                border: 1px solid {self._theme.accent_border};
+                color: {self._theme.text_primary};
+            }}
         """
 
         self.translate_popup_btn = QPushButton("弹窗")
@@ -325,49 +295,27 @@ class PopupMenu(QWidget):
         # --- Separator ---
         separator3 = QFrame()
         separator3.setFixedHeight(1)
-        separator3.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        separator3.setStyleSheet(self._separator_style())
         container_layout.addWidget(separator3)
 
         # --- Settings Button ---
         self.settings_btn = QPushButton("高级设置")
         self.settings_btn.setCursor(Qt.PointingHandCursor)
-        self.settings_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                color: rgba(100, 180, 255, 0.9);
-                font-size: 13px;
-                padding: 6px;
-                text-align: center;
-            }
-            QPushButton:hover {
-                color: rgba(130, 200, 255, 1.0);
-                text-decoration: underline;
-            }
-        """
-        )
+        self.settings_btn.setStyleSheet(self._link_button_style())
         self.settings_btn.clicked.connect(self._on_settings_clicked)
         container_layout.addWidget(self.settings_btn)
 
         # --- Separator ---
         separator3 = QFrame()
         separator3.setFixedHeight(1)
-        separator3.setStyleSheet("background-color: rgba(255, 255, 255, 0.1);")
+        separator3.setStyleSheet(self._separator_style())
         container_layout.addWidget(separator3)
 
         # --- Lock Position Row ---
         lock_row = QHBoxLayout()
-        lock_label = QLabel("🔒 锁定位置")
-        lock_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.8);
-                font-size: 13px;
-            }
-        """
-        )
-        self.lock_toggle = ToggleSwitch()
+        lock_label = QLabel("锁定位置")
+        lock_label.setStyleSheet(self._label_style("row"))
+        self.lock_toggle = ToggleSwitch(self._theme)
         self.lock_toggle.setChecked(False)
         self.lock_toggle.toggled.connect(self._on_lock_toggled)
 
@@ -378,16 +326,9 @@ class PopupMenu(QWidget):
 
         # --- Sleep Toggle Row ---
         sleep_row = QHBoxLayout()
-        sleep_label = QLabel("😴 休眠模式")
-        sleep_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.8);
-                font-size: 13px;
-            }
-        """
-        )
-        self.sleep_toggle = ToggleSwitch()
+        sleep_label = QLabel("休眠模式")
+        sleep_label.setStyleSheet(self._label_style("row"))
+        self.sleep_toggle = ToggleSwitch(self._theme)
         self.sleep_toggle.setChecked(False)
         self.sleep_toggle.toggled.connect(self._on_sleep_toggled)
 
@@ -398,16 +339,9 @@ class PopupMenu(QWidget):
 
         # --- Streaming Display Toggle Row ---
         streaming_row = QHBoxLayout()
-        streaming_label = QLabel("💬 实时字幕")
-        streaming_label.setStyleSheet(
-            """
-            QLabel {
-                color: rgba(255, 255, 255, 0.8);
-                font-size: 13px;
-            }
-        """
-        )
-        self.streaming_toggle = ToggleSwitch()
+        streaming_label = QLabel("实时字幕")
+        streaming_label.setStyleSheet(self._label_style("row"))
+        self.streaming_toggle = ToggleSwitch(self._theme)
         self.streaming_toggle.setChecked(True)  # Default on
         self.streaming_toggle.toggled.connect(self._on_streaming_toggled)
 
@@ -422,9 +356,68 @@ class PopupMenu(QWidget):
         """Apply drop shadow effect."""
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0, 0, 0, 100))
+        shadow.setColor(styles.qcolor(self._theme.popup_shadow))
         shadow.setOffset(0, 4)
         self.container.setGraphicsEffect(shadow)
+
+    def _container_style(self) -> str:
+        return f"""
+            QFrame {{
+                background-color: {self._theme.panel_bg};
+                border-radius: 12px;
+                border: 1px solid {self._theme.border};
+            }}
+        """
+
+    def _separator_style(self) -> str:
+        return f"background-color: {self._theme.separator};"
+
+    def _label_style(self, kind: str) -> str:
+        if kind == "title":
+            return f"""
+                QLabel {{
+                    color: {self._theme.text_primary};
+                    font-size: 14px;
+                    font-weight: bold;
+                }}
+            """
+        if kind == "muted":
+            return f"""
+                QLabel {{
+                    color: {self._theme.text_muted};
+                    font-size: 11px;
+                    padding: 2px 0;
+                }}
+            """
+        if kind == "section":
+            return f"""
+                QLabel {{
+                    color: {self._theme.text_secondary};
+                    font-size: 11px;
+                }}
+            """
+        return f"""
+            QLabel {{
+                color: {self._theme.text_primary};
+                font-size: 13px;
+            }}
+        """
+
+    def _link_button_style(self) -> str:
+        return f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: {self._theme.accent};
+                font-size: 13px;
+                padding: 6px;
+                text-align: center;
+            }}
+            QPushButton:hover {{
+                color: {self._theme.accent_hover};
+                text-decoration: underline;
+            }}
+        """
 
     def _on_enable_toggled(self, enabled):
         """Handle enable toggle."""
@@ -508,7 +501,7 @@ class PopupMenu(QWidget):
     def setEngineInfo(self, engine_name: str):
         """Set the current ASR engine name for display."""
         self._engine_info = engine_name
-        self.engine_label.setText(f"🎤 {engine_name}")
+        self.engine_label.setText(f"ASR: {engine_name}")
 
     def showAt(self, global_pos: QPoint):
         """Show popup at specified position."""

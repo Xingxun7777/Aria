@@ -578,7 +578,7 @@ class AriaApp:
             f"无法向高权限窗口输入文字。请以管理员身份运行 Aria。\n目标: {target_info}"
         )
         logger.warning(f"[ELEVATION] {warning_msg}")
-        print(f"[ELEVATION] ⚠️ {warning_msg}")
+        print(f"[ELEVATION] WARNING: {warning_msg}")
 
         # Emit error to UI if bridge available
         self._emit_error(warning_msg)

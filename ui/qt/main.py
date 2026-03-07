@@ -224,7 +224,7 @@ def main():
             print(f"[Aria] 快捷键冲突: {msg}")
             print(f"[Aria] 提示: 快捷键被占用，可点击悬浮窗手动启用语音输入")
             # Set tooltip on floating ball
-            ball.setToolTip(f"⚠ 快捷键被占用\n点击悬浮窗启用语音输入")
+            ball.setToolTip("快捷键被占用\n点击悬浮窗启用语音输入")
         else:
             show_error_dialog(msg)
 

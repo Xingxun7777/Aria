@@ -288,15 +288,36 @@ class SettingsWindow(QMainWindow):
 
     def __init__(self, config_path: Optional[Path] = None):
         super().__init__()
+        self._theme = styles.get_theme_palette()
         self.setWindowTitle("Aria 设置")
         self.resize(900, 650)
-        self.setStyleSheet(styles.STYLESHEET_SETTINGS)
+        self.setStyleSheet(styles.get_settings_stylesheet())
 
         self.config_path = config_path or get_config_path("hotwords.json")
         self.config = {}
 
         self._init_ui()
         self.load_config()
+
+    def _label_style(
+        self,
+        role: str = "secondary",
+        *,
+        font_size: int = 11,
+        extra: str = "",
+        bold: bool = False,
+    ) -> str:
+        role_colors = {
+            "primary": self._theme.text_primary,
+            "secondary": self._theme.text_secondary,
+            "muted": self._theme.text_muted,
+            "accent": self._theme.accent,
+            "warning": "#B45309" if self._theme.name == "light" else "#F59E0B",
+        }
+        color = role_colors.get(role, self._theme.text_secondary)
+        weight = " font-weight: bold;" if bold else ""
+        suffix = f" {extra.strip()}" if extra.strip() else ""
+        return f"color: {color}; font-size: {font_size}px;{weight}{suffix}"
 
     def _init_ui(self):
         main_widget = QWidget()
@@ -389,13 +410,15 @@ class SettingsWindow(QMainWindow):
         # Pinyin hint
         self.pinyin_hint = QLabel("")
         self.pinyin_hint.setStyleSheet(
-            "color: #888; font-size: 11px; margin-left: 50px;"
+            self._label_style("muted", font_size=11, extra="margin-left: 50px;")
         )
         wakeword_layout.addWidget(self.pinyin_hint)
 
         # Example commands hint
-        example_hint = QLabel('💡 例: "瑶瑶开启自动发送"、"瑶瑶休眠"')
-        example_hint.setStyleSheet("color: #666; font-size: 11px; margin-top: 5px;")
+        example_hint = QLabel('例: "瑶瑶开启自动发送"、"瑶瑶休眠"')
+        example_hint.setStyleSheet(
+            self._label_style("secondary", font_size=11, extra="margin-top: 5px;")
+        )
         wakeword_layout.addWidget(example_hint)
 
         layout.addWidget(wakeword_group)
@@ -411,8 +434,8 @@ class SettingsWindow(QMainWindow):
         self.translate_mode.addItem("复制到剪贴板", "clipboard")
         translate_layout.addRow("翻译输出方式:", self.translate_mode)
 
-        translate_hint = QLabel('💡 "翻译成英文/中文" 命令的结果输出方式')
-        translate_hint.setStyleSheet("color: #666; font-size: 11px;")
+        translate_hint = QLabel('"翻译成英文/中文" 命令的结果输出方式')
+        translate_hint.setStyleSheet(self._label_style("secondary"))
         translate_layout.addRow("", translate_hint)
 
         layout.addWidget(translate_group)
@@ -440,7 +463,9 @@ class SettingsWindow(QMainWindow):
         subtitle = QLabel(
             "添加您常用的专业术语、品牌名、人名等，系统会自动识别并纠正谐音错误"
         )
-        subtitle.setStyleSheet("color: #666; margin-bottom: 10px;")
+        subtitle.setStyleSheet(
+            self._label_style("secondary", extra="margin-bottom: 10px;")
+        )
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
@@ -455,8 +480,10 @@ class SettingsWindow(QMainWindow):
         context_layout.addWidget(self.domain_ctx, 1)
         layout.addLayout(context_layout)
 
-        hint_label = QLabel("💡 描述您的使用领域，可提高整体识别准确率（可选）")
-        hint_label.setStyleSheet("color: #888; font-size: 11px; margin-left: 70px;")
+        hint_label = QLabel("描述您的使用领域，可提高整体识别准确率（可选）")
+        hint_label.setStyleSheet(
+            self._label_style("muted", extra="margin-left: 70px;")
+        )
         layout.addWidget(hint_label)
 
         layout.addSpacing(20)
@@ -470,7 +497,7 @@ class SettingsWindow(QMainWindow):
             "权重越高，识别偏向越强。新词默认 0.3（轻量提示）"
         )
         self._hotword_guide_label.setStyleSheet(
-            "color: #666; font-size: 12px; margin-bottom: 5px;"
+            self._label_style("secondary", font_size=12, extra="margin-bottom: 5px;")
         )
         layout.addWidget(self._hotword_guide_label)
 
@@ -483,7 +510,7 @@ class SettingsWindow(QMainWindow):
             "1 强制：识别偏置最大化 + 拼音模糊匹配 + 强制替换"
         )
         self._hotword_threshold_note.setStyleSheet(
-            "color: #888; font-size: 11px; margin-bottom: 10px;"
+            self._label_style("muted", font_size=11, extra="margin-bottom: 10px;")
         )
         self._hotword_threshold_note.setWordWrap(True)
         layout.addWidget(self._hotword_threshold_note)
@@ -524,7 +551,7 @@ class SettingsWindow(QMainWindow):
         layout.addSpacing(20)
 
         # --- Advanced options (collapsible) ---
-        self.advanced_group = QGroupBox("⚙️ 高级选项 - 手动纠错规则")
+        self.advanced_group = QGroupBox("高级选项 - 手动纠错规则")
         self.advanced_group.setCheckable(True)
         self.advanced_group.setChecked(False)  # Default collapsed
         advanced_layout = QVBoxLayout()
@@ -532,7 +559,7 @@ class SettingsWindow(QMainWindow):
         adv_hint = QLabel(
             "大部分谐音错误会被自动纠正。只有在遇到重复识别问题时才需要手动添加规则。"
         )
-        adv_hint.setStyleSheet("color: #666; font-size: 11px;")
+        adv_hint.setStyleSheet(self._label_style("secondary"))
         adv_hint.setWordWrap(True)
         advanced_layout.addWidget(adv_hint)
 
@@ -635,7 +662,7 @@ class SettingsWindow(QMainWindow):
         if is_english:
             hint_label.setText("EN")
             hint_label.setStyleSheet(
-                "color: #0d6efd; font-size: 10px; font-weight: bold;"
+                self._label_style("accent", font_size=10, bold=True)
             )
             hint_label.setToolTip(
                 "英文热词：0.5 参考级使用更严格规则，1.0 锁定级强制替换"
@@ -824,7 +851,9 @@ class SettingsWindow(QMainWindow):
             "当主 API 连续响应慢或出错时，自动切换到备用 API。\n"
             "每次程序启动默认使用主 API。"
         )
-        backup_hint.setStyleSheet("color: #666; font-size: 11px; margin-bottom: 10px;")
+        backup_hint.setStyleSheet(
+            self._label_style("secondary", extra="margin-bottom: 10px;")
+        )
         backup_hint.setWordWrap(True)
         backup_layout.addWidget(backup_hint)
 
@@ -1091,7 +1120,7 @@ class SettingsWindow(QMainWindow):
         engine_layout.addRow("引擎:", self.engine_combo)
 
         engine_info = QLabel("切换引擎后需要重启应用")
-        engine_info.setStyleSheet("color: #ff8c00; font-size: 12px;")
+        engine_info.setStyleSheet(self._label_style("warning", font_size=12))
         engine_layout.addRow("", engine_info)
 
         layout.addWidget(engine_group)
@@ -1115,7 +1144,7 @@ class SettingsWindow(QMainWindow):
         funasr_layout.addRow("设备:", self.funasr_device)
 
         funasr_info = QLabel("大模型约需3GB显存，小模型约需1.5GB显存")
-        funasr_info.setStyleSheet("color: #888; font-size: 12px;")
+        funasr_info.setStyleSheet(self._label_style("muted", font_size=12))
         funasr_layout.addRow("", funasr_info)
 
         layout.addWidget(self.funasr_group)
@@ -1150,7 +1179,7 @@ class SettingsWindow(QMainWindow):
             "• 支持52种语言/方言，中英文混合识别优秀\n"
             "• 首次使用需下载模型（1.7B约3.4GB，0.6B约1.2GB）"
         )
-        qwen3_info.setStyleSheet("color: #888; font-size: 12px;")
+        qwen3_info.setStyleSheet(self._label_style("muted", font_size=12))
         qwen3_layout.addRow("", qwen3_info)
 
         layout.addWidget(self.qwen3_group)
@@ -1213,21 +1242,21 @@ class SettingsWindow(QMainWindow):
         output_layout.addWidget(self.chk_typewriter_mode)
 
         # Warning about limitations
-        typewriter_hint = QLabel("⚠️ 此模式适用于不支持 Ctrl+V 的普通应用")
+        typewriter_hint = QLabel("注意：此模式适用于不支持 Ctrl+V 的普通应用")
         typewriter_hint.setStyleSheet(
-            "color: #ff8c00; font-size: 11px; margin-left: 20px;"
+            self._label_style("warning", extra="margin-left: 20px;")
         )
         output_layout.addWidget(typewriter_hint)
 
-        typewriter_warn1 = QLabel("❌ 对使用 DirectInput 的游戏（大多数 3D 游戏）无效")
+        typewriter_warn1 = QLabel("不适用于使用 DirectInput 的游戏（大多数 3D 游戏）")
         typewriter_warn1.setStyleSheet(
-            "color: #888; font-size: 11px; margin-left: 20px;"
+            self._label_style("muted", extra="margin-left: 20px;")
         )
         output_layout.addWidget(typewriter_warn1)
 
         typewriter_warn2 = QLabel("ℹ️ 仅适用于普通应用，游戏请用管理员启动 Aria")
         typewriter_warn2.setStyleSheet(
-            "color: #888; font-size: 11px; margin-left: 20px;"
+            self._label_style("muted", extra="margin-left: 20px;")
         )
         output_layout.addWidget(typewriter_warn2)
 
@@ -1779,14 +1808,14 @@ class SettingsWindow(QMainWindow):
                 QMessageBox.information(
                     self,
                     "设置已保存",
-                    "设置已保存。\n\n⚠️ 语音识别引擎设置更改需要重启应用才能生效。\n（VAD 和输出设置会自动热重载，无需重启）",
+                    "设置已保存。\n\n语音识别引擎设置更改需要重启应用才能生效。\n（VAD 和输出设置会自动热重载，无需重启）",
                 )
             else:
                 # Visual feedback: temporarily change button text to confirm save
                 sender = self.sender()
                 if sender and hasattr(sender, "setText"):
                     original_text = sender.text()
-                    sender.setText("已保存 ✓")
+                    sender.setText("已保存")
                     # Restore original text after 1.5 seconds
                     QTimer.singleShot(1500, lambda: sender.setText(original_text))
 
