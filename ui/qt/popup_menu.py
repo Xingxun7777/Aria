@@ -2,6 +2,8 @@
 # Styled popup menu for Aria floating ball
 # Left-click menu with enable toggle, polish modes, and settings
 
+from dataclasses import replace
+
 from PySide6.QtCore import (
     Qt,
     Signal,
@@ -24,6 +26,26 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QFont
 
 from . import styles
+
+
+POPUP_MENU_THEME = replace(
+    styles.DARK_THEME,
+    panel_bg="rgba(26, 26, 30, 0.97)",
+    button_bg="rgba(255, 255, 255, 0.05)",
+    button_hover_bg="rgba(255, 255, 255, 0.10)",
+    border="rgba(255, 255, 255, 0.12)",
+    border_strong="rgba(255, 255, 255, 0.22)",
+    text_primary="#E5E7EB",
+    text_secondary="#9CA3AF",
+    text_muted="#6B7280",
+    accent="#FF8C00",
+    accent_hover="#FFAA33",
+    accent_soft="rgba(255, 140, 0, 0.18)",
+    accent_border="rgba(255, 140, 0, 0.38)",
+    separator="rgba(255, 255, 255, 0.08)",
+    popup_shadow="rgba(0, 0, 0, 0.48)",
+    success="#4CAF50",
+)
 
 
 class ToggleSwitch(QWidget):
@@ -121,7 +143,7 @@ class ModeButton(QPushButton):
             ModeButton:checked {{
                 background-color: {self._theme.accent_soft};
                 border-color: {self._theme.accent_border};
-                color: {self._theme.text_primary};
+                color: {self._theme.text_inverse};
             }}
         """
 
@@ -148,7 +170,9 @@ class PopupMenu(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._theme = styles.get_theme_palette()
+        # Floating overlay surfaces should keep a richer dark-glass palette
+        # instead of reusing the flatter settings-panel palette.
+        self._theme = POPUP_MENU_THEME
         self._enabled = True
         self._current_mode = "quality"  # Default matches template
         self._is_locked = False
@@ -264,7 +288,7 @@ class PopupMenu(QWidget):
             QPushButton:checked {{
                 background-color: {self._theme.accent_soft};
                 border: 1px solid {self._theme.accent_border};
-                color: {self._theme.text_primary};
+                color: {self._theme.text_inverse};
             }}
         """
 
@@ -355,9 +379,9 @@ class PopupMenu(QWidget):
     def _apply_shadow(self):
         """Apply drop shadow effect."""
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
+        shadow.setBlurRadius(28)
         shadow.setColor(styles.qcolor(self._theme.popup_shadow))
-        shadow.setOffset(0, 4)
+        shadow.setOffset(0, 8)
         self.container.setGraphicsEffect(shadow)
 
     def _container_style(self) -> str:
@@ -386,7 +410,7 @@ class PopupMenu(QWidget):
                 QLabel {{
                     color: {self._theme.text_muted};
                     font-size: 11px;
-                    padding: 2px 0;
+                    padding: 3px 0 1px 0;
                 }}
             """
         if kind == "section":
@@ -394,6 +418,8 @@ class PopupMenu(QWidget):
                 QLabel {{
                     color: {self._theme.text_secondary};
                     font-size: 11px;
+                    font-weight: 600;
+                    letter-spacing: 0.5px;
                 }}
             """
         return f"""
