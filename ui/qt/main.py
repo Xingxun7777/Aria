@@ -480,6 +480,7 @@ def main():
 
                 if not api_url or not api_key:
                     _log("[MAIN] ERROR: API not configured")
+                    _pending_action_sources.pop(action.request_id, None)
                     translation_popup.show_error(
                         "API 未配置（本地模式不支持翻译）", action.request_id
                     )
@@ -555,6 +556,7 @@ def main():
 
                 if not api_url or not api_key:
                     _log("[MAIN] ERROR: API not configured for summary")
+                    _pending_action_sources.pop(action.request_id, None)
                     summary_popup.show_error("API 未配置", action.request_id)
                     return
 
@@ -701,6 +703,7 @@ def main():
 
                 if not api_url or not api_key:
                     _log("[MAIN] ERROR: API not configured for reply")
+                    _pending_action_sources.pop(action.request_id, None)
                     reply_popup.show_error("API 未配置", action.request_id)
                     return
 

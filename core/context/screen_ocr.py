@@ -85,7 +85,7 @@ class ScreenOCR:
             return self._latest_text
 
     def _run_ocr(self) -> None:
-        """Run OCR in background thread."""
+        """Run OCR in background thread with timeout protection."""
         self._running = True
         try:
             # Capture active window screenshot
@@ -93,10 +93,18 @@ class ScreenOCR:
             if img is None:
                 return
 
-            # Run async OCR
-            text = asyncio.run(self._ocr_image(img))
+            # Run async OCR with timeout (prevent hang)
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, self._ocr_image(img))
+                try:
+                    text = future.result(timeout=5.0)  # 5 second hard timeout
+                except concurrent.futures.TimeoutError:
+                    logger.debug("Screen OCR timed out (5s)")
+                    return
+
             if text:
-                # Truncate and deduplicate
                 text = self._clean_ocr_text(text)
                 with self._lock:
                     self._latest_text = text

@@ -933,6 +933,14 @@ class AriaApp:
             f"[HISTORY] Unified history store initialized (enabled={_history_enabled}, retention={_history_retention}d)"
         )
 
+        # Auto-cleanup old history records on startup
+        try:
+            cleaned = self.history_store.auto_cleanup()
+            if cleaned:
+                print(f"[HISTORY] Auto-cleanup: removed {cleaned} old day files")
+        except Exception as e:
+            print(f"[HISTORY] Auto-cleanup failed: {e}")
+
         # Run migration from legacy data (once)
         try:
             from .core.history.migrator import run_migration
@@ -961,7 +969,7 @@ class AriaApp:
         if self._screen_ocr_enabled:
             if self._screen_ocr is None:
                 try:
-                    from aria.core.context.screen_ocr import ScreenOCR
+                    from .core.context.screen_ocr import ScreenOCR
 
                     self._screen_ocr = ScreenOCR(max_text_len=500)
                 except Exception:

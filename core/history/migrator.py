@@ -191,15 +191,20 @@ def run_migration(
     Returns:
         True if migration was performed, False if already done or failed
     """
-    # Check if already migrated
+    if not history_store or not history_store.enabled:
+        _mlog("History store disabled, skipping migration")
+        return False
+
+    # Check if already migrated — abort if config is unreadable
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         if config.get("history_migrated"):
             _mlog("Already migrated, skipping")
             return False
-    except (json.JSONDecodeError, OSError):
-        config = {}
+    except (json.JSONDecodeError, OSError) as e:
+        _mlog(f"Cannot read config, aborting migration to avoid data loss: {e}")
+        return False
 
     _mlog("Starting migration...")
 
@@ -209,20 +214,30 @@ def run_migration(
 
     _mlog(f"Migration complete: {total} total records")
 
-    # Mark as migrated in config
+    # Mark as migrated — re-read config then atomic write
     try:
-        # Re-read config to avoid overwriting concurrent changes
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            config = {}
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
 
         config["history_migrated"] = True
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        _mlog("Migration flag saved to config")
-    except (OSError, PermissionError) as e:
+
+        import tempfile, os
+
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+            _mlog("Migration flag saved to config (atomic)")
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except (OSError, PermissionError, json.JSONDecodeError) as e:
         _mlog(f"Failed to save migration flag: {e}")
 
     return True
