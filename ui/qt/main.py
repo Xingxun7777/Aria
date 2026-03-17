@@ -17,10 +17,12 @@ from .floating_ball import FloatingBall
 from .settings import SettingsWindow
 from .sound import play_sound
 from .history import HistoryWindow
+from .history_browser import HistoryBrowserWindow
 from .translation_popup import TranslationPopup
 from .ai_chat_window import AIChatWindow
-from .workers import TranslationWorker, SummaryWorker, LLMWorker
+from .workers import TranslationWorker, SummaryWorker, LLMWorker, ReplyWorker
 from .elevation_dialog import ElevationWarningDialog
+from core.history.models import RecordType
 
 # Debug log for main.py
 _DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
@@ -61,8 +63,10 @@ def main():
     ball = FloatingBall(size=48)
     settings = SettingsWindow()
     history = HistoryWindow()
+    history_browser = HistoryBrowserWindow()
     translation_popup = TranslationPopup()
     summary_popup = TranslationPopup()
+    reply_popup = TranslationPopup()
     ai_chat_window = AIChatWindow()
     elevation_dialog = ElevationWarningDialog()
 
@@ -74,6 +78,10 @@ def main():
     _active_signals = []
     _active_dialogs = []
     _quit_in_progress = False
+
+    # Track pending action source texts for history recording
+    # {request_id: {"source_text": str, "type": RecordType}}
+    _pending_action_sources = {}
 
     # Create minimal system tray for unlock and quit
     tray = QSystemTrayIcon()
@@ -322,6 +330,11 @@ def main():
         backend.start()
         _log(f"Aria Qt Frontend Started (Hotkey: {actual_hotkey})")
 
+        # Pass history store to browser window
+        if hasattr(backend, "history_store"):
+            history_browser.set_history_store(backend.history_store)
+            _log("[Aria] HistoryStore connected to browser window")
+
         # Check start_active setting - if False, disable hotkey listening
         # (reuse config already loaded above)
         try:
@@ -408,6 +421,7 @@ def main():
             SummaryAction,
             ChatAction,
             ClipboardTranslationAction,
+            ReplyAction,
         )
 
         _log(f"[MAIN] on_action_triggered: {action.type}, id={action.request_id}")
@@ -443,6 +457,10 @@ def main():
                 except Exception:
                     pass
                 translation_popup.show_loading(action.source_text, action.request_id)
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SELECTION_TRANSLATE,
+                }
                 _log("[MAIN] show_loading called OK")
 
                 # Get API config from backend's polisher (reuse existing config)
@@ -516,6 +534,10 @@ def main():
                     loading_text="正在总结...",
                     error_prefix="总结失败",
                 )
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SUMMARY,
+                }
 
                 api_url = ""
                 api_key = ""
@@ -615,6 +637,10 @@ def main():
                     source_lang="auto",
                     target_lang=action.target_lang,
                 )
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SELECTION_TRANSLATE,
+                }
                 # CRITICAL: Keep signals reference alive until delivery
                 signals_ref = worker.signals
                 _active_signals.append(signals_ref)
@@ -639,12 +665,99 @@ def main():
 
                 _log(traceback.format_exc())
 
+        elif action.type == ActionType.SHOW_REPLY:
+            # Reply popup: generate reply to selected message
+            try:
+                _log(f"[MAIN] Reply popup: {len(action.source_text)} chars")
+                reply_popup.show_loading(
+                    action.source_text,
+                    action.request_id,
+                    title_prefix="回复",
+                    title_done="回复建议",
+                    loading_text="正在生成回复...",
+                    error_prefix="回复失败",
+                )
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SELECTION_REPLY,
+                    "style_hint": getattr(action, "style_hint", ""),
+                }
+
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+                    _log(
+                        f"[MAIN] Got API config for reply: url={api_url[:30]}..., model={model}"
+                    )
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured for reply")
+                    reply_popup.show_error("API 未配置", action.request_id)
+                    return
+
+                # Combine config reply_style with action's style_hint
+                reply_style = ""
+                try:
+                    import json as _json
+
+                    with open("config/hotwords.json", "r", encoding="utf-8") as _f:
+                        _cfg = _json.load(_f)
+                    reply_style = _cfg.get("reply_style", "")
+                except Exception:
+                    pass
+                combined_style = reply_style
+                if action.style_hint:
+                    combined_style = (
+                        f"{reply_style}\n{action.style_hint}"
+                        if reply_style
+                        else action.style_hint
+                    )
+
+                worker = ReplyWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    style_hint=combined_style if combined_style else None,
+                )
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_reply_signals(sig_ref):
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+
+                signals_ref.finished.connect(on_reply_finished)
+                signals_ref.finished.connect(
+                    lambda *_: cleanup_reply_signals(signals_ref)
+                )
+                signals_ref.error.connect(on_reply_error)
+                signals_ref.error.connect(lambda *_: cleanup_reply_signals(signals_ref))
+                thread_pool.start(worker)
+                _log("[MAIN] ReplyWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in SHOW_REPLY: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
     def on_clipboard_translation_finished(request_id: str, translated_text: str):
         """Handle clipboard translation completion."""
         try:
             # Use Qt's clipboard (always available) instead of pyperclip
             clipboard = QApplication.clipboard()
             clipboard.setText(translated_text)
+            _record_to_history(request_id, translated_text)
             _log(
                 f"[UI] Clipboard translation finished: {len(translated_text)} chars copied"
             )
@@ -657,10 +770,31 @@ def main():
 
     def on_clipboard_translation_error(request_id: str, error_msg: str):
         """Handle clipboard translation error."""
+        _pending_action_sources.pop(request_id, None)
         _log(f"[UI] Clipboard translation error: {error_msg}")
         tray.showMessage(
             "Aria", f"翻译失败: {error_msg}", QSystemTrayIcon.Warning, 3000
         )
+
+    def _record_to_history(request_id: str, output_text: str):
+        """Write a completed action to history store, using tracked source info."""
+        source_info = _pending_action_sources.pop(request_id, None)
+        if not source_info:
+            return
+        if not hasattr(backend, "history_store") or not backend.history_store:
+            return
+        try:
+            metadata = {}
+            if source_info.get("style_hint"):
+                metadata["style_hint"] = source_info["style_hint"]
+            backend.history_store.add(
+                record_type=source_info["type"],
+                input_text=source_info["source_text"],
+                output_text=output_text,
+                metadata=metadata,
+            )
+        except Exception as e:
+            _log(f"[UI] History record failed: {e}")
 
     def on_translation_finished(request_id: str, translated_text: str):
         """Handle translation completion."""
@@ -669,6 +803,7 @@ def main():
         )
         try:
             translation_popup.show_result(translated_text, request_id)
+            _record_to_history(request_id, translated_text)
             _log(f"[UI] Translation show_result completed OK")
         except Exception as e:
             _log(f"[UI] Translation show_result ERROR: {e}")
@@ -678,6 +813,7 @@ def main():
 
     def on_translation_error(request_id: str, error_msg: str):
         """Handle translation error."""
+        _pending_action_sources.pop(request_id, None)
         _log(
             f"[UI] Translation error CALLBACK: request_id={request_id}, error={error_msg}"
         )
@@ -697,6 +833,7 @@ def main():
         )
         try:
             summary_popup.show_result(summary_text, request_id)
+            _record_to_history(request_id, summary_text)
             _log(f"[UI] Summary show_result completed OK")
         except Exception as e:
             _log(f"[UI] Summary show_result ERROR: {e}")
@@ -706,12 +843,41 @@ def main():
 
     def on_summary_error(request_id: str, error_msg: str):
         """Handle summary error."""
+        _pending_action_sources.pop(request_id, None)
         _log(f"[UI] Summary error CALLBACK: request_id={request_id}, error={error_msg}")
         try:
             summary_popup.show_error(error_msg, request_id)
             _log(f"[UI] Summary show_error completed OK")
         except Exception as e:
             _log(f"[UI] Summary show_error ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_reply_finished(request_id: str, reply_text: str):
+        """Handle reply generation completion."""
+        _log(
+            f"[UI] Reply finished CALLBACK: request_id={request_id}, text_len={len(reply_text)}"
+        )
+        try:
+            reply_popup.show_result(reply_text, request_id)
+            _record_to_history(request_id, reply_text)
+            _log("[UI] Reply show_result completed OK")
+        except Exception as e:
+            _log(f"[UI] Reply show_result ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_reply_error(request_id: str, error_msg: str):
+        """Handle reply generation error."""
+        _pending_action_sources.pop(request_id, None)
+        _log(f"[UI] Reply error CALLBACK: request_id={request_id}, error={error_msg}")
+        try:
+            reply_popup.show_error(error_msg, request_id)
+            _log("[UI] Reply show_error completed OK")
+        except Exception as e:
+            _log(f"[UI] Reply show_error ERROR: {e}")
             import traceback
 
             _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
@@ -800,6 +966,7 @@ def main():
     bridge.actionTriggered.connect(on_action_triggered)
     translation_popup.copyRequested.connect(on_copy_translation)
     summary_popup.copyRequested.connect(on_copy_translation)
+    reply_popup.copyRequested.connect(on_copy_translation)
 
     # Connect mute action to backend
     def on_mute_toggled():
@@ -830,6 +997,14 @@ def main():
 
     ball.detailsRequested.connect(show_settings)
     action_settings.triggered.connect(show_settings)  # Tray menu -> settings
+
+    # History browser: show and bring to front
+    def show_history_browser():
+        history_browser.show()
+        history_browser.raise_()
+        history_browser.activateWindow()
+
+    ball.historyRequested.connect(show_history_browser)
 
     # Handle enable toggle from popup menu
     def on_enable_toggled(enabled):

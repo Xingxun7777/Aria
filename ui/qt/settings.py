@@ -481,9 +481,7 @@ class SettingsWindow(QMainWindow):
         layout.addLayout(context_layout)
 
         hint_label = QLabel("描述您的使用领域，可提高整体识别准确率（可选）")
-        hint_label.setStyleSheet(
-            self._label_style("muted", extra="margin-left: 70px;")
-        )
+        hint_label.setStyleSheet(self._label_style("muted", extra="margin-left: 70px;"))
         layout.addWidget(hint_label)
 
         layout.addSpacing(20)
@@ -760,7 +758,7 @@ class SettingsWindow(QMainWindow):
         # Mode selection
         mode_group = QButtonGroup(w)
         self.radio_off = QRadioButton("关闭润色 (直接输出识别结果)")
-        self.radio_fast = QRadioButton("快速模式 (本地 Qwen, ~155ms)")
+        self.radio_fast = QRadioButton("本地润色 (需自行配置模型)")
         self.radio_quality = QRadioButton("高质量模式 (Gemini API, ~1.7s)")
         mode_group.addButton(self.radio_off)
         mode_group.addButton(self.radio_fast)
@@ -769,6 +767,62 @@ class SettingsWindow(QMainWindow):
         layout.addWidget(self.radio_off)
         layout.addWidget(self.radio_fast)
         layout.addWidget(self.radio_quality)
+
+        layout.addSpacing(20)
+
+        # v1.2: 润色偏好（个性化偏好 + 一键开关）
+        skill_group = QGroupBox("润色偏好")
+        skill_layout = QVBoxLayout(skill_group)
+
+        # 口语过滤开关
+        self.chk_filter_filler = QCheckBox("口语过滤")
+        self.chk_filter_filler.setChecked(True)
+        filler_hint = QLabel('自动去除"嗯"、"那个"、"就是说"等口语填充词')
+        filler_hint.setStyleSheet("color: #888; font-size: 12px; margin-left: 24px;")
+        skill_layout.addWidget(self.chk_filter_filler)
+        skill_layout.addWidget(filler_hint)
+
+        skill_layout.addSpacing(8)
+
+        # 自动结构化开关
+        self.chk_auto_structure = QCheckBox("自动结构化")
+        self.chk_auto_structure.setChecked(False)
+        structure_hint = QLabel("将口述长文本自动整理为带换行、编号的结构化文本")
+        structure_hint.setStyleSheet("color: #888; font-size: 12px; margin-left: 24px;")
+        skill_layout.addWidget(self.chk_auto_structure)
+        skill_layout.addWidget(structure_hint)
+
+        skill_layout.addSpacing(12)
+
+        # 个性化规则
+        rules_label = QLabel("个性化规则（每行一条）：")
+        skill_layout.addWidget(rules_label)
+        self.personalization_rules_edit = QPlainTextEdit()
+        self.personalization_rules_edit.setPlaceholderText(
+            "例如：\n不要把口语化的表达改成书面语\n英文专有名词保留原始大小写\n每句话单独成段"
+        )
+        self.personalization_rules_edit.setMaximumHeight(100)
+        skill_layout.addWidget(self.personalization_rules_edit)
+
+        layout.addWidget(skill_group)
+
+        layout.addSpacing(20)
+
+        # Reply style (for "帮我回复" feature)
+        reply_group = QGroupBox("回复风格")
+        reply_layout = QVBoxLayout(reply_group)
+        reply_hint = QLabel(
+            '设定 AI 回复消息时的风格偏好（选中文字说"帮我回复"时生效）'
+        )
+        reply_hint.setStyleSheet("color: #888; font-size: 12px;")
+        reply_layout.addWidget(reply_hint)
+        self.reply_style_edit = QPlainTextEdit()
+        self.reply_style_edit.setPlaceholderText(
+            "例如：\n回复简短一些，像朋友聊天\n语气专业正式\n用轻松幽默的方式回复"
+        )
+        self.reply_style_edit.setMaximumHeight(80)
+        reply_layout.addWidget(self.reply_style_edit)
+        layout.addWidget(reply_group)
 
         layout.addSpacing(20)
 
@@ -1193,6 +1247,23 @@ class SettingsWindow(QMainWindow):
         vad_group = QGroupBox("VAD (语音活动检测)")
         vad_layout = QFormLayout(vad_group)
 
+        self.chk_noise_filter = QCheckBox("噪声过滤")
+        self.chk_noise_filter.setChecked(True)
+        self.chk_noise_filter.setToolTip(
+            "过滤环境噪声产生的无意义文字（嗯、啊、呃等）\n"
+            "不会影响正常短回复（好的、行、可以等）"
+        )
+        vad_layout.addRow(self.chk_noise_filter)
+
+        self.chk_screen_ocr = QCheckBox("屏幕识别辅助")
+        self.chk_screen_ocr.setChecked(True)
+        self.chk_screen_ocr.setToolTip(
+            "说话时自动识别屏幕上的文字作为 ASR 上下文\n"
+            "帮助更准确地识别屏幕上出现的专业术语和名词\n"
+            "例如：屏幕显示「骨骼参数」时，语音就不会被识别为「谷歌参数」"
+        )
+        vad_layout.addRow(self.chk_screen_ocr)
+
         self.vad_threshold = QDoubleSpinBox()
         self.vad_threshold.setRange(0.1, 0.9)
         self.vad_threshold.setSingleStep(0.1)
@@ -1286,14 +1357,18 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(output_group)
 
-        # Local polish model
+        # Local polish model (advanced, user self-configured)
         local_group = QGroupBox("本地润色模型")
         local_layout = QFormLayout(local_group)
 
+        # Usage guide button
+        btn_local_guide = QPushButton("使用说明")
+        btn_local_guide.setToolTip("了解如何下载和配置本地润色模型")
+        btn_local_guide.clicked.connect(self._show_local_polish_guide)
+        local_layout.addRow(btn_local_guide)
+
         self.local_model_path = QLineEdit()
-        self.local_model_path.setPlaceholderText(
-            "models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-        )
+        self.local_model_path.setPlaceholderText("请填入 .gguf 模型文件路径")
         local_layout.addRow("模型路径:", self.local_model_path)
 
         self.local_n_gpu_layers = QSpinBox()
@@ -1399,6 +1474,16 @@ class SettingsWindow(QMainWindow):
         else:
             self.radio_quality.setChecked(True)
 
+        # v1.2: Load polish skill settings
+        self.chk_filter_filler.setChecked(self.config.get("filter_filler_words", True))
+        self.chk_auto_structure.setChecked(self.config.get("auto_structure", False))
+        self.personalization_rules_edit.setPlainText(
+            self.config.get("personalization_rules", "")
+        )
+
+        # Load reply style
+        self.reply_style_edit.setPlainText(self.config.get("reply_style", ""))
+
         # Load prompt template
         polish = self.config.get("polish", {})
         prompt_template = polish.get("prompt_template", self.DEFAULT_PROMPT)
@@ -1466,6 +1551,8 @@ class SettingsWindow(QMainWindow):
 
         # VAD settings
         vad = self.config.get("vad", {})
+        self.chk_noise_filter.setChecked(vad.get("noise_filter", True))
+        self.chk_screen_ocr.setChecked(vad.get("screen_ocr", True))
         self.vad_threshold.setValue(vad.get("threshold", 0.2))
         self.vad_energy_threshold.setValue(vad.get("energy_threshold", 0.003))
         self.vad_min_silence.setValue(vad.get("min_silence_ms", 1200))
@@ -1501,6 +1588,29 @@ class SettingsWindow(QMainWindow):
                 self.wakeword_edit.setText("瑶瑶")
         else:
             self.wakeword_edit.setText("瑶瑶")
+
+    def _show_local_polish_guide(self):
+        """Show usage guide for local polish model setup."""
+        guide_text = (
+            "本地润色使用 llama.cpp 运行 GGUF 格式的语言模型，"
+            "在本地完成文本润色，无需联网。\n\n"
+            "配置步骤：\n\n"
+            "1. 下载模型\n"
+            "   推荐从 Hugging Face 下载 GGUF 格式模型，例如：\n"
+            "   - Qwen3.5-2B (Q4_K_M, ~1.5GB)\n"
+            "   - Qwen2.5-1.5B-Instruct (Q4_K_M, ~1GB)\n"
+            '   搜索 "unsloth/Qwen3.5-2B-GGUF" 即可找到\n\n'
+            "2. 放置模型\n"
+            "   将 .gguf 文件放到 Aria 目录下的 models/ 文件夹\n\n"
+            "3. 填写路径\n"
+            "   在上方「模型路径」填入文件路径，例如：\n"
+            "   models/Qwen3.5-2B-Q4_K_M.gguf\n\n"
+            "4. 切换模式\n"
+            "   在「智能润色」标签页选择「本地润色」模式\n\n"
+            "GPU 层数：-1 表示全部放 GPU（推荐），0 表示纯 CPU\n"
+            "上下文窗口：默认 512 即可，一般不需要修改"
+        )
+        QMessageBox.information(self, "本地润色使用说明", guide_text)
 
     def save_config(self):
         """Save configuration to hotwords.json."""
@@ -1566,6 +1676,14 @@ class SettingsWindow(QMainWindow):
             self.config["polish_mode"] = "fast"
         else:
             self.config["polish_mode"] = "quality"
+
+        # v1.2: Save polish skill settings
+        self.config["filter_filler_words"] = self.chk_filter_filler.isChecked()
+        self.config["auto_structure"] = self.chk_auto_structure.isChecked()
+        self.config["personalization_rules"] = (
+            self.personalization_rules_edit.toPlainText()
+        )
+        self.config["reply_style"] = self.reply_style_edit.toPlainText()
 
         # === API settings ===
         if "polish" not in self.config:
@@ -1738,6 +1856,8 @@ class SettingsWindow(QMainWindow):
         # === Advanced tab - VAD (hot-reload handles these, no restart needed) ===
         if "vad" not in self.config:
             self.config["vad"] = {}
+        self.config["vad"]["noise_filter"] = self.chk_noise_filter.isChecked()
+        self.config["vad"]["screen_ocr"] = self.chk_screen_ocr.isChecked()
         self.config["vad"]["threshold"] = self.vad_threshold.value()
         self.config["vad"]["energy_threshold"] = self.vad_energy_threshold.value()
         self.config["vad"]["min_silence_ms"] = self.vad_min_silence.value()

@@ -109,6 +109,9 @@ class TranslationPopup(QWidget):
         self._current_request_id: Optional[str] = None
         self._translated_text: str = ""
         self._is_loading: bool = False
+        self._pinned: bool = False  # v1.2: Pin to prevent auto-dismiss
+        self._target_hwnd: int = 0  # v1.2: Original foreground window for Insert
+        self._drag_pos: Optional[QPoint] = None  # v1.2: Drag support
         self._title_prefix: str = "翻译"
         self._title_done: str = "译文"
         self._loading_text: str = "正在翻译..."
@@ -154,6 +157,30 @@ class TranslationPopup(QWidget):
         )
         header_layout.addWidget(self._title_label)
         header_layout.addStretch()
+
+        # v1.2: Pin button (prevent auto-dismiss)
+        self._pin_btn = QPushButton("📌")
+        self._pin_btn.setFixedSize(20, 20)
+        self._pin_btn.setCursor(Qt.PointingHandCursor)
+        self._pin_btn.setToolTip("固定弹窗")
+        self._pin_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                color: {self._theme.text_secondary};
+                font-size: 12px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                color: {self._theme.text_primary};
+                background: {self._theme.button_hover_bg};
+                border-radius: 4px;
+            }}
+        """
+        )
+        self._pin_btn.clicked.connect(self._on_pin_clicked)
+        header_layout.addWidget(self._pin_btn)
 
         # Close button
         self._close_btn = QPushButton("×")
@@ -256,9 +283,43 @@ class TranslationPopup(QWidget):
         self._scroll_area.setWidget(self._result_label)
         layout.addWidget(self._scroll_area)
 
-        # Hint label (bottom)
-        self._hint_label = QLabel("点击复制")
-        self._hint_label.setAlignment(Qt.AlignRight)
+        # v1.2: Bottom action bar (replaces old hint_label)
+        action_bar = QHBoxLayout()
+        action_bar.setContentsMargins(0, 4, 0, 0)
+        action_bar.setSpacing(8)
+
+        btn_style = f"""
+            QPushButton {{
+                background: {self._theme.button_bg};
+                border: 1px solid {self._theme.border};
+                border-radius: 4px;
+                color: {self._theme.text_primary};
+                font-size: 12px;
+                padding: 4px 12px;
+            }}
+            QPushButton:hover {{
+                background: {self._theme.button_hover_bg};
+                border-color: {self._theme.accent};
+            }}
+        """
+
+        self._copy_btn = QPushButton("复制")
+        self._copy_btn.setCursor(Qt.PointingHandCursor)
+        self._copy_btn.setStyleSheet(btn_style)
+        self._copy_btn.clicked.connect(self._on_copy_clicked)
+        action_bar.addWidget(self._copy_btn)
+
+        self._insert_btn = QPushButton("插入")
+        self._insert_btn.setCursor(Qt.PointingHandCursor)
+        self._insert_btn.setStyleSheet(btn_style)
+        self._insert_btn.clicked.connect(self._on_insert_clicked)
+        action_bar.addWidget(self._insert_btn)
+
+        action_bar.addStretch()
+
+        # Feedback label (shows "已复制" etc.)
+        self._hint_label = QLabel("")
+        self._hint_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._hint_label.setStyleSheet(
             f"""
             QLabel {{
@@ -269,7 +330,9 @@ class TranslationPopup(QWidget):
             }}
         """
         )
-        layout.addWidget(self._hint_label)
+        action_bar.addWidget(self._hint_label)
+
+        layout.addLayout(action_bar)
 
         # Add shadow effect
         self._shadow = QGraphicsDropShadowEffect(self)
@@ -401,12 +464,23 @@ class TranslationPopup(QWidget):
             self._current_request_id = request_id
             self._is_loading = True
             self._translated_text = ""
+            self._pinned = False  # Reset pin state for new request
             self._title_prefix = title_prefix
             self._title_done = title_done
             self._loading_text = loading_text
             self._error_prefix = error_prefix
             self._copy_hint = copy_hint
             _tlog("show_loading: state vars set")
+
+            # v1.2: Capture the original foreground window for Insert button
+            try:
+                from aria.system.output import get_foreground_window_pid
+
+                self._target_hwnd, _ = get_foreground_window_pid()
+                _tlog(f"show_loading: captured target_hwnd={self._target_hwnd}")
+            except Exception as e:
+                self._target_hwnd = 0
+                _tlog(f"show_loading: failed to capture target_hwnd: {e}")
 
             # Update title with character count
             text_len = len(source_text)
@@ -437,8 +511,11 @@ class TranslationPopup(QWidget):
             """
             )
             _tlog("show_loading: result label style set")
+            self._hint_label.setText("")
             self._hint_label.hide()
-            _tlog("show_loading: hint label hidden")
+            self._copy_btn.hide()
+            self._insert_btn.hide()
+            _tlog("show_loading: action bar hidden")
 
             # Stop any running fade-out animation
             self._fade_out.stop()
@@ -494,8 +571,10 @@ class TranslationPopup(QWidget):
             }}
         """
         )
-        self._hint_label.setText(self._copy_hint)
-        self._hint_label.show()
+        self._hint_label.setText("")
+        self._hint_label.hide()
+        self._copy_btn.show()
+        self._insert_btn.show()
 
         # Reposition after content change
         self.adjustSize()
@@ -567,36 +646,27 @@ class TranslationPopup(QWidget):
         self.move(x, y)
 
     def mousePressEvent(self, event):
-        """Handle click to copy and close."""
+        """v1.2: Handle drag start (no longer click-to-copy-and-close)."""
         if event.button() == Qt.LeftButton:
-            _tlog(
-                f"mousePressEvent: LeftButton clicked, has_text={bool(self._translated_text)}"
+            self._drag_pos = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             )
-            # Only copy if there's actual content (not just whitespace)
-            if self._translated_text and self._translated_text.strip():
-                # Copy directly here for reliability (in addition to signal)
-                # This ensures copy works even if signal/slot has issues
-                try:
-                    clipboard = QApplication.clipboard()
-                    clipboard.setText(self._translated_text)
-                    _tlog(
-                        f"mousePressEvent: Direct clipboard copy done, len={len(self._translated_text)}"
-                    )
-                except Exception as e:
-                    _tlog(f"mousePressEvent: Clipboard error: {e}")
-                    # Retry once
-                    try:
-                        QApplication.clipboard().setText(self._translated_text)
-                        _tlog("mousePressEvent: Clipboard retry succeeded")
-                    except Exception as retry_e:
-                        _tlog(f"mousePressEvent: Clipboard retry failed: {retry_e}")
-
-                # Also emit signal for any additional handlers
-                self.copyRequested.emit(self._translated_text)
-            self.dismiss()
             event.accept()
         else:
             super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """v1.2: Handle drag move."""
+        if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """v1.2: Handle drag end."""
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
         """Cancel auto-dismiss when mouse enters."""
@@ -604,9 +674,9 @@ class TranslationPopup(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        """Start auto-dismiss timer when mouse leaves."""
-        if not self._is_loading:
-            self._dismiss_timer.start(1500)  # 1.5 seconds
+        """Start auto-dismiss timer when mouse leaves (v1.2: 8s, respects pin)."""
+        if not self._is_loading and not self._pinned:
+            self._dismiss_timer.start(8000)  # v1.2: 8 seconds (was 1.5s)
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):
@@ -627,6 +697,101 @@ class TranslationPopup(QWidget):
         self._opacity_effect.setOpacity(1.0)  # Reset for next show
         self.closed.emit()
 
+    def _on_pin_clicked(self):
+        """v1.2: Toggle pin state."""
+        self._pinned = not self._pinned
+        if self._pinned:
+            self._pin_btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background: {self._theme.accent};
+                    border: none;
+                    color: {self._theme.text_primary};
+                    font-size: 12px;
+                    padding: 0;
+                    border-radius: 4px;
+                }}
+            """
+            )
+            self._pin_btn.setToolTip("取消固定")
+            self._dismiss_timer.stop()
+        else:
+            self._pin_btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background: transparent;
+                    border: none;
+                    color: {self._theme.text_secondary};
+                    font-size: 12px;
+                    padding: 0;
+                }}
+                QPushButton:hover {{
+                    color: {self._theme.text_primary};
+                    background: {self._theme.button_hover_bg};
+                    border-radius: 4px;
+                }}
+            """
+            )
+            self._pin_btn.setToolTip("固定弹窗")
+
+    def _on_copy_clicked(self):
+        """v1.2: Copy result to clipboard without closing."""
+        if self._translated_text and self._translated_text.strip():
+            try:
+                clipboard = QApplication.clipboard()
+                clipboard.setText(self._translated_text)
+                _tlog(f"_on_copy_clicked: copied {len(self._translated_text)} chars")
+            except Exception as e:
+                _tlog(f"_on_copy_clicked: clipboard error: {e}")
+                try:
+                    QApplication.clipboard().setText(self._translated_text)
+                except Exception:
+                    pass
+            self.copyRequested.emit(self._translated_text)
+            # Show feedback
+            self._hint_label.setText("已复制")
+            self._hint_label.show()
+            QTimer.singleShot(2000, lambda: self._hint_label.hide())
+
+    def _on_insert_clicked(self):
+        """v1.2: Insert result into the original target window."""
+        if not self._translated_text or not self._translated_text.strip():
+            return
+
+        _tlog(f"_on_insert_clicked: inserting to hwnd={self._target_hwnd}")
+        try:
+            # Copy to clipboard first
+            clipboard = QApplication.clipboard()
+            clipboard.setText(self._translated_text)
+
+            # Restore focus to original target window, then paste via Ctrl+V
+            if self._target_hwnd and sys.platform == "win32":
+                import time
+                from ctypes import wintypes
+
+                user32 = ctypes.windll.user32
+                # SetForegroundWindow to the captured HWND
+                user32.SetForegroundWindow(self._target_hwnd)
+                time.sleep(0.15)  # Brief delay for window activation
+
+                # Simulate Ctrl+V via keybd_event
+                VK_CONTROL = 0x11
+                VK_V = 0x56
+                KEYEVENTF_KEYUP = 0x0002
+                user32.keybd_event(VK_CONTROL, 0, 0, 0)
+                user32.keybd_event(VK_V, 0, 0, 0)
+                user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+                _tlog("_on_insert_clicked: paste complete")
+            else:
+                _tlog("_on_insert_clicked: no target_hwnd, copy only")
+
+            self.copyRequested.emit(self._translated_text)
+        except Exception as e:
+            _tlog(f"_on_insert_clicked: error: {e}")
+
+        self.dismiss()
+
     def _on_close_clicked(self):
         """Handle close button click."""
         self.dismiss()
@@ -641,6 +806,12 @@ class TranslationPopup(QWidget):
         self._current_request_id = None
         self._translated_text = ""
         self._is_loading = False
+        self._pinned = False
+        self._target_hwnd = 0
+        self._drag_pos = None
         self._source_label.clear()
         self._result_label.clear()
-        self._hint_label.setText(self._copy_hint)
+        self._hint_label.setText("")
+        self._hint_label.hide()
+        self._copy_btn.hide()
+        self._insert_btn.hide()

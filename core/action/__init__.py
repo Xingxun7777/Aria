@@ -12,6 +12,7 @@ from .types import (
     ChatAction,
     ReplaceTextAction,
     ClipboardTranslationAction,
+    ReplyAction,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "ChatAction",
     "ReplaceTextAction",
     "ClipboardTranslationAction",
+    "ReplyAction",
 ]

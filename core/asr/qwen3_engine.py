@@ -217,6 +217,7 @@ class Qwen3ASREngine(ASREngine):
         self._model: Any | None = None
         self._lock: threading.Lock = threading.Lock()
         self._context_string: str = " ".join(self.config.hotwords).strip()
+        self._recent_context: str = ""  # Recent ASR outputs for continuity
         # Track actual device used (may differ from config if fallback occurred)
         self._actual_device: str = self.config.device
         self._device_reason: str = ""
@@ -255,6 +256,15 @@ class Qwen3ASREngine(ASREngine):
     def set_initial_prompt(self, prompt: str) -> None:
         """Set initial prompt (alias for set_context for compatibility)."""
         self.set_context(prompt)
+
+    def set_recent_context(self, recent_text: str) -> None:
+        """Set recent ASR outputs as additional context for continuity.
+
+        This is appended to the hotword context when transcribing,
+        but excluded from context leakage detection.
+        """
+        with self._lock:
+            self._recent_context = (recent_text or "").strip()
 
     def _resolve_torch_dtype(self, dtype_str: str) -> Any:
         """Convert string dtype to torch.dtype."""
@@ -539,25 +549,35 @@ class Qwen3ASREngine(ASREngine):
                 # Qwen3-ASR expects tuple (audio_array, sample_rate)
                 audio_tuple = (audio_float, 16000)
 
-                context_string = self._context_string
-                if not context_string and self.config.hotwords:
-                    context_string = " ".join(self.config.hotwords).strip()
+                # Build hotword context (also used for leakage detection)
+                hotword_context = self._context_string
+                if not hotword_context and self.config.hotwords:
+                    hotword_context = " ".join(self.config.hotwords).strip()
+
+                # Combine hotword context + recent ASR context for the model
+                # Recent context is excluded from leakage detection
+                recent_ctx = self._recent_context
+                if hotword_context and recent_ctx:
+                    full_context = hotword_context + " " + recent_ctx
+                else:
+                    full_context = hotword_context or recent_ctx
 
                 # Enhanced debug logging with context preview
                 context_preview = (
-                    context_string[:300] + "..."
-                    if len(context_string) > 300
-                    else context_string
+                    full_context[:300] + "..."
+                    if len(full_context) > 300
+                    else full_context
                 )
                 _qwen3_log(
                     f">>> transcribe() - audio shape={audio_float.shape}\n"
-                    f"    context_chars={len(context_string)}\n"
+                    f"    context_chars={len(full_context)}"
+                    f" (hotword={len(hotword_context)}, recent={len(recent_ctx)})\n"
                     f"    context_preview:\n{context_preview}"
                 )
 
                 results = self._model.transcribe(
                     audio=audio_tuple,
-                    context=context_string if context_string else None,
+                    context=full_context if full_context else None,
                     language=self.config.language,
                 )
 
@@ -590,8 +610,9 @@ class Qwen3ASREngine(ASREngine):
                 # Compute audio energy for acoustic-aware leakage detection
                 audio_energy = float(np.abs(audio_float).mean())
 
-                if text and context_string:
-                    if self._is_context_leakage(text, context_string, audio_energy):
+                # Leakage detection only against hotword context (not recent ASR text)
+                if text and hotword_context:
+                    if self._is_context_leakage(text, hotword_context, audio_energy):
                         _qwen3_log(
                             f"[HALLUCINATION] Context leakage suspected: '{text[:80]}...'"
                             f" (energy={audio_energy:.5f})"

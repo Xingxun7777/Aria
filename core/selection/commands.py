@@ -25,6 +25,9 @@ class CommandType(Enum):
     TRANSLATE_POPUP = auto()  # 翻译弹窗 (show translation without replacing)
     ASK_AI = auto()  # AI 对话 (open chat dialog)
 
+    # v1.2: Reply command (generate reply to message)
+    REPLY = auto()  # 帮我回复 (generate reply in popup)
+
 
 # Command keyword mappings (module-level constant)
 # IMPORTANT: Keywords are matched by iterating this dict, so order matters!
@@ -79,6 +82,12 @@ COMMAND_KEYWORDS: Dict[str, CommandType] = {
     "问ai": CommandType.ASK_AI,
     "问一下ai": CommandType.ASK_AI,
     "ask ai": CommandType.ASK_AI,
+    # v1.2: Reply command (generate reply to message)
+    "帮我回复": CommandType.REPLY,
+    "帮我回": CommandType.REPLY,
+    "回复一下": CommandType.REPLY,
+    "回复": CommandType.REPLY,
+    "reply": CommandType.REPLY,
 }
 
 
@@ -102,6 +111,7 @@ COMMAND_PROMPTS: Dict[CommandType, str] = {
     CommandType.EXPAND: "扩写以下文本，增加更多细节和深度。直接输出扩写后的文本，禁止添加任何解释：",
     CommandType.SUMMARIZE: "缩写以下文本，保留核心信息。直接输出缩写后的文本，禁止添加任何解释：",
     CommandType.REWRITE: "重写以下文本，使用不同的表达方式。直接输出重写后的文本，禁止添加任何解释：",
+    CommandType.REPLY: "你是一个专业的回复助手。根据以下收到的消息，生成一条得体、自然的回复。直接输出回复内容：",
 }
 
 
@@ -174,7 +184,11 @@ class SelectionCommand:
         Returns:
             True if command should trigger UI action, False for text replacement
         """
-        return self.command_type in (CommandType.TRANSLATE_POPUP, CommandType.ASK_AI)
+        return self.command_type in (
+            CommandType.TRANSLATE_POPUP,
+            CommandType.ASK_AI,
+            CommandType.REPLY,
+        )
 
     def is_translate_popup(self) -> bool:
         """Check if this command triggers translation popup."""

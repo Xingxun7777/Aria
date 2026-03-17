@@ -95,6 +95,7 @@ class FloatingBall(QWidget):
     # Signals
     toggleRequested = Signal()  # Left-click: toggle ASR
     detailsRequested = Signal()  # From popup menu: open settings
+    historyRequested = Signal()  # From popup menu: open history browser
     lockToggled = Signal(bool)  # Middle-click: lock state changed
     enableToggled = Signal(bool)  # From popup menu: enable/disable
     modeChanged = Signal(str)  # From popup menu: polish mode changed
@@ -485,6 +486,7 @@ class FloatingBall(QWidget):
         self._popup_menu.enableToggled.connect(self._on_menu_enable_toggled)
         self._popup_menu.modeChanged.connect(self._on_menu_mode_changed)
         self._popup_menu.settingsRequested.connect(self._on_menu_settings)
+        self._popup_menu.historyRequested.connect(self._on_menu_history)
         self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
         self._popup_menu.streamingToggled.connect(self._on_menu_streaming_toggled)
         self._popup_menu.sleepToggled.connect(self._on_menu_sleep_toggled)
@@ -503,6 +505,10 @@ class FloatingBall(QWidget):
     def _on_menu_settings(self):
         """Handle settings request from popup menu."""
         self.detailsRequested.emit()
+
+    def _on_menu_history(self):
+        """Handle history request from popup menu."""
+        self.historyRequested.emit()
 
     def _on_menu_streaming_toggled(self, enabled):
         """Handle streaming display toggle from popup menu."""

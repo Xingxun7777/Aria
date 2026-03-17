@@ -113,9 +113,7 @@ class ToggleSwitch(QWidget):
 class ModeButton(QPushButton):
     """Styled mode selection button."""
 
-    def __init__(
-        self, text, theme: styles.ThemePalette, icon_char="", parent=None
-    ):
+    def __init__(self, text, theme: styles.ThemePalette, icon_char="", parent=None):
         super().__init__(parent)
         self._theme = theme
         self.setText(text)
@@ -162,6 +160,7 @@ class PopupMenu(QWidget):
     enableToggled = Signal(bool)
     modeChanged = Signal(str)  # "off", "quality", or "fast"
     settingsRequested = Signal()
+    historyRequested = Signal()  # v1.2: open history browser
     lockToggled = Signal(bool)  # Lock position toggle
     sleepToggled = Signal(bool)  # Sleep/wake toggle
     streamingToggled = Signal(bool)  # Streaming display toggle
@@ -239,7 +238,6 @@ class PopupMenu(QWidget):
         modes = [
             ("off", "关闭", "不润色，直接输出"),
             ("quality", "高质量", "Gemini API, ~1.7s"),
-            ("fast", "快速", "本地 Qwen, ~155ms"),
         ]
 
         for mode_id, mode_name, tooltip in modes:
@@ -328,6 +326,13 @@ class PopupMenu(QWidget):
         self.settings_btn.setStyleSheet(self._link_button_style())
         self.settings_btn.clicked.connect(self._on_settings_clicked)
         container_layout.addWidget(self.settings_btn)
+
+        # --- History Button ---
+        self.history_btn = QPushButton("历史记录")
+        self.history_btn.setCursor(Qt.PointingHandCursor)
+        self.history_btn.setStyleSheet(self._link_button_style())
+        self.history_btn.clicked.connect(self._on_history_clicked)
+        container_layout.addWidget(self.history_btn)
 
         # --- Separator ---
         separator3 = QFrame()
@@ -461,6 +466,11 @@ class PopupMenu(QWidget):
         """Handle settings button click."""
         self.close()
         self.settingsRequested.emit()
+
+    def _on_history_clicked(self):
+        """Handle history button click."""
+        self.close()
+        self.historyRequested.emit()
 
     def _on_translate_mode_clicked(self, button):
         """Handle translate output mode button click."""

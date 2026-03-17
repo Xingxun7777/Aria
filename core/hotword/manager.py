@@ -49,6 +49,15 @@ class HotWordConfig:
     polish_config: Optional[PolishConfig] = None  # For quality mode
     local_polish_config: Optional[LocalPolishConfig] = None  # For fast mode
 
+    # v1.2: 个性化偏好 + 一键开关
+    personalization_rules: str = ""
+    auto_structure: bool = False
+    filter_filler_words: bool = True
+
+    # v1.2: 窗口上下文感知
+    screen_context_enabled: bool = True
+    app_categories: Dict[str, str] = field(default_factory=dict)
+
     def __post_init__(self):
         if self.config_path:
             self.load_from_file(self.config_path)
@@ -77,6 +86,15 @@ class HotWordConfig:
 
             # Load polish mode
             self.polish_mode = data.get("polish_mode", "quality")
+
+            # v1.2: Load personalization preferences
+            self.personalization_rules = data.get("personalization_rules", "")
+            self.auto_structure = data.get("auto_structure", False)
+            self.filter_filler_words = data.get("filter_filler_words", True)
+
+            # v1.2: Load screen context settings
+            self.screen_context_enabled = data.get("screen_context_enabled", True)
+            self.app_categories = data.get("app_categories", {})
 
             # Load quality mode (API) polish config if present
             polish_data = data.get("polish", {})
@@ -151,6 +169,13 @@ class HotWordConfig:
                 "replacements": self.replacements,  # Optional: explicit corrections
                 "domain_context": self.domain_context,
                 "polish_mode": self.polish_mode,
+                # v1.2: personalization preferences
+                "personalization_rules": self.personalization_rules,
+                "auto_structure": self.auto_structure,
+                "filter_filler_words": self.filter_filler_words,
+                # v1.2: screen context settings
+                "screen_context_enabled": self.screen_context_enabled,
+                "app_categories": self.app_categories,
                 # Note: prompt_words is auto-generated from hotwords, not saved
             }
         )
@@ -535,6 +560,14 @@ class HotWordManager:
                 self.config.polish_config.hotwords_cautious = tiers["cautious"]
                 # hotwords_context left as default [] (v3.1 simplified tiers)
                 self.config.polish_config.domain_context = self.config.domain_context
+                # v1.2: Pass personalization preferences to polisher config
+                self.config.polish_config.personalization_rules = (
+                    self.config.personalization_rules
+                )
+                self.config.polish_config.auto_structure = self.config.auto_structure
+                self.config.polish_config.filter_filler_words = (
+                    self.config.filter_filler_words
+                )
                 self._polisher = AIPolisher(self.config.polish_config)
                 logger.debug(
                     f"Polish hotwords: {len(all_polish_hotwords)}/{len(self.config.prompt_words)} "

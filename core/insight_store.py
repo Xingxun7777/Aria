@@ -1,6 +1,9 @@
 """
-Aria Insight Store
-==================
+Aria Insight Store (DEPRECATED — use core.history.HistoryStore instead)
+======================================================================
+Kept for backward compatibility during v1.2 transition.
+All new code should use HistoryStore. This module will be removed in v1.3.
+
 Simple storage for voice transcripts to enable AI-powered retrieval.
 
 Usage:

@@ -39,17 +39,17 @@ DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标�
 【英文参考词汇】{hotwords_english}
 
 【跨语言替换示例 - 应该替换】
-原文：这个咖啡鱼啊，用起来效果还挺好的。
-修正：这个ComfyUI啊，用起来效果还挺好的。
-理由："咖啡鱼"是ComfyUI的中文音译乱码，技术语境
+原文：我觉得迪普seek写代码还行，就是有时候慢。
+修正：我觉得deepseek写代码还行，就是有时候慢。
+理由："迪普seek"是deepseek的中文音译+英文混合误识别
 
-原文：我还是用这个复conu i工作的话
-修正：我还是用这个ComfyUI工作的话，
-理由："复conu i"是无意义乱码，发音近似ComfyUI
+原文：你试试看用杰米尼来分析一下这张图。
+修正：你试试看用gemini来分析一下这张图。
+理由："杰米尼"是gemini的中文音译，AI工具语境
 
-原文：我用cloud code来调试bug
-修正：我用claude code来调试bug。
-理由：编程语境 + cloud code 是明显的误识别
+原文：那个卡飞UI的工作流我还没搭完。
+修正：那个ComfyUI的工作流我还没搭完。
+理由："卡飞UI"是ComfyUI的中文音译误识别，AI绘图语境
 
 【不要替换的情况】
 原文：I will try to think about it
@@ -68,19 +68,6 @@ DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标�
 
 原文：{text}
 修正："""
-
-# Simple prompt without hotwords (fallback)
-SIMPLE_POLISH_PROMPT = """你是语音转文字润色助手。任务：
-
-1. 【修正谐音】修正中文同音字错误
-2. 【禁止翻译】英文保持英文，中文保持中文
-3. 【标点格式】添加合适标点，整理格式使语句通顺
-4. 【保留语气】保留呢、吗、吧等语气词，不要改变句子的疑问/陈述性质
-5. 【禁止格式】禁止添加任何Markdown格式（*、**、#等），只输出纯文本
-
-原文：{text}
-
-润色后："""
 
 
 @dataclass
@@ -110,6 +97,11 @@ class PolishConfig:
     # Domain context and hotwords for intelligent correction
     domain_context: str = ""
     hotwords: list = None  # List of hotword strings (all weight >= 0.3, v3.3)
+
+    # v1.2: 个性化偏好 + 一键开关
+    personalization_rules: str = ""  # 用户自然语言规则（每行一条）
+    auto_structure: bool = False  # 自动结构化开关
+    filter_filler_words: bool = True  # 口语过滤开关（默认开启，保持现有行为）
 
     # Tiered hotwords (set by HotWordManager, v3.1 with English support)
     hotwords_critical: list = None  # weight = 1.0: mandatory vocabulary (中英文)
@@ -240,8 +232,13 @@ class AIPolisher:
             self._client = httpx.Client(timeout=self.config.timeout)
         return self._client
 
-    def _build_prompt(self, text: str) -> str:
-        """Build the full prompt with hotwords and domain context."""
+    def _build_prompt(self, text: str, screen_context: str = "") -> str:
+        """Build the full prompt with hotwords, domain context, and v1.2 feature rules.
+
+        Args:
+            text: Raw ASR output to polish
+            screen_context: Runtime window context string (e.g., "用户当前在WeChat中（聊天场景）")
+        """
         from .utils import is_cjk_word
 
         template = self.config.prompt_template
@@ -390,9 +387,118 @@ class AIPolisher:
                 # No anchor in template — prepend cautious block (defensive fallback)
                 rendered = cautious_block + "\n" + rendered
 
+        # v1.2: Inject feature rules block (personalization + one-click toggles)
+        feature_parts = []
+
+        # 一键开关：结构化
+        if self.config.auto_structure:
+            feature_parts.append(
+                "- 当内容较长且包含多个要点时，适当用换行分段、用编号列举。"
+                "短句或单一话题不要加结构。禁止使用Markdown格式符，只输出纯文本"
+            )
+
+        # 一键开关：口语过滤
+        if self.config.filter_filler_words:
+            feature_parts.append(
+                '- 去除无意义的口语填充词（如"就是"、"然后的话"、"嗯"、"呃"等），'
+                "保留有实际含义的用法和句尾语气词"
+            )
+
+        # 用户自定义规则
+        if (
+            self.config.personalization_rules
+            and self.config.personalization_rules.strip()
+        ):
+            for line in self.config.personalization_rules.strip().splitlines():
+                if line.strip():
+                    feature_parts.append(f"- {line.strip()}")
+
+        if feature_parts:
+            feature_rules_block = (
+                "\n【个性化规则】请严格遵守以下规则：\n"
+                + "\n".join(feature_parts)
+                + "\n"
+            )
+            # Inject before the 原文 anchor in template
+            template_anchor = template.rfind("原文：")
+            if template_anchor > 0:
+                # Use same offset-mapping approach as cautious block
+                template_prefix = template[:template_anchor]
+                try:
+                    rendered_prefix_len = len(
+                        template_prefix.format(
+                            text=text,
+                            hotwords=hotwords_str,
+                            hotwords_chinese=hotwords_chinese_str,
+                            hotwords_english=hotwords_english_str,
+                            domain_context=domain_context,
+                            hotwords_critical=(
+                                ", ".join(self.config.hotwords_critical[:15])
+                                if self.config.hotwords_critical
+                                else "无"
+                            ),
+                            hotwords_strong=(
+                                ", ".join(self.config.hotwords_strong[:15])
+                                if self.config.hotwords_strong
+                                else "无"
+                            ),
+                            hotwords_context=(
+                                ", ".join(self.config.hotwords_context[:15])
+                                if self.config.hotwords_context
+                                else "无"
+                            ),
+                        )
+                    )
+                    # Account for any previously injected blocks (cautious)
+                    # by searching from the rendered_prefix_len position
+                    final_anchor = rendered.find("原文：", rendered_prefix_len - 10)
+                    if final_anchor > 0:
+                        rendered = (
+                            rendered[:final_anchor]
+                            + feature_rules_block
+                            + "\n"
+                            + rendered[final_anchor:]
+                        )
+                    else:
+                        rendered = rendered + feature_rules_block
+                except (KeyError, IndexError):
+                    # Fallback: append before end
+                    final_anchor = rendered.rfind("原文：")
+                    if final_anchor > 0:
+                        rendered = (
+                            rendered[:final_anchor]
+                            + feature_rules_block
+                            + "\n"
+                            + rendered[final_anchor:]
+                        )
+                    else:
+                        rendered = rendered + feature_rules_block
+            else:
+                # No anchor — append to end
+                rendered = rendered + feature_rules_block
+
+        # v1.2: Inject screen context (runtime parameter, not persisted)
+        if screen_context:
+            screen_context_block = (
+                f"\n【当前场景】{screen_context}\n"
+                "根据场景调整文风：聊天场景保留口语感和语气词；"
+                "文档/邮件场景偏书面化；编程场景严格保留英文标识符大小写。\n"
+            )
+            # Inject before 原文 anchor
+            final_anchor = rendered.rfind("原文：")
+            if final_anchor > 0:
+                rendered = (
+                    rendered[:final_anchor]
+                    + screen_context_block
+                    + "\n"
+                    + rendered[final_anchor:]
+                )
+            else:
+                rendered = rendered + screen_context_block
+
         return rendered
 
-    def polish(self, text: str) -> str:
+    def polish(self, text: str, screen_context: str = "") -> str:
         """
         Polish the transcribed text using LLM.
 
@@ -411,16 +517,22 @@ class AIPolisher:
         try:
             client = self._get_client()
 
-            # Build request with hotwords context
-            prompt = self._build_prompt(text)
+            # Build request with hotwords context + v1.2 screen context
+            prompt = self._build_prompt(text, screen_context=screen_context)
 
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.config.api_key}",
             }
 
-            # System message for JSON output mode
-            system_msg = '你是文本修正工具。返回JSON格式：{"text": "修正后的文本"}'
+            # System message with core constraints
+            system_msg = (
+                "你是语音识别文本修正工具。严格规则：\n"
+                "1. 禁止回答、补充、解释任何内容\n"
+                "2. 严禁改变句子原意或增删实质信息\n"
+                "3. 禁止添加Markdown格式\n"
+                '4. 必须返回JSON格式：{"text": "修正后的文本"}'
+            )
 
             # Request JSON output to prevent explanations
             json_prompt = f'{prompt}\n\n输出JSON：{{"text": "修正后的文本"}}'
@@ -469,13 +581,15 @@ class AIPolisher:
                 return text
 
             # LENGTH PROTECTION: Reject if too much content removed
-            # This is a mechanical safety net - prompts can fail, code doesn't
+            # Relax threshold when filler word filtering is active (filler removal
+            # legitimately shortens text, 0.8 would reject valid cleanups)
+            length_ratio = 0.6 if self.config.filter_filler_words else 0.8
             original_len = len(text)
             polished_len = len(polished)
-            if polished_len < original_len * 0.8:
+            if polished_len < original_len * length_ratio:
                 logger.warning(
                     f"Polish rejected: removed {100 - polished_len * 100 // original_len}% content "
-                    f"({original_len} -> {polished_len} chars)"
+                    f"({original_len} -> {polished_len} chars, threshold={length_ratio})"
                 )
                 return text
 
@@ -489,9 +603,13 @@ class AIPolisher:
             logger.error(f"Polish error: {e}")
             return text
 
-    def polish_with_debug(self, text: str) -> Dict[str, Any]:
+    def polish_with_debug(self, text: str, screen_context: str = "") -> Dict[str, Any]:
         """
         Polish text and return full debug information.
+
+        Args:
+            text: Raw ASR output
+            screen_context: Runtime window context string (v1.2)
 
         Returns:
             Dict with keys: output_text, changed, api_time_ms, error, http_status, full_prompt
@@ -528,8 +646,8 @@ class AIPolisher:
         try:
             client = self._get_client()
 
-            # Build request with hotwords context
-            prompt = self._build_prompt(text)
+            # Build request with hotwords context + v1.2 screen context
+            prompt = self._build_prompt(text, screen_context=screen_context)
             debug_info["full_prompt"] = prompt
 
             headers = {
@@ -537,8 +655,14 @@ class AIPolisher:
                 "Authorization": f"Bearer {current_key}",
             }
 
-            # System message for JSON output mode
-            system_msg = '你是文本修正工具。返回JSON格式：{"text": "修正后的文本"}'
+            # System message with core constraints (must match polish() method)
+            system_msg = (
+                "你是语音识别文本修正工具。严格规则：\n"
+                "1. 禁止回答、补充、解释任何内容\n"
+                "2. 严禁改变句子原意或增删实质信息\n"
+                "3. 禁止添加Markdown格式\n"
+                '4. 必须返回JSON格式：{"text": "修正后的文本"}'
+            )
 
             # Request JSON output to prevent explanations
             json_prompt = f'{prompt}\n\n输出JSON：{{"text": "修正后的文本"}}'
@@ -598,15 +722,17 @@ class AIPolisher:
                 return debug_info
 
             # LENGTH PROTECTION: Reject if too much content removed
+            length_ratio = 0.6 if self.config.filter_filler_words else 0.8
             original_len = len(text)
             polished_len = len(polished)
-            if polished_len < original_len * 0.8:
+            if polished_len < original_len * length_ratio:
                 debug_info["error"] = (
-                    f"Removed {100 - polished_len * 100 // original_len}% content"
+                    f"Removed {100 - polished_len * 100 // original_len}% content "
+                    f"(threshold={length_ratio})"
                 )
                 logger.warning(
                     f"Polish rejected: removed too much content "
-                    f"({original_len} -> {polished_len} chars)"
+                    f"({original_len} -> {polished_len} chars, threshold={length_ratio})"
                 )
                 return debug_info
 

@@ -221,6 +221,19 @@
       ],
       "response": "已记录想法",
       "capture_following": true
+    },
+    "reply_popup": {
+      "action": "reply_popup",
+      "value": null,
+      "triggers": [
+        "帮我回复",
+        "帮我回",
+        "回复一下",
+        "回复",
+        "帮我回复一下"
+      ],
+      "response": "正在生成回复...",
+      "capture_following": true
     }
   }
 }

@@ -144,6 +144,7 @@ from .core.command import CommandDetector, CommandExecutor
 from .core.wakeword import WakewordDetector, WakewordExecutor
 from .core.debug import DebugSession, DebugConfig
 from .core.insight_store import InsightStore
+from .core.history import HistoryStore, RecordType
 from .core.selection import (
     SelectionDetector,
     SelectionProcessor,
@@ -270,6 +271,17 @@ class AriaApp:
 
         # Pre-ASR energy gate (configurable from settings, updated by hot-reload)
         self._energy_threshold = 0.003
+
+        # Noise text filter (post-ASR, drops filler-only outputs like 嗯/啊/呃)
+        self._noise_filter_enabled = True
+
+        # Recent ASR context buffer for continuity across speech segments
+        self._recent_asr_buffer: list = []  # [text, text, ...]
+        self._recent_context_max = 10  # keep last N entries
+
+        # Screen OCR for ASR context (triggered on speech start)
+        self._screen_ocr = None  # Lazy init
+        self._screen_ocr_enabled = True
 
         # Sleeping mode: ignore all input except wakeword commands
         self._is_sleeping = False
@@ -675,6 +687,12 @@ class AriaApp:
             0.0005, min(0.02, vad_cfg.get("energy_threshold", 0.003))
         )
 
+        # Post-ASR noise text filter
+        self._noise_filter_enabled = vad_cfg.get("noise_filter", True)
+
+        # Screen OCR switch
+        self._screen_ocr_enabled = vad_cfg.get("screen_ocr", True)
+
         # Find audio device ID from config name
         audio_device_name = asr_cfg.get("audio_device")
         audio_device_id = self._find_audio_device_id(audio_device_name)
@@ -885,11 +903,48 @@ class AriaApp:
         else:
             print("[WAKEWORD] Disabled")
 
-        # Insight store for voice memo recording
+        # Insight store for voice memo recording (deprecated, kept for compatibility)
         self.insight_store = InsightStore(
             data_dir=Path(__file__).parent / "data" / "insights"
         )
         print("[INSIGHT] Voice insight store initialized")
+
+        # Unified history store (v1.2) - reads config from hotwords.json
+        _history_enabled = True
+        _history_retention = 90
+        try:
+            _hcfg_path = Path(__file__).parent / "config" / "hotwords.json"
+            if _hcfg_path.exists():
+                import json as _hjson
+
+                with open(_hcfg_path, "r", encoding="utf-8") as _hf:
+                    _hcfg = _hjson.load(_hf)
+                _history_enabled = _hcfg.get("history_enabled", True)
+                _history_retention = _hcfg.get("history_retention_days", 90)
+        except Exception:
+            pass
+
+        self.history_store = HistoryStore(
+            data_dir=Path(__file__).parent / "data" / "history",
+            enabled=_history_enabled,
+            retention_days=_history_retention,
+        )
+        print(
+            f"[HISTORY] Unified history store initialized (enabled={_history_enabled}, retention={_history_retention}d)"
+        )
+
+        # Run migration from legacy data (once)
+        try:
+            from .core.history.migrator import run_migration
+
+            run_migration(
+                config_path=Path(__file__).parent / "config" / "hotwords.json",
+                debug_dir=Path(__file__).parent / "DebugLog",
+                insight_dir=Path(__file__).parent / "data" / "insights",
+                history_store=self.history_store,
+            )
+        except Exception as e:
+            print(f"[HISTORY] Migration skipped: {e}")
 
         # Selection mode components
         self.selection_detector = SelectionDetector(self.output_injector)
@@ -901,6 +956,18 @@ class AriaApp:
         logger.debug("Speech detected")
         print("\n[MIC] Speaking...")
         self._emit_voice_activity(True)
+
+        # Trigger screen OCR in background (result ready by the time ASR runs)
+        if self._screen_ocr_enabled:
+            if self._screen_ocr is None:
+                try:
+                    from aria.core.context.screen_ocr import ScreenOCR
+
+                    self._screen_ocr = ScreenOCR(max_text_len=500)
+                except Exception:
+                    pass
+            if self._screen_ocr:
+                self._screen_ocr.trigger()
 
         # Start streaming ASR (interim results while speaking)
         self._last_interim_text = ""
@@ -1193,6 +1260,18 @@ class AriaApp:
 
                 _pipeline_log("ASR", "Starting transcription...")
                 asr_start = time_module.time()
+                # Update recent context for ASR (recent speech + screen OCR)
+                if hasattr(self.asr_engine, "set_recent_context"):
+                    parts = []
+                    if self._recent_asr_buffer:
+                        parts.append(" ".join(self._recent_asr_buffer))
+                    if self._screen_ocr:
+                        ocr_text = self._screen_ocr.get_text()
+                        if ocr_text:
+                            parts.append(ocr_text)
+                    if parts:
+                        self.asr_engine.set_recent_context(" ".join(parts))
+
                 # Use lock to prevent concurrent ASR (interim vs final)
                 # Timeout protection: if transcribe hangs (GPU error, model crash),
                 # don't block the worker forever — skip after 30 seconds.
@@ -1305,6 +1384,40 @@ class AriaApp:
                             )
                             debug.log_error(f"Hallucination filtered: '{text}'")
                             text = ""
+
+                # Post-ASR noise text filter: drop filler-only outputs
+                # Safe: only drops known filler sounds, never meaningful words like 好的/行/可以
+                if text and self._noise_filter_enabled:
+                    _filler_set = {
+                        "嗯",
+                        "啊",
+                        "哦",
+                        "呃",
+                        "额",
+                        "噢",
+                        "唔",
+                        "嗯嗯",
+                        "啊啊",
+                        "哦哦",
+                        "呃呃",
+                        "嗯哼",
+                        "嗯啊",
+                    }
+                    import re
+
+                    _stripped = re.sub(r"[，。！？、,\.!\?\s]", "", text)
+                    if _stripped in _filler_set:
+                        print(f"[NOISE] Filtered filler text: '{text}'")
+                        _pipeline_log("NOISE", f"Filtered: '{text}'")
+                        text = ""
+
+                # Add successful ASR result to recent context buffer
+                if text:
+                    self._recent_asr_buffer.append(text)
+                    if len(self._recent_asr_buffer) > self._recent_context_max:
+                        self._recent_asr_buffer = self._recent_asr_buffer[
+                            -self._recent_context_max :
+                        ]
 
                 # Emit interim text to UI (before polish)
                 if text:
@@ -1426,8 +1539,38 @@ class AriaApp:
                     _pipeline_log("POST", "Layer 3: Polish starting...")
                     polish_debug = None  # 初始化，防止未定义
                     if _snap_polisher:
+                        # v1.2: Build screen context string (runtime, not persisted)
+                        screen_ctx_str = ""
+                        try:
+                            if _snap_hwm and _snap_hwm.config.screen_context_enabled:
+                                from aria.system.output import (
+                                    get_foreground_window_info,
+                                )
+                                from aria.core.context import AppCategoryDetector
+
+                                ctx_info = get_foreground_window_info()
+                                proc = ctx_info.get("process_name", "")
+                                if proc:
+                                    cat = AppCategoryDetector.detect(
+                                        proc,
+                                        user_overrides=_snap_hwm.config.app_categories,
+                                    )
+                                    app_name = proc.replace(".exe", "").replace(
+                                        ".EXE", ""
+                                    )
+                                    screen_ctx_str = (
+                                        f"用户当前在{app_name}中（{cat}场景）"
+                                    )
+                                    _pipeline_log(
+                                        "POST", f"Screen context: {screen_ctx_str}"
+                                    )
+                        except Exception as e:
+                            _pipeline_log("POST", f"Screen context failed: {e}")
+
                         before_polish = text
-                        polish_debug = _snap_polisher.polish_with_debug(text)
+                        polish_debug = _snap_polisher.polish_with_debug(
+                            text, screen_context=screen_ctx_str
+                        )
                         text = polish_debug["output_text"]
 
                         # Log Polish debug info
@@ -1538,7 +1681,7 @@ class AriaApp:
                 # Finalize and save debug session
                 debug.finalize(final_text=final_text, inserted=inserted)
 
-                # Save to insight store for AI retrieval
+                # Save to insight store for AI retrieval (deprecated)
                 if final_text and final_text.strip() and self.insight_store:
                     duration_s = (
                         debug.info.audio.duration_seconds if debug.info.audio else 0.0
@@ -1548,6 +1691,27 @@ class AriaApp:
                         timestamp=debug.info.start_time,
                         duration_s=duration_s,
                         session_id=session_id,
+                    )
+
+                # Save to unified history store (v1.2)
+                if final_text and final_text.strip() and self.history_store:
+                    raw_text = (
+                        debug.info.asr.raw_text
+                        if debug.info.asr and hasattr(debug.info.asr, "raw_text")
+                        else ""
+                    )
+                    duration_s = (
+                        debug.info.audio.duration_seconds if debug.info.audio else 0.0
+                    )
+                    self.history_store.add(
+                        record_type=RecordType.ASR,
+                        input_text=raw_text or final_text,
+                        output_text=final_text if raw_text else "",
+                        timestamp=debug.info.start_time,
+                        metadata={
+                            "session_id": session_id,
+                            "duration_s": round(duration_s, 2),
+                        },
                     )
 
                 if DebugConfig.print_summary:
@@ -2183,9 +2347,16 @@ class AriaApp:
 
                     # Update energy gate (used by ASR worker)
                     self._energy_threshold = new_energy
+
+                    # Update noise filter and screen OCR
+                    self._noise_filter_enabled = vad_cfg.get("noise_filter", True)
+                    self._screen_ocr_enabled = vad_cfg.get("screen_ocr", True)
+
                     print(
                         f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, "
-                        f"min_silence={new_min_silence}ms, energy_gate={new_energy}"
+                        f"min_silence={new_min_silence}ms, energy_gate={new_energy}, "
+                        f"noise_filter={self._noise_filter_enabled}, "
+                        f"screen_ocr={self._screen_ocr_enabled}"
                     )
                 except Exception as e:
                     print(f"[HOT-RELOAD] VAD update failed: {e}")

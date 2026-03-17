@@ -117,6 +117,59 @@ def get_foreground_window_pid() -> Tuple[int, int]:
     return hwnd, pid.value
 
 
+def get_foreground_window_info() -> Dict:
+    """
+    v1.2: Get foreground window info for screen context awareness.
+
+    Returns dict with keys: hwnd, pid, window_title, process_name.
+    Never raises — returns empty/default values on failure.
+    """
+    result = {"hwnd": 0, "pid": 0, "window_title": "", "process_name": ""}
+    try:
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return result
+        result["hwnd"] = hwnd
+
+        # Get PID
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        result["pid"] = pid.value
+
+        # Get window title
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, buf, 256)
+            result["window_title"] = buf.value or ""
+        except Exception:
+            pass
+
+        # Get process name via QueryFullProcessImageNameW
+        try:
+            hProcess = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value
+            )
+            if hProcess:
+                try:
+                    exe_buf = ctypes.create_unicode_buffer(512)
+                    exe_size = wintypes.DWORD(512)
+                    if kernel32.QueryFullProcessImageNameW(
+                        hProcess, 0, exe_buf, ctypes.byref(exe_size)
+                    ):
+                        import os
+
+                        result["process_name"] = os.path.basename(exe_buf.value)
+                finally:
+                    kernel32.CloseHandle(hProcess)
+        except Exception:
+            pass  # Protected/elevated process — fallback to empty
+
+    except Exception as e:
+        logger.debug(f"get_foreground_window_info failed: {e}")
+
+    return result
+
+
 def is_target_elevated() -> bool:
     """
     Check if the current foreground window's process is elevated.
@@ -384,6 +437,17 @@ advapi32.GetTokenInformation.argtypes = [
     ctypes.POINTER(wintypes.DWORD),  # ReturnLength
 ]
 advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+# v1.2: Window info APIs for screen context awareness
+user32.GetWindowTextW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    ctypes.c_wchar_p,
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
 
 @dataclass

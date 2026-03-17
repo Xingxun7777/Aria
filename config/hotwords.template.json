@@ -19,6 +19,12 @@
     "scale": "skill"
   },
   "domain_context": "",
+  "personalization_rules": "",
+  "reply_style": "",
+  "auto_structure": false,
+  "filter_filler_words": true,
+  "screen_context_enabled": true,
+  "app_categories": {},
   "polish_mode": "quality",
   "polish": {
     "enabled": false,
@@ -30,7 +36,7 @@
   },
   "local_polish": {
     "enabled": false,
-    "model_path": "models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "model_path": "",
     "n_gpu_layers": -1,
     "n_ctx": 512
   },
@@ -42,6 +48,8 @@
     "start_active": true
   },
   "vad": {
+    "noise_filter": true,
+    "screen_ocr": true,
     "threshold": 0.2,
     "min_silence_ms": 1200,
     "energy_threshold": 0.003

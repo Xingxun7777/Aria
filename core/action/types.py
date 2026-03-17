@@ -20,6 +20,7 @@ class ActionType(Enum):
     SHOW_SUMMARY = auto()  # Summary popup (don't replace original)
     CLIPBOARD_TRANSLATION = auto()  # Translate and copy to clipboard
     OPEN_CHAT = auto()  # AI chat dialog
+    SHOW_REPLY = auto()  # Reply popup (generate reply to message)
 
 
 def _generate_request_id() -> str:
@@ -144,3 +145,28 @@ class ClipboardTranslationAction(UIAction):
 
     def __post_init__(self):
         object.__setattr__(self, "type", ActionType.CLIPBOARD_TRANSLATION)
+
+
+@dataclass
+class ReplyAction(UIAction):
+    """
+    Action to show reply suggestion in a popup.
+
+    Flow:
+    1. Backend creates ReplyAction with source_text (the message to reply to)
+    2. QtBridge emits actionTriggered signal
+    3. UI receives action, shows loading popup (reuses TranslationPopup)
+    4. ReplyWorker generates reply via LLM
+    5. Worker signals completion, UI updates popup with result
+
+    v1.2: Supports style_hint from capture_following (e.g., "语气强硬一点")
+    """
+
+    type: ActionType = field(default=ActionType.SHOW_REPLY, init=False)
+    source_text: str = ""  # The message user wants to reply to
+    reply_text: Optional[str] = None  # Filled by worker on completion
+    error: Optional[str] = None  # Filled on error
+    style_hint: Optional[str] = None  # Optional style from capture_following
+
+    def __post_init__(self):
+        object.__setattr__(self, "type", ActionType.SHOW_REPLY)

@@ -99,6 +99,7 @@ class WakewordExecutor:
             "summarize_popup": self._summarize_popup,
             "ask_ai": self._ask_ai,
             "save_highlight": self._save_highlight,
+            "reply_popup": self._reply_popup,
         }
 
     def execute(
@@ -510,9 +511,7 @@ class WakewordExecutor:
                 return False
 
             if text_len > MAX_SUMMARY_LEN:
-                _debug(
-                    f"Text too long for summary: {text_len} > {MAX_SUMMARY_LEN}"
-                )
+                _debug(f"Text too long for summary: {text_len} > {MAX_SUMMARY_LEN}")
                 print(f"[SUMMARY_POPUP] 选中文本过长 ({text_len} 字符)")
                 if self.bridge and hasattr(self.bridge, "emit_error"):
                     self.bridge.emit_error(
@@ -545,7 +544,7 @@ class WakewordExecutor:
 
     def _ask_ai(self, _value) -> bool:
         """
-        Open AI chat dialog with selected text as context (v1.1 feature).  
+        Open AI chat dialog with selected text as context (v1.1 feature).
 
         Unlike selection_process which replaces text, this:
         1. Detects selected text
@@ -601,6 +600,105 @@ class WakewordExecutor:
             return True
         else:
             _debug("No bridge.emit_action available")
+            return False
+
+    def _reply_popup(self, _value) -> bool:
+        """
+        Show reply popup for selected text (v1.2 feature).
+
+        Flow mirrors translate_popup:
+        1. Detect selected text (the message to reply to)
+        2. Restore clipboard immediately
+        3. Emit ReplyAction to UI (non-blocking)
+        4. UI worker generates reply via LLM
+        5. Popup shows suggested reply
+
+        capture_following text (e.g., "语气强硬一点") is passed as style_hint.
+
+        Returns:
+            True if action emitted successfully
+        """
+        _debug("_reply_popup() called")
+
+        # Check if app has selection detector
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("No selection_detector available")
+            return False
+
+        # Detect selected text
+        _debug("Detecting selection for reply popup...")
+        detection = self.app.selection_detector.detect()
+
+        try:
+            if not detection.has_selection or not detection.selected_text:
+                _debug("No text selected for reply popup")
+                print("[REPLY_POPUP] 未检测到选中文本")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("未检测到选中文本，请先选中要回复的消息")
+                return False
+
+            selected_text = detection.selected_text.strip()
+            text_len = len(selected_text)
+            _debug(f"Found text for reply: {text_len} chars")
+
+            # Text length validation
+            MAX_REPLY_LEN = 2000
+            MIN_REPLY_LEN = 2
+
+            if text_len < MIN_REPLY_LEN:
+                _debug(f"Text too short: {text_len} chars")
+                print(f"[REPLY_POPUP] 选中文本过短 ({text_len} 字符)")
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("选中文本过短，请选择更多内容")
+                return False
+
+            if text_len > MAX_REPLY_LEN:
+                _debug(f"Text too long: {text_len} > {MAX_REPLY_LEN}, truncating")
+                print(f"[REPLY_POPUP] 文本过长，已截断至 {MAX_REPLY_LEN} 字符")
+                selected_text = selected_text[:MAX_REPLY_LEN]
+
+            # Log preview
+            preview = selected_text[:50].replace(chr(10), " ").replace(chr(13), "")
+            print(f"[REPLY_POPUP] 源消息: {preview}...")
+
+        finally:
+            # Always restore clipboard
+            if detection.original_clipboard is not None:
+                self.app.selection_detector.restore_clipboard(
+                    detection.original_clipboard
+                )
+                _debug("Clipboard restored")
+
+        # Get style hint from capture_following (e.g., "语气强硬一点")
+        style_hint = self._pending_following_text
+        if style_hint:
+            _debug(f"Style hint from following text: '{style_hint}'")
+
+        # Emit ReplyAction to UI (non-blocking)
+        try:
+            from ..action import ReplyAction
+
+            action = ReplyAction(
+                source_text=selected_text,
+                style_hint=style_hint,
+            )
+
+            if self.bridge and hasattr(self.bridge, "emit_action"):
+                self.bridge.emit_action(action)
+                _debug(f"ReplyAction emitted: {action.request_id}")
+                print(f"[REPLY] 已发送回复请求 ({len(selected_text)} 字符)")
+                return True
+            else:
+                _debug("No bridge.emit_action available")
+                return False
+        except Exception as e:
+            _debug(f"ERROR in _reply_popup: {e}")
+            import traceback
+
+            _debug(traceback.format_exc())
             return False
 
     def _get_translation_config(self) -> Dict[str, Any]:
