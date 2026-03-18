@@ -1399,17 +1399,28 @@ class AriaApp:
                             debug.log_error(f"Hallucination filtered: '{text}'")
                             text = ""
 
-                # Post-ASR: audio duration vs text length sanity check
-                # Chinese speech ≈ 4-5 chars/sec; if text is wildly longer than
-                # what the audio duration allows, it's context leakage
+                # Post-ASR: context leakage detection
+                # Two checks: 1) text impossibly long for audio duration
+                #              2) text is verbatim substring of recent context
                 if text:
                     audio_duration_s = len(audio) / 16000
-                    max_reasonable_chars = int(audio_duration_s * 10)  # generous margin
-                    if len(text) > max_reasonable_chars and audio_duration_s < 3.0:
+                    max_reasonable_chars = int(audio_duration_s * 10)
+                    is_leakage = False
+
+                    # Check 1: length vs duration (< 5s audio)
+                    if len(text) > max_reasonable_chars and audio_duration_s < 5.0:
+                        is_leakage = True
+
+                    # Check 2: output is substring of recent context buffer
+                    if not is_leakage and len(text) > 30 and self._recent_asr_buffer:
+                        recent_combined = " ".join(self._recent_asr_buffer)
+                        if text in recent_combined:
+                            is_leakage = True
+
+                    if is_leakage:
                         print(
-                            f"[LEAKAGE] Text too long for audio: "
-                            f"{len(text)} chars / {audio_duration_s:.1f}s "
-                            f"(max {max_reasonable_chars}), dropping"
+                            f"[LEAKAGE] Context leakage detected: "
+                            f"{len(text)} chars / {audio_duration_s:.1f}s, dropping"
                         )
                         _pipeline_log(
                             "NOISE",
@@ -1446,13 +1457,17 @@ class AriaApp:
                         _pipeline_log("NOISE", f"Filtered: '{text}'")
                         text = ""
 
-                # Add successful ASR result to recent context buffer
+                # Add successful ASR result to recent context buffer (deduplicated)
                 if text:
-                    self._recent_asr_buffer.append(text)
-                    if len(self._recent_asr_buffer) > self._recent_context_max:
-                        self._recent_asr_buffer = self._recent_asr_buffer[
-                            -self._recent_context_max :
-                        ]
+                    if (
+                        not self._recent_asr_buffer
+                        or self._recent_asr_buffer[-1] != text
+                    ):
+                        self._recent_asr_buffer.append(text)
+                        if len(self._recent_asr_buffer) > self._recent_context_max:
+                            self._recent_asr_buffer = self._recent_asr_buffer[
+                                -self._recent_context_max :
+                            ]
 
                 # Emit interim text to UI (before polish)
                 if text:

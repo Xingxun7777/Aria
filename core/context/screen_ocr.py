@@ -177,6 +177,14 @@ class ScreenOCR:
         """Clean and truncate OCR text for use as ASR context."""
         import re
 
+        # Remove spaces between CJK characters (Windows OCR splits each char)
+        # e.g., "弹 簧 松 弛" → "弹簧松弛"
+        cjk = r"[\u4e00-\u9fff\u3400-\u4dbf]"
+        text = re.sub(f"({cjk})\\s+({cjk})", r"\1\2", text)
+        # Run twice to catch overlapping patterns (A B C D → AB CD → ABCD)
+        text = re.sub(f"({cjk})\\s+({cjk})", r"\1\2", text)
+
+        # Collapse remaining whitespace
         text = re.sub(r"\s+", " ", text).strip()
 
         if len(text) > self._max_text_len:
