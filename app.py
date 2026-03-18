@@ -1619,27 +1619,18 @@ class AriaApp:
                         except Exception as e:
                             _pipeline_log("POST", f"Screen context failed: {e}")
 
-                        # Extract English words from OCR for polish reference
-                        # Helps correct ASR phonetic errors like "布兰德" → "Blender"
+                        # Pass OCR screen text to polish for context-aware correction
+                        # Helps correct ASR phonetic errors (e.g., "布兰德" → "Blender")
+                        # and provides domain context for smarter polish decisions
                         if self._screen_ocr:
                             ocr_text = self._screen_ocr.get_text()
                             if ocr_text:
-                                import re as _re
-
-                                eng_words = set(
-                                    _re.findall(
-                                        r"[A-Za-z][A-Za-z0-9_\-\.]{2,}", ocr_text
-                                    )
+                                ocr_hint = f"屏幕上的文字：{ocr_text}"
+                                screen_ctx_str = (
+                                    f"{screen_ctx_str}。{ocr_hint}"
+                                    if screen_ctx_str
+                                    else ocr_hint
                                 )
-                                if eng_words:
-                                    eng_hint = "屏幕上的英文词：" + ", ".join(
-                                        sorted(eng_words)[:20]
-                                    )
-                                    screen_ctx_str = (
-                                        f"{screen_ctx_str}。{eng_hint}"
-                                        if screen_ctx_str
-                                        else eng_hint
-                                    )
 
                         before_polish = text
                         polish_debug = _snap_polisher.polish_with_debug(
