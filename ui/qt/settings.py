@@ -1264,14 +1264,21 @@ class SettingsWindow(QMainWindow):
         )
         vad_layout.addRow(self.chk_screen_ocr)
 
-        self.chk_screen_ocr_polish = QCheckBox("屏幕识别 → 润色")
+        self.chk_screen_ocr_polish = QCheckBox("屏幕识别 → 润色 (实验性)")
         self.chk_screen_ocr_polish.setChecked(False)
         self.chk_screen_ocr_polish.setToolTip(
             "将屏幕文字同时传给润色层 LLM\n"
             "可帮助纠正英文术语的中文音译（如「布兰德」→「Blender」）\n"
             "但可能偶尔导致 LLM 输出屏幕内容，默认关闭"
         )
+        polish_warn = QLabel(
+            "注意：此功能为实验性，可能导致润色输出异常内容。"
+            "已有安全保护，异常时会自动回退原文。"
+        )
+        polish_warn.setStyleSheet("color: #CC8800; font-size: 11px; margin-left: 24px;")
+        polish_warn.setWordWrap(True)
         vad_layout.addRow(self.chk_screen_ocr_polish)
+        vad_layout.addRow(polish_warn)
 
         self.vad_threshold = QDoubleSpinBox()
         self.vad_threshold.setRange(0.1, 0.9)
