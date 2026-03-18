@@ -580,9 +580,7 @@ class AIPolisher:
                 logger.warning("Polish returned empty result")
                 return text
 
-            # LENGTH PROTECTION: Reject if too much content removed
-            # Relax threshold when filler word filtering is active (filler removal
-            # legitimately shortens text, 0.8 would reject valid cleanups)
+            # LENGTH PROTECTION: Reject if too much content removed or added
             length_ratio = 0.6 if self.config.filter_filler_words else 0.8
             original_len = len(text)
             polished_len = len(polished)
@@ -590,6 +588,15 @@ class AIPolisher:
                 logger.warning(
                     f"Polish rejected: removed {100 - polished_len * 100 // original_len}% content "
                     f"({original_len} -> {polished_len} chars, threshold={length_ratio})"
+                )
+                return text
+
+            # Reject if polished text is absurdly longer than original
+            # (LLM echoed screen context or hallucinated content)
+            if polished_len > original_len * 3 and polished_len > original_len + 50:
+                logger.warning(
+                    f"Polish rejected: output too long "
+                    f"({original_len} -> {polished_len} chars, {polished_len / original_len:.1f}x)"
                 )
                 return text
 
@@ -721,7 +728,7 @@ class AIPolisher:
                 logger.warning("Polish returned empty result")
                 return debug_info
 
-            # LENGTH PROTECTION: Reject if too much content removed
+            # LENGTH PROTECTION: Reject if too much content removed or added
             length_ratio = 0.6 if self.config.filter_filler_words else 0.8
             original_len = len(text)
             polished_len = len(polished)
@@ -733,6 +740,17 @@ class AIPolisher:
                 logger.warning(
                     f"Polish rejected: removed too much content "
                     f"({original_len} -> {polished_len} chars, threshold={length_ratio})"
+                )
+                return debug_info
+
+            # Reject if polished text is absurdly longer than original
+            if polished_len > original_len * 3 and polished_len > original_len + 50:
+                debug_info["error"] = (
+                    f"Output too long ({polished_len / original_len:.1f}x)"
+                )
+                logger.warning(
+                    f"Polish rejected: output too long "
+                    f"({original_len} -> {polished_len} chars)"
                 )
                 return debug_info
 
