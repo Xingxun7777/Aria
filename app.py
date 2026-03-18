@@ -971,7 +971,7 @@ class AriaApp:
                 try:
                     from .core.context.screen_ocr import ScreenOCR
 
-                    self._screen_ocr = ScreenOCR(max_text_len=500)
+                    self._screen_ocr = ScreenOCR(max_text_len=1000)
                 except Exception:
                     self._screen_ocr_enabled = False
             if self._screen_ocr:
