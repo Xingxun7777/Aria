@@ -976,7 +976,6 @@ class AriaApp:
                     self._screen_ocr_enabled = False
             if self._screen_ocr:
                 self._screen_ocr.trigger()
-                _ocr_log("trigger() called")
 
         # Start streaming ASR (interim results while speaking)
         self._last_interim_text = ""
