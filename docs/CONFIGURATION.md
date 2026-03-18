@@ -44,8 +44,10 @@
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
+| `noise_filter` | bool | `true` | 噪声过滤：丢弃"嗯"、"啊"、"呃"等环境噪声产生的无意义文字 |
+| `screen_ocr` | bool | `true` | 屏幕识别辅助：说话时 OCR 识别屏幕文字作为 ASR 上下文 |
 | `threshold` | float | `0.2` | 语音检测灵敏度 (0.1-0.9)，值越低越灵敏 |
-| `energy_threshold` | float | `0.003` | 能量门控阈值 (0.0005-0.02)，低于此值的音频直接丢弃。小声说话可调低至 0.001 |
+| `energy_threshold` | float | `0.003` | 能量门控阈值 (0.0005-0.02)，低于此值的音频直接丢弃 |
 | `min_silence_ms` | int | `1200` | 静默判定阈值（毫秒），说完一句话后等多久认为说完了 |
 
 ## 热词系统
@@ -118,6 +120,24 @@
 
 默认 `"quality"`。实际是否生效还取决于对应润色模块的 `enabled` 字段。
 
+## 润色偏好
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `filter_filler_words` | bool | `true` | 口语过滤：去除"就是"、"嗯"、"呃"等无意义填充词 |
+| `auto_structure` | bool | `false` | 自动结构化：长段口述整理为带换行、编号的文本 |
+| `personalization_rules` | string | `""` | 个性化规则（每行一条自然语言指令）|
+| `reply_style` | string | `""` | 回复风格偏好（"帮我回复"时使用）|
+| `screen_context_enabled` | bool | `true` | 屏幕感知：根据前台应用类型调整润色风格 |
+| `app_categories` | object | `{}` | 自定义应用类别映射（进程名 → 场景类型）|
+
+**个性化规则示例：**
+```json
+{
+  "personalization_rules": "不要把口语化的表达改成书面语\n英文专有名词保留原始大小写"
+}
+```
+
 ## API 润色 (`polish`)
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -148,7 +168,7 @@
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `enabled` | bool | `false` | 启用本地 LLM 润色 |
-| `model_path` | string | `"models/qwen2.5-1.5b-instruct-q4_k_m.gguf"` | GGUF 模型路径 |
+| `model_path` | string | `""` | GGUF 模型路径（需自行下载配置）|
 | `n_gpu_layers` | int | `-1` | GPU 加速层数（-1 = 全部层上 GPU）|
 | `n_ctx` | int | `512` | 上下文窗口大小（token 数）|
 

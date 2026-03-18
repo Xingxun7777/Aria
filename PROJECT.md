@@ -1,7 +1,7 @@
-# Aria v1.1 - 项目技术文档
+# Aria v1.0.2 - 项目技术文档
 
 > Windows 本地 AI 语音听写 + 智能指令工具
-> 版本: v1.1.2 (2026-02)
+> 版本: v1.0.2 (2026-03)
 > Python: 3.12.4 | Qt: PySide6 | GPU: CUDA 12.x
 
 ---
@@ -38,7 +38,7 @@ Aria.exe → launcher_stub.py (PyInstaller EXE)
 ```
 Aria/
 ├── launcher.py            # 入口: 单例 + splash + 环境检测
-├── app.py                 # 主应用 (~2300行): 状态机 + ASR 编排 + 所有流程
+├── app.py                 # 主应用 (~2500行): 状态机 + ASR 编排 + 所有流程
 ├── progress_ipc.py        # splash 进程间通信
 ├── __init__.py            # 根包元数据 (__version__)
 ├── __main__.py            # python -m aria 入口
@@ -61,13 +61,20 @@ Aria/
 │   │   ├── fuzzy_matcher.py # Layer2.5: 拼音模糊匹配
 │   │   ├── polish.py      # Layer3: API 润色 (OpenRouter)
 │   │   └── local_polish.py # Layer3: 本地 LLM 润色 (llama.cpp)
-│   ├── selection/         # 选区指令 (润色/翻译/扩写/问AI)
+│   ├── context/           # 屏幕上下文
+│   │   ├── screen_context.py  # 应用类别检测 (20+ 内置映射)
+│   │   └── screen_ocr.py     # WinRT OCR 屏幕文字识别
+│   ├── history/           # 统一历史记录 (v1.0.2)
+│   │   ├── models.py      # RecordType 枚举 (8种类型)
+│   │   ├── store.py       # JSONL 按天分片存储
+│   │   └── migrator.py    # 遗留数据迁移 (一次性)
+│   ├── selection/         # 选区指令 (润色/翻译/扩写/回复/问AI)
 │   ├── wakeword/          # 唤醒词系统
 │   ├── command/           # 语音键盘命令 (检测+执行)
-│   ├── action/            # UI 动作类型 (Translation/Chat Action)
+│   ├── action/            # UI 动作类型 (Translation/Summary/Reply/Chat Action)
 │   ├── debug.py           # DebugConfig + DebugSession (JSON 日志)
 │   ├── logging.py         # 系统日志
-│   ├── insight_store.py   # 历史记录
+│   ├── insight_store.py   # 历史记录 (deprecated, 由 history/ 替代)
 │   └── utils/             # 工具函数
 │
 ├── system/                # 系统交互
@@ -82,13 +89,14 @@ Aria/
 │   │   ├── popup_menu.py  # 右键菜单
 │   │   ├── settings.py    # 设置面板 (84KB)
 │   │   ├── bridge.py      # QtBridge 线程安全信号桥
-│   │   ├── translation_popup.py # 翻译弹窗
+│   │   ├── translation_popup.py # 翻译/总结/回复弹窗 (拖拽/固定/插入)
+│   │   ├── history_browser.py  # 历史记录浏览器 (搜索/筛选/导出)
 │   │   ├── ai_chat_window.py   # AI 对话窗口
 │   │   ├── elevation_dialog.py # 管理员提权对话框
 │   │   ├── splash.py      # 启动画面
-│   │   ├── history.py     # 历史记录面板
+│   │   ├── history.py     # 旧版历史面板 (保留兼容)
 │   │   ├── styles.py      # 样式定义
-│   │   └── workers/       # 后台线程 (翻译等)
+│   │   └── workers/       # 后台线程 (翻译/总结/回复)
 │   └── streaming_display.py # 流式显示缓冲区
 │
 ├── config/
@@ -109,7 +117,9 @@ Aria/
 ├── assets/aria.ico        # 应用图标
 ├── models/                # 本地模型 (GGUF)
 ├── DebugLog/              # 调试日志 (gitignored)
-├── data/insights/         # 用户历史 (gitignored)
+├── data/
+│   ├── insights/          # 旧版历史 (deprecated, gitignored)
+│   └── history/           # 统一历史 JSONL (gitignored)
 ├── tests/                 # 测试
 ├── tools/                 # 开发工具
 └── docs/                  # 文档
@@ -121,27 +131,30 @@ Aria/
 ## 核心处理流水线
 
 ```
-热键触发 → 状态 RECORDING
+热键切换 → 状态 RECORDING (持续监听)
   │
   ├→ sounddevice 音频回调 → VAD 检测 (Silero)
-  │    └→ 语音开始 → ASR 队列 (maxsize=5)
-  │    └→ 语音结束 → ASR 队列
+  │    └→ 语音开始 → 触发屏幕 OCR (后台) → ASR 队列
+  │    └→ 语音结束 → ASR 队列 (maxsize=5)
   │
   ├→ 流式显示 (1.5s 间隔中间识别)
   │
-  └→ 热键再次 → 状态 TRANSCRIBING
+  └→ ASR Worker 线程消费队列
        │
-       ├→ ASR Worker 线程消费队列
-       │    └→ 引擎识别 (Qwen3/FunASR)
+       ├→ 预处理: 能量门控 (energy_gate) → 注入上下文 (热词 + 近期ASR + 屏幕OCR)
        │
-       ├→ Layer -1: 唤醒词检测 → 语音命令 (sleep/wake/auto-send)
-       ├→ Layer  0: 选区指令检测 → AI 处理
+       ├→ 引擎识别 (Qwen3-ASR / FunASR)
+       │
+       ├→ 后处理: 上下文泄露检测 → 幻觉过滤 → 噪声过滤 → 去重
+       │
+       ├→ Layer -1: 唤醒词检测 → 语音命令 (sleep/wake/auto-send/选区/回复/总结)
+       ├→ Layer  0: 语音键盘命令检测
        ├→ Layer  1: initial_prompt (ASR 引导)
        ├→ Layer  2: 规则替换 (regex)
        ├→ Layer 2.5: 拼音模糊匹配
-       ├→ Layer  3: AI 润色 (API/本地LLM)
+       ├→ Layer  3: AI 润色 (API, 含屏幕场景感知 + 口语过滤 + 结构化)
        │
-       └→ 文本输出 (剪贴板+Ctrl+V / typewriter) → 状态 IDLE
+       └→ 文本输出 (剪贴板+Ctrl+V / typewriter) → 历史记录存储
 ```
 
 ---
@@ -157,6 +170,8 @@ Aria/
 | 配置监视 | 2s 轮询热重载 | _stop_event |
 | 流式定时器 | 中间识别 | generation token |
 | Bridge | 后端→UI 信号 | QMetaObject.invokeMethod |
+| OCR 后台 | 屏幕文字识别 | _running flag + threading.Lock |
+| 翻译/总结/回复 | QRunnable Workers | QThreadPool, 信号回调 |
 
 ---
 
