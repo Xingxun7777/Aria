@@ -401,7 +401,7 @@ class SettingsWindow(QMainWindow):
         wakeword_input_layout = QHBoxLayout()
         wakeword_label = QLabel("唤醒词:")
         self.wakeword_edit = QLineEdit()
-        self.wakeword_edit.setPlaceholderText("瑶瑶")
+        self.wakeword_edit.setPlaceholderText("小助手")
         self.wakeword_edit.textChanged.connect(self._on_wakeword_text_changed)
         wakeword_input_layout.addWidget(wakeword_label)
         wakeword_input_layout.addWidget(self.wakeword_edit)
@@ -415,7 +415,7 @@ class SettingsWindow(QMainWindow):
         wakeword_layout.addWidget(self.pinyin_hint)
 
         # Example commands hint
-        example_hint = QLabel('例: "瑶瑶开启自动发送"、"瑶瑶休眠"')
+        example_hint = QLabel('例: "小助手开启自动发送"、"小助手休眠"')
         example_hint.setStyleSheet(
             self._label_style("secondary", font_size=11, extra="margin-top: 5px;")
         )
@@ -1599,12 +1599,12 @@ class SettingsWindow(QMainWindow):
             try:
                 with open(wakeword_path, "r", encoding="utf-8") as f:
                     wakeword_config = json.load(f)
-                wakeword = wakeword_config.get("wakeword", "瑶瑶")
+                wakeword = wakeword_config.get("wakeword", "小助手")
                 self.wakeword_edit.setText(wakeword)
             except Exception:
-                self.wakeword_edit.setText("瑶瑶")
+                self.wakeword_edit.setText("小助手")
         else:
-            self.wakeword_edit.setText("瑶瑶")
+            self.wakeword_edit.setText("小助手")
 
     def _show_local_polish_guide(self):
         """Show usage guide for local polish model setup."""
@@ -1903,10 +1903,10 @@ class SettingsWindow(QMainWindow):
 
         # === Wakeword - save to wakeword.json ===
         wakeword_path = self.config_path.parent / "wakeword.json"
-        new_wakeword = self.wakeword_edit.text().strip() or "瑶瑶"
+        new_wakeword = self.wakeword_edit.text().strip() or "小助手"
         try:
             # Load existing wakeword config (with corruption resilience)
-            wakeword_config = {"enabled": True, "wakeword": "瑶瑶", "commands": {}}
+            wakeword_config = {"enabled": True, "wakeword": "小助手", "commands": {}}
             if wakeword_path.exists():
                 try:
                     with open(wakeword_path, "r", encoding="utf-8") as f:
