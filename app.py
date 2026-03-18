@@ -973,9 +973,10 @@ class AriaApp:
 
                     self._screen_ocr = ScreenOCR(max_text_len=500)
                 except Exception:
-                    pass
+                    self._screen_ocr_enabled = False
             if self._screen_ocr:
                 self._screen_ocr.trigger()
+                _ocr_log("trigger() called")
 
         # Start streaming ASR (interim results while speaking)
         self._last_interim_text = ""
@@ -1275,6 +1276,11 @@ class AriaApp:
                         parts.append(" ".join(self._recent_asr_buffer))
                     if self._screen_ocr:
                         ocr_text = self._screen_ocr.get_text()
+                        _pipeline_log(
+                            "ASR",
+                            f"OCR get_text: {len(ocr_text)} chars"
+                            + (f" = '{ocr_text[:80]}...'" if ocr_text else " (empty)"),
+                        )
                         if ocr_text:
                             parts.append(ocr_text)
                     if parts:
@@ -1393,6 +1399,24 @@ class AriaApp:
                             debug.log_error(f"Hallucination filtered: '{text}'")
                             text = ""
 
+                # Post-ASR: audio duration vs text length sanity check
+                # Chinese speech ≈ 4-5 chars/sec; if text is wildly longer than
+                # what the audio duration allows, it's context leakage
+                if text:
+                    audio_duration_s = len(audio) / 16000
+                    max_reasonable_chars = int(audio_duration_s * 10)  # generous margin
+                    if len(text) > max_reasonable_chars and audio_duration_s < 3.0:
+                        print(
+                            f"[LEAKAGE] Text too long for audio: "
+                            f"{len(text)} chars / {audio_duration_s:.1f}s "
+                            f"(max {max_reasonable_chars}), dropping"
+                        )
+                        _pipeline_log(
+                            "NOISE",
+                            f"Context leakage: {len(text)} chars from {audio_duration_s:.1f}s audio",
+                        )
+                        text = ""
+
                 # Post-ASR noise text filter: drop filler-only outputs
                 # Safe: only drops known filler sounds, never meaningful words like 好的/行/可以
                 if text and self._noise_filter_enabled:
@@ -1404,6 +1428,9 @@ class AriaApp:
                         "额",
                         "噢",
                         "唔",
+                        "嘶",
+                        "哼",
+                        "啧",
                         "嗯嗯",
                         "啊啊",
                         "哦哦",
