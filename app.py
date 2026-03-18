@@ -282,6 +282,7 @@ class AriaApp:
         # Screen OCR for ASR context (triggered on speech start)
         self._screen_ocr = None  # Lazy init
         self._screen_ocr_enabled = True
+        self._screen_ocr_polish_enabled = False  # OCR → polish layer (off by default)
 
         # Sleeping mode: ignore all input except wakeword commands
         self._is_sleeping = False
@@ -690,8 +691,9 @@ class AriaApp:
         # Post-ASR noise text filter
         self._noise_filter_enabled = vad_cfg.get("noise_filter", True)
 
-        # Screen OCR switch
+        # Screen OCR switches
         self._screen_ocr_enabled = vad_cfg.get("screen_ocr", True)
+        self._screen_ocr_polish_enabled = vad_cfg.get("screen_ocr_polish", False)
 
         # Find audio device ID from config name
         audio_device_name = asr_cfg.get("audio_device")
@@ -1623,9 +1625,8 @@ class AriaApp:
                             _pipeline_log("POST", f"Screen context failed: {e}")
 
                         # Pass OCR screen text to polish for context-aware correction
-                        # Helps correct ASR phonetic errors (e.g., "布兰德" → "Blender")
-                        # and provides domain context for smarter polish decisions
-                        if self._screen_ocr:
+                        # Controlled by separate toggle (default off, may cause LLM echo)
+                        if self._screen_ocr_polish_enabled and self._screen_ocr:
                             ocr_text = self._screen_ocr.get_text()
                             if ocr_text:
                                 ocr_hint = f"屏幕上的文字：{ocr_text}"
@@ -2419,6 +2420,9 @@ class AriaApp:
                     # Update noise filter and screen OCR
                     self._noise_filter_enabled = vad_cfg.get("noise_filter", True)
                     self._screen_ocr_enabled = vad_cfg.get("screen_ocr", True)
+                    self._screen_ocr_polish_enabled = vad_cfg.get(
+                        "screen_ocr_polish", False
+                    )
 
                     print(
                         f"[HOT-RELOAD] Updated VAD: threshold={new_threshold}, "

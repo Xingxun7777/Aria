@@ -1255,14 +1255,23 @@ class SettingsWindow(QMainWindow):
         )
         vad_layout.addRow(self.chk_noise_filter)
 
-        self.chk_screen_ocr = QCheckBox("屏幕识别辅助")
+        self.chk_screen_ocr = QCheckBox("屏幕识别 → ASR")
         self.chk_screen_ocr.setChecked(True)
         self.chk_screen_ocr.setToolTip(
-            "说话时自动识别屏幕上的文字作为 ASR 上下文\n"
+            "说话时自动识别屏幕文字，注入 ASR 识别上下文\n"
             "帮助更准确地识别屏幕上出现的专业术语和名词\n"
             "例如：屏幕显示「骨骼参数」时，语音就不会被识别为「谷歌参数」"
         )
         vad_layout.addRow(self.chk_screen_ocr)
+
+        self.chk_screen_ocr_polish = QCheckBox("屏幕识别 → 润色")
+        self.chk_screen_ocr_polish.setChecked(False)
+        self.chk_screen_ocr_polish.setToolTip(
+            "将屏幕文字同时传给润色层 LLM\n"
+            "可帮助纠正英文术语的中文音译（如「布兰德」→「Blender」）\n"
+            "但可能偶尔导致 LLM 输出屏幕内容，默认关闭"
+        )
+        vad_layout.addRow(self.chk_screen_ocr_polish)
 
         self.vad_threshold = QDoubleSpinBox()
         self.vad_threshold.setRange(0.1, 0.9)
@@ -1553,6 +1562,7 @@ class SettingsWindow(QMainWindow):
         vad = self.config.get("vad", {})
         self.chk_noise_filter.setChecked(vad.get("noise_filter", True))
         self.chk_screen_ocr.setChecked(vad.get("screen_ocr", True))
+        self.chk_screen_ocr_polish.setChecked(vad.get("screen_ocr_polish", False))
         self.vad_threshold.setValue(vad.get("threshold", 0.2))
         self.vad_energy_threshold.setValue(vad.get("energy_threshold", 0.003))
         self.vad_min_silence.setValue(vad.get("min_silence_ms", 1200))
@@ -1858,6 +1868,7 @@ class SettingsWindow(QMainWindow):
             self.config["vad"] = {}
         self.config["vad"]["noise_filter"] = self.chk_noise_filter.isChecked()
         self.config["vad"]["screen_ocr"] = self.chk_screen_ocr.isChecked()
+        self.config["vad"]["screen_ocr_polish"] = self.chk_screen_ocr_polish.isChecked()
         self.config["vad"]["threshold"] = self.vad_threshold.value()
         self.config["vad"]["energy_threshold"] = self.vad_energy_threshold.value()
         self.config["vad"]["min_silence_ms"] = self.vad_min_silence.value()

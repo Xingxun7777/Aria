@@ -50,6 +50,7 @@
   "vad": {
     "noise_filter": true,
     "screen_ocr": true,
+    "screen_ocr_polish": false,
     "threshold": 0.2,
     "min_silence_ms": 1200,
     "energy_threshold": 0.003
