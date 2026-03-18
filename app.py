@@ -1594,7 +1594,10 @@ class AriaApp:
                         # v1.2: Build screen context string (runtime, not persisted)
                         screen_ctx_str = ""
                         try:
-                            if _snap_hwm and _snap_hwm.config.screen_context_enabled:
+                            if (
+                                _snap_manager
+                                and _snap_manager.config.screen_context_enabled
+                            ):
                                 from aria.system.output import (
                                     get_foreground_window_info,
                                 )
@@ -1605,7 +1608,7 @@ class AriaApp:
                                 if proc:
                                     cat = AppCategoryDetector.detect(
                                         proc,
-                                        user_overrides=_snap_hwm.config.app_categories,
+                                        user_overrides=_snap_manager.config.app_categories,
                                     )
                                     app_name = proc.replace(".exe", "").replace(
                                         ".EXE", ""
