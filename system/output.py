@@ -925,14 +925,18 @@ class OutputInjector:
         delay_s = self.config.typewriter_delay_ms / 1000
         chars_sent = 0
 
-        logger.info(f"Typewriter mode: sending {len(text)} chars")
+        logger.info(
+            f"Typewriter mode: sending {len(text)} chars to hwnd={initial_hwnd:#x}"
+        )
 
         for char in text:
             # Focus loss detection (every character for safety)
             current_hwnd = user32.GetForegroundWindow()
             if current_hwnd != initial_hwnd:
                 logger.warning(
-                    f"Focus lost after {chars_sent} chars, aborting typewriter input"
+                    f"Focus lost after {chars_sent} chars "
+                    f"(initial={initial_hwnd:#x}, current={current_hwnd:#x}), "
+                    f"aborting typewriter input"
                 )
                 return False
 
