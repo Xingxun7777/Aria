@@ -781,50 +781,37 @@ class OutputInjector:
 
     def _send_paste(self) -> bool:
         """
-        Send paste command to the active window.
-
-        Tries two strategies:
-        1. SendInput Ctrl+V (works for most apps)
-        2. WM_PASTE message fallback (works through remote desktop tools
-           that filter injected keystrokes)
+        Send Ctrl+V keystroke using SendInput.
 
         Returns:
-            True if paste was sent successfully, False otherwise.
+            True if all 4 inputs were sent successfully, False otherwise.
         """
-        # Strategy 1: SendInput Ctrl+V
         inputs = (INPUT * 4)()
 
+        # Initialize all inputs
         for i in range(4):
             inputs[i].type = INPUT_KEYBOARD
             inputs[i].union.ki.wScan = 0
             inputs[i].union.ki.time = 0
             inputs[i].union.ki.dwExtraInfo = 0
 
+        # Ctrl down
         inputs[0].union.ki.wVk = VK_CONTROL
         inputs[0].union.ki.dwFlags = 0
+
+        # V down
         inputs[1].union.ki.wVk = VK_V
         inputs[1].union.ki.dwFlags = 0
+
+        # V up
         inputs[2].union.ki.wVk = VK_V
         inputs[2].union.ki.dwFlags = KEYEVENTF_KEYUP
+
+        # Ctrl up
         inputs[3].union.ki.wVk = VK_CONTROL
         inputs[3].union.ki.dwFlags = KEYEVENTF_KEYUP
 
         result = user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
-
-        # Strategy 2: Also send WM_PASTE to the focused window/child
-        # This works through remote desktop tools (ToDesk, etc.) that
-        # filter LLKHF_INJECTED keystrokes from SendInput
-        WM_PASTE = 0x0302
-        try:
-            hwnd = user32.GetForegroundWindow()
-            if hwnd:
-                # Try focused child window first (e.g., edit control inside a window)
-                focused_child = user32.GetFocus()
-                target = focused_child if focused_child else hwnd
-                user32.SendMessageW(target, WM_PASTE, 0, 0)
-        except Exception:
-            pass  # Best-effort, don't fail if WM_PASTE doesn't work
-
         if result != 4:
             logger.warning(
                 f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
