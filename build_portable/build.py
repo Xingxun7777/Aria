@@ -406,6 +406,27 @@ def step_clean_sensitive_data():
     log("  Created: empty data/insights/")
 
     # ==========================================================================
+    # 5b. Clean HistoryStore data (user voice/translation/reply history)
+    # ==========================================================================
+    history_dir = aria_dir / "data" / "history"
+    if history_dir.exists():
+        history_files = list(history_dir.glob("*.jsonl"))
+        for f in history_files:
+            f.unlink()
+        if history_files:
+            log(f"  Removed: {len(history_files)} history file(s) from data/history/")
+    history_dir.mkdir(parents=True, exist_ok=True)
+    log("  Created: empty data/history/")
+
+    # ==========================================================================
+    # 5c. Clean OCR debug log
+    # ==========================================================================
+    ocr_log = aria_dir / "DebugLog" / "ocr_debug.log"
+    if ocr_log.exists():
+        ocr_log.unlink()
+        log("  Removed: ocr_debug.log")
+
+    # ==========================================================================
     # 6. Reset wakeword.json to default (user-friendly wakeword)
     # ==========================================================================
     wakeword_file = config_dir / "wakeword.json"
@@ -635,7 +656,9 @@ def _patch_nagisa_unicode_path_support(site_packages_dir: Path):
         )
     text = text.replace(import_block, patched_import_block, 1)
 
-    base_block = "base = os.path.dirname(os.path.abspath(__file__))\nsys.path.append(base)\n"
+    base_block = (
+        "base = os.path.dirname(os.path.abspath(__file__))\nsys.path.append(base)\n"
+    )
     patched_base_block = """_PACKAGE_BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(_PACKAGE_BASE)
 
@@ -749,9 +772,7 @@ _DATA_BASE = _get_safe_data_base(_PACKAGE_BASE)
     log("  Patched nagisa/tagger.py for non-ASCII portable paths")
 
 
-def _run_embedded_python(
-    python_exe: Path, code: str, cwd: Path, timeout: int = 120
-):
+def _run_embedded_python(python_exe: Path, code: str, cwd: Path, timeout: int = 120):
     """Run code with the embedded Python and capture output consistently."""
     import subprocess
 
@@ -931,6 +952,11 @@ def step_verify_build(full_mode: bool = False):
         "from aria.app import AriaApp; "
         "from aria.ui.qt.main import main; "
         "from aria.core.asr.qwen3_engine import Qwen3ASREngine; "
+        # v1.0.2 new modules
+        "from aria.core.context.screen_ocr import ScreenOCR; "
+        "from aria.core.history.store import HistoryStore; "
+        "from aria.core.history.models import RecordType; "
+        "from aria.ui.qt.workers.reply_worker import ReplyWorker; "
         "print('SMOKE_TEST_PASSED')"
     )
 
@@ -1015,7 +1041,9 @@ def step_verify_build(full_mode: bool = False):
         rmtree_force(verify_root)
 
     if "UNICODE_QWEN_IMPORT_OK" in unicode_result.stdout:
-        log("  Unicode-path probe PASSED — qwen_asr imports correctly from Chinese paths")
+        log(
+            "  Unicode-path probe PASSED — qwen_asr imports correctly from Chinese paths"
+        )
     else:
         error_msg = (
             unicode_result.stderr.strip()
@@ -1182,6 +1210,7 @@ def step_bundle_models():
 
 def main():
     import argparse
+
     global DIST_DIR
 
     parser = argparse.ArgumentParser(description="Aria Portable Build")

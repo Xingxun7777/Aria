@@ -15,9 +15,7 @@
   "enable_initial_prompt": true,
   "hotwords": [],
   "hotword_weights": {},
-  "replacements": {
-    "scale": "skill"
-  },
+  "replacements": {},
   "domain_context": "",
   "personalization_rules": "",
   "reply_style": "",
