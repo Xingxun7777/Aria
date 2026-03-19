@@ -239,7 +239,7 @@ class AriaApp:
         self.command_detector: CommandDetector = None
         self.command_executor: CommandExecutor = None
 
-        # Wakeword system (Layer -1: App-level commands via "瑶瑶")
+        # Wakeword system (Layer -1: App-level commands via "小助手")
         self.wakeword_detector: WakewordDetector = None
         self.wakeword_executor: WakewordExecutor = None
 
@@ -890,7 +890,7 @@ class AriaApp:
         else:
             print("[COMMAND] Voice commands disabled")
 
-        # Layer -1: Wakeword system (app-level commands via "瑶瑶")
+        # Layer -1: Wakeword system (app-level commands via "小助手")
         self.wakeword_detector = WakewordDetector()
         if self.wakeword_detector.enabled:
             self.wakeword_executor = WakewordExecutor(
@@ -1479,11 +1479,11 @@ class AriaApp:
 
                 # === Selection Command Detection ===
                 # REMOVED: Automatic selection detection based on ASR keywords
-                # Selection processing is now ONLY triggered via wakeword (瑶瑶润色, etc.)
+                # Selection processing is now ONLY triggered via wakeword (小助手润色, etc.)
                 # This prevents accidental Ctrl+C during normal dictation
                 # See: wakeword/executor.py -> _selection_process()
 
-                # === Layer -1: Wakeword Detection (app-level commands via "瑶瑶") ===
+                # === Layer -1: Wakeword Detection (app-level commands via "小助手") ===
                 # Check for wakeword to control app settings (auto-send, etc.)
                 if text and self.wakeword_detector and self.wakeword_executor:
                     wakeword_result = self.wakeword_detector.detect(text)
@@ -1498,7 +1498,7 @@ class AriaApp:
                         print(f"[WAKEWORD] {status}: {cmd_id} (raw ASR: '{text}')")
                         # Notify UI about wakeword command
                         if self._bridge and hasattr(self._bridge, "emit_command"):
-                            self._bridge.emit_command(f"瑶瑶:{cmd_id}", success)
+                            self._bridge.emit_command(f"小助手:{cmd_id}", success)
                         inserted = success
                         final_text = (
                             f"[唤醒词] {response}" if response else f"[唤醒词] {cmd_id}"
@@ -1883,7 +1883,7 @@ class AriaApp:
             return
 
         # Allow hotkey in sleeping mode - wakeword detection happens BEFORE
-        # sleeping check in _asr_worker(), so "瑶瑶醒来" will still work
+        # sleeping check in _asr_worker(), so "小助手醒来" will still work
         with self._lock:
             is_sleeping = self._is_sleeping
         if is_sleeping:
@@ -2578,7 +2578,7 @@ class AriaApp:
         Set wakeword from UI.
 
         Args:
-            wakeword: New wakeword (e.g., "瑶瑶", "小朋友", "小溪")
+            wakeword: New wakeword (e.g., "小助手", "小朋友", "小溪")
         """
         if self.wakeword_detector:
             self.wakeword_detector.set_wakeword(wakeword)
@@ -2588,13 +2588,13 @@ class AriaApp:
         """Get current wakeword."""
         if self.wakeword_detector:
             return self.wakeword_detector.wakeword
-        return "瑶瑶"
+        return "小助手"
 
     def get_available_wakewords(self) -> list:
         """Get list of available wakeword options."""
         if self.wakeword_detector:
             return self.wakeword_detector.get_available_wakewords()
-        return ["瑶瑶", "小朋友", "小溪", "助手"]
+        return ["小助手", "小朋友", "小溪", "助手"]
 
     def get_command_hints(self) -> list:
         """Get list of command hints for UI display."""

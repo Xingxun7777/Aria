@@ -26,8 +26,8 @@ class WakewordDetector:
 
     def __init__(self, config_path: Optional[str] = None):
         self.enabled = False
-        self.wakeword = "瑶瑶"
-        self.available_wakewords = ["瑶瑶", "小朋友", "小溪", "助手"]  # UI options
+        self.wakeword = "小助手"
+        self.available_wakewords = ["小助手", "小朋友", "小溪", "助手"]  # UI options
         self.commands: Dict[str, Any] = {}
         self.cooldown_ms = 500
 
@@ -51,9 +51,9 @@ class WakewordDetector:
                 config = json.load(f)
 
             self.enabled = config.get("enabled", False)
-            self.wakeword = config.get("wakeword", "瑶瑶")
+            self.wakeword = config.get("wakeword", "小助手")
             self.available_wakewords = config.get(
-                "available_wakewords", ["瑶瑶", "小朋友", "小溪", "助手"]
+                "available_wakewords", ["小助手", "小朋友", "小溪", "助手"]
             )
             self.commands = config.get("commands", {})
             self.cooldown_ms = config.get("cooldown_ms", 500)

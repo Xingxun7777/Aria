@@ -163,7 +163,7 @@ class SelectionCommand:
         # No keyword matched - return None for normal text
         # NOTE: Returning CUSTOM here was too aggressive, causing every dictation
         # to be treated as a potential selection command
-        # Selection processing is now ONLY triggered via wakeword (瑶瑶润色)
+        # Selection processing is now ONLY triggered via wakeword (小助手润色)
         return None
 
     def get_prompt_prefix(self) -> str:
