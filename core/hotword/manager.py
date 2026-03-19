@@ -607,9 +607,10 @@ class HotWordManager:
             - None if mode is "off"
             - LocalPolishEngine if mode is "fast" and local_polish enabled
             - AIPolisher if mode is "quality" and polish enabled
-            - None if no polisher available
+            - None if no polisher available (no silent fallback)
 
-        Note: Both polisher types have polish() and polish_with_debug() methods.
+        Note: Both polisher types have polish() and polish_with_debug() methods
+              with compatible signatures including screen_context parameter.
         """
         if self.config.polish_mode == "off":
             return None
@@ -617,16 +618,14 @@ class HotWordManager:
             polisher = self.get_local_polisher()
             if polisher:
                 return polisher
-            # Fallback to API if local not available (bypass enabled check)
-            logger.warning("Local polisher not available, falling back to API")
-            return self.get_polisher(ignore_enabled=True)
+            logger.warning("Local polisher not available, polish disabled")
+            return None
         else:  # "quality" mode
             polisher = self.get_polisher()
             if polisher:
                 return polisher
-            # Fallback to local if API not available (bypass enabled check)
-            logger.warning("API polisher not available, falling back to local")
-            return self.get_local_polisher(ignore_enabled=True)
+            logger.warning("API polisher not available, polish disabled")
+            return None
 
     @property
     def polish_mode(self) -> str:

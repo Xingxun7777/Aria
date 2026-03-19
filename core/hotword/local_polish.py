@@ -109,12 +109,13 @@ class LocalPolishEngine:
             logger.error(f"Failed to load local model: {e}")
             return False
 
-    def polish(self, text: str) -> str:
+    def polish(self, text: str, screen_context: str = "") -> str:
         """
         Add punctuation to transcribed text using local model.
 
         Args:
             text: Raw ASR output
+            screen_context: Unused, accepted for interface compatibility with AIPolisher
 
         Returns:
             Text with punctuation, or original text if polish fails
@@ -199,9 +200,13 @@ class LocalPolishEngine:
             logger.error(f"Local polish error: {e}")
             return text
 
-    def polish_with_debug(self, text: str) -> Dict[str, Any]:
+    def polish_with_debug(self, text: str, screen_context: str = "") -> Dict[str, Any]:
         """
         Polish text and return full debug information.
+
+        Args:
+            text: Raw ASR output
+            screen_context: Unused, accepted for interface compatibility with AIPolisher
 
         Returns:
             Dict compatible with AIPolisher.polish_with_debug() for unified handling.

@@ -1637,36 +1637,55 @@ class AriaApp:
                                 )
 
                         before_polish = text
-                        polish_debug = _snap_polisher.polish_with_debug(
-                            text, screen_context=screen_ctx_str
-                        )
-                        text = polish_debug["output_text"]
+                        try:
+                            polish_debug = _snap_polisher.polish_with_debug(
+                                text, screen_context=screen_ctx_str
+                            )
+                            text = polish_debug["output_text"]
+                        except Exception as polish_err:
+                            # Polish is optional — never block text insertion
+                            print(f"[POLISH] EXCEPTION (degraded to raw): {polish_err}")
+                            _pipeline_log("POST", f"Polish exception: {polish_err}")
+                            polish_debug = {
+                                "enabled": True,
+                                "error": str(polish_err),
+                                "api_time_ms": 0,
+                                "changed": False,
+                                "output_text": text,
+                                "input_text": text,
+                                "api_url": "",
+                                "model": "",
+                                "timeout": 0,
+                                "prompt_template": "",
+                                "full_prompt": "",
+                                "http_status": 0,
+                            }
 
                         # Log Polish debug info
                         debug.log_polish(
-                            enabled=polish_debug["enabled"],
-                            api_url=polish_debug["api_url"],
-                            model=polish_debug["model"],
-                            timeout=polish_debug["timeout"],
-                            input_text=polish_debug["input_text"],
-                            prompt_template=polish_debug["prompt_template"],
-                            full_prompt=polish_debug["full_prompt"],
-                            output_text=polish_debug["output_text"],
-                            changed=polish_debug["changed"],
-                            api_time_ms=polish_debug["api_time_ms"],
-                            error=polish_debug["error"],
-                            http_status=polish_debug["http_status"],
+                            enabled=polish_debug.get("enabled", True),
+                            api_url=polish_debug.get("api_url", ""),
+                            model=polish_debug.get("model", ""),
+                            timeout=polish_debug.get("timeout", 0),
+                            input_text=polish_debug.get("input_text", text),
+                            prompt_template=polish_debug.get("prompt_template", ""),
+                            full_prompt=polish_debug.get("full_prompt", ""),
+                            output_text=polish_debug.get("output_text", text),
+                            changed=polish_debug.get("changed", False),
+                            api_time_ms=polish_debug.get("api_time_ms", 0),
+                            error=polish_debug.get("error", ""),
+                            http_status=polish_debug.get("http_status", 0),
                         )
 
                         # 显示 API 状态（主/备用）
                         api_tag = (
                             "[备用]" if polish_debug.get("using_backup") else "[主]"
                         )
-                        if polish_debug["changed"]:
+                        if polish_debug.get("changed"):
                             print(
                                 f"[POLISH]{api_tag} '{before_polish}' -> '{text}' ({polish_debug['api_time_ms']:.0f}ms)"
                             )
-                        elif polish_debug["error"]:
+                        elif polish_debug.get("error"):
                             print(f"[POLISH]{api_tag} ERROR: {polish_debug['error']}")
                     else:
                         # Log that polish is disabled
