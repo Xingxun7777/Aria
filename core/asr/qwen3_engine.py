@@ -195,7 +195,7 @@ class Qwen3Config:
         "bfloat16"  # bfloat16 recommended; auto-fallback to float16/32 if unsupported
     )
     max_new_tokens: int = (
-        256  # Optimized for short utterances; official example uses 256
+        1024  # Support long continuous speech; 256 was too short (~80 Chinese chars)
     )
     max_inference_batch_size: int = (
         32  # Prevents OOM on long audio; official example uses 32
