@@ -1461,6 +1461,20 @@ class AriaApp:
                         _pipeline_log("NOISE", f"Filtered: '{text}'")
                         text = ""
 
+                # Short audio + short text = likely noise (not worth processing)
+                # e.g., 1.2s audio producing "猴子" — random ASR artifact
+                if text and self._noise_filter_enabled:
+                    audio_dur = len(audio) / 16000
+                    text_len = len(re.sub(r"[，。！？、,\.!\?\s]", "", text))
+                    if audio_dur < 1.5 and text_len <= 3:
+                        print(
+                            f"[NOISE] Short audio noise: '{text}' ({audio_dur:.1f}s/{text_len}chars)"
+                        )
+                        _pipeline_log(
+                            "NOISE", f"Short noise: '{text}' ({audio_dur:.1f}s)"
+                        )
+                        text = ""
+
                 # Add successful ASR result to recent context buffer (deduplicated)
                 if text:
                     if (
@@ -1590,9 +1604,17 @@ class AriaApp:
                     _pipeline_log("POST", "Layer 2.5: Fuzzy matching done")
 
                     # Layer 3: AI Polish (optional)
+                    # Skip polish for very short text (≤3 chars) — saves API cost,
+                    # short text rarely benefits from polish
                     _pipeline_log("POST", "Layer 3: Polish starting...")
-                    polish_debug = None  # 初始化，防止未定义
-                    if _snap_polisher:
+                    polish_debug = None
+                    _skip_polish = _snap_polisher and len(text.strip()) <= 3
+                    if _skip_polish:
+                        _pipeline_log(
+                            "POST",
+                            f"Polish skipped: text too short ({len(text.strip())} chars)",
+                        )
+                    if _snap_polisher and not _skip_polish:
                         # v1.2: Build screen context string (runtime, not persisted)
                         screen_ctx_str = ""
                         try:
