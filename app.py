@@ -1299,6 +1299,7 @@ class AriaApp:
                 import concurrent.futures
 
                 _pipeline_log("ASR", "Starting transcription...")
+                self._emit_text("识别中...", is_final=False)
                 asr_start = time_module.time()
                 # Update recent context for ASR (recent speech + screen OCR)
                 if hasattr(self.asr_engine, "set_recent_context"):
@@ -1320,6 +1321,16 @@ class AriaApp:
                 # Use lock to prevent concurrent ASR (interim vs final)
                 # Timeout protection: if transcribe hangs (GPU error, model crash),
                 # don't block the worker forever — skip after 30 seconds.
+                # Slow-stage hint: if ASR takes >3s, show GPU busy hint
+                _slow_hint_timer = threading.Timer(
+                    3.0,
+                    lambda: self._emit_text(
+                        "识别较慢 (本地GPU可能被占用)", is_final=False
+                    ),
+                )
+                _slow_hint_timer.daemon = True
+                _slow_hint_timer.start()
+
                 ASR_TIMEOUT_S = 30
                 with self._asr_lock:
                     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1340,6 +1351,7 @@ class AriaApp:
                         # CRITICAL: shutdown(wait=False) prevents deadlock when
                         # transcribe hangs — with-statement would call shutdown(wait=True)
                         executor.shutdown(wait=False, cancel_futures=True)
+                _slow_hint_timer.cancel()  # Cancel ASR slow hint
                 asr_time = (time_module.time() - asr_start) * 1000
                 text = result.text.strip() if result and result.text else ""
                 _pipeline_log("ASR", f"Transcription done: '{text}' ({asr_time:.0f}ms)")
@@ -1651,6 +1663,15 @@ class AriaApp:
                             f"Polish skipped: text too short ({len(text.strip())} chars)",
                         )
                     if _snap_polisher and not _skip_polish:
+                        self._emit_text("润色中...", is_final=False)
+                        # Slow-stage hint: if polish takes >3s, show API hint
+                        _polish_hint_timer = threading.Timer(
+                            3.0,
+                            lambda: self._emit_text("等待API响应...", is_final=False),
+                        )
+                        _polish_hint_timer.daemon = True
+                        _polish_hint_timer.start()
+
                         # v1.2: Build screen context string (runtime, not persisted)
                         screen_ctx_str = ""
                         try:
@@ -1703,6 +1724,8 @@ class AriaApp:
                         except Exception as polish_err:
                             # Polish is optional — never block text insertion
                             print(f"[POLISH] EXCEPTION (degraded to raw): {polish_err}")
+                        finally:
+                            _polish_hint_timer.cancel()
                             _pipeline_log("POST", f"Polish exception: {polish_err}")
                             polish_debug = {
                                 "enabled": True,
