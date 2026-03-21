@@ -741,8 +741,14 @@ def main():
                 reply_style = ""
                 try:
                     import json as _json
+                    from pathlib import Path as _Path
 
-                    with open("config/hotwords.json", "r", encoding="utf-8") as _f:
+                    _cfg_path = (
+                        _Path(__file__).parent.parent.parent
+                        / "config"
+                        / "hotwords.json"
+                    )
+                    with open(_cfg_path, "r", encoding="utf-8") as _f:
                         _cfg = _json.load(_f)
                     reply_style = _cfg.get("reply_style", "")
                 except Exception:
