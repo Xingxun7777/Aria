@@ -337,15 +337,17 @@ class WakewordExecutor:
         return True
 
     def _open_path(self, _value) -> bool:
-        """Open selected text as a file/directory path.
+        """Open selected text as a file/directory path or URL.
 
-        Detection: reads currently selected text via Ctrl+C.
-        Supports: absolute paths (C:\\..., /...), UNC paths (\\\\server\\...),
-        URLs (http/https), and common path-like strings.
+        Handles messy real-world selections from terminals and editors:
+        - Multi-line text: extracts the best path candidate
+        - Relative paths: tries multiple base dirs (project root, home, CWD)
+        - Tilde paths: ~/... expanded to user home
+        - ANSI escape codes, quotes, trailing punctuation: stripped
+        - URLs: opened in default browser
         """
         import os
         import re
-        import subprocess
 
         if (
             not hasattr(self.app, "selection_detector")
@@ -354,7 +356,6 @@ class WakewordExecutor:
             _debug("[OPEN_PATH] No selection_detector")
             return False
 
-        # Step 1: Get selected text
         detection = self.app.selection_detector.detect()
         if not detection.has_selection or not detection.selected_text:
             _debug("[OPEN_PATH] No text selected")
@@ -362,73 +363,135 @@ class WakewordExecutor:
                 self.bridge.emit_error("未检测到选中文本，请先选中路径")
             return False
 
-        # Restore clipboard
         if detection.original_clipboard is not None:
             self.app.selection_detector.restore_clipboard(detection.original_clipboard)
 
         raw = detection.selected_text.strip()
-        # Clean common artifacts: quotes, trailing punctuation, ANSI codes
-        raw = re.sub(r"[\x1b\x9b]\[[0-9;]*[a-zA-Z]", "", raw)  # ANSI escape
-        raw = raw.strip("\"'`\u200b\u00a0 \t\n\r")
+        _debug(f"[OPEN_PATH] Raw: '{raw[:100]}'")
 
-        _debug(f"[OPEN_PATH] Raw selected: '{raw}'")
+        # === Extract path from messy text ===
+        target = self._extract_and_resolve_path(raw)
 
-        if not raw:
+        if not target:
             if self.bridge and hasattr(self.bridge, "emit_error"):
-                self.bridge.emit_error("选中内容为空")
+                self.bridge.emit_error("未识别到有效路径")
             return False
 
-        # Step 2: Detect path type and resolve
-        target = None
-
-        # URL
-        if re.match(r"https?://", raw, re.IGNORECASE):
-            target = raw
-            _debug(f"[OPEN_PATH] Detected URL: {target}")
-        # Absolute Windows path (C:\... or \\server\...)
-        elif re.match(r"[A-Za-z]:[/\\]", raw) or raw.startswith("\\\\"):
-            target = os.path.normpath(raw)
-            _debug(f"[OPEN_PATH] Detected absolute path: {target}")
-        # Unix-style absolute path
-        elif raw.startswith("/") and len(raw) > 1:
-            target = os.path.normpath(raw)
-            _debug(f"[OPEN_PATH] Detected unix path: {target}")
-        else:
-            # Try as-is (might be relative or partial)
-            target = os.path.normpath(raw)
-            _debug(f"[OPEN_PATH] Treating as path: {target}")
-
-        # Step 3: Validate (skip for URLs)
-        is_url = target.startswith("http://") or target.startswith("https://")
-        if not is_url and not os.path.exists(target):
-            _debug(f"[OPEN_PATH] Path does not exist: {target}")
-            if self.bridge and hasattr(self.bridge, "emit_error"):
-                self.bridge.emit_error(f"路径不存在: {target}")
-            return False
-
-        # Step 4: Open
+        # === Open ===
         _debug(f"[OPEN_PATH] Opening: {target}")
         try:
+            is_url = target.startswith("http://") or target.startswith("https://")
             if is_url:
                 os.startfile(target)
             elif os.path.isdir(target):
-                # Open directory in Explorer
-                subprocess.Popen(["explorer", target])
+                os.startfile(target)  # Opens in Explorer
             elif os.path.isfile(target):
-                # Open file: select in Explorer (safer than startfile for unknown types)
-                subprocess.Popen(["explorer", "/select,", target])
+                # Select file in Explorer (shows the file highlighted)
+                import subprocess
+
+                subprocess.Popen(
+                    f'explorer /select,"{target}"',
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             else:
                 os.startfile(target)
 
-            print(f"[OPEN_PATH] Opened: {target}")
+            _debug(f"[OPEN_PATH] Opened: {target}")
             if self.bridge and hasattr(self.bridge, "emit_command"):
                 self.bridge.emit_command("open_path", True)
             return True
         except Exception as e:
-            _debug(f"[OPEN_PATH] Failed to open: {e}")
+            _debug(f"[OPEN_PATH] Failed: {e}")
             if self.bridge and hasattr(self.bridge, "emit_error"):
                 self.bridge.emit_error(f"打开失败: {e}")
             return False
+
+    def _extract_and_resolve_path(self, raw: str):
+        """Extract a valid path from messy selected text.
+
+        Handles: ANSI codes, quotes, multi-line, relative paths, ~/ paths.
+        Returns resolved absolute path string, or None.
+        """
+        import os
+        import re
+
+        # Strip ANSI escape codes
+        raw = re.sub(r"[\x1b\x9b]\[[0-9;]*[a-zA-Z]", "", raw)
+
+        # If multi-line, try each line as a path candidate
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        if not lines:
+            return None
+
+        # Try each line (prefer the one that resolves to an existing path)
+        candidates = lines if len(lines) > 1 else [raw.strip()]
+
+        for candidate in candidates:
+            result = self._try_resolve_single(candidate)
+            if result:
+                return result
+
+        # Last resort: try the entire raw text as one path
+        if len(lines) > 1:
+            result = self._try_resolve_single(raw.strip())
+            if result:
+                return result
+
+        return None
+
+    def _try_resolve_single(self, text: str):
+        """Try to resolve a single text string as a path."""
+        import os
+        import re
+
+        # Clean surrounding quotes, backticks, brackets, trailing punctuation
+        text = text.strip()
+        text = re.sub(r"""^["'\u2018\u2019\u201c\u201d`\[（(]+""", "", text)
+        text = re.sub(
+            r"""["'\u2018\u2019\u201c\u201d`\]）),:;.。，；！!]+$""", "", text
+        )
+        text = text.strip()
+
+        if not text:
+            return None
+
+        # URL check
+        if re.match(r"https?://\S+", text, re.IGNORECASE):
+            return text
+
+        # Expand ~ to user home
+        if text.startswith("~/") or text.startswith("~\\"):
+            text = os.path.expanduser(text)
+
+        # Normalize path separators
+        normalized = os.path.normpath(text)
+
+        # If absolute path, check directly
+        if os.path.isabs(normalized):
+            if os.path.exists(normalized):
+                return normalized
+            return None
+
+        # Relative path: try multiple base directories
+        from pathlib import Path
+
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        bases = [
+            project_root,  # Aria project root
+            Path.cwd(),  # Current working directory
+            Path.home(),  # User home
+            Path.home() / "Desktop",  # Desktop
+            Path.home() / "Downloads",  # Downloads
+        ]
+
+        for base in bases:
+            full = base / normalized
+            if full.exists():
+                return str(full.resolve())
+
+        return None
 
     def _selection_process(self, command_type: str) -> bool:
         """
