@@ -188,13 +188,16 @@ class ReminderDialog(QWidget):
         painter.setPen(QPen(self.BORDER_COLOR, 1))
         painter.drawPath(path)
 
-    def show_confirm(self, reminder_id: str, content: str, trigger_display: str):
-        """Show undo-model confirmation: 'already set, click undo to cancel'."""
+    def show_confirm(
+        self, reminder_id: str, content: str, trigger_display: str, anchor_pos=None
+    ):
+        """Show confirmation with confirm + cancel buttons near the floating ball."""
         self._mode = "confirm"
         self._reminder_id = reminder_id
+        self._anchor_pos = anchor_pos
 
         self._icon.setText("\u23F0")  # Alarm clock emoji
-        self._title.setText("已设置提醒")
+        self._title.setText("设置提醒")
         self._title.setStyleSheet(
             f"color: {self.ACCENT_BLUE.name()}; font-size: 14px; "
             f"font-weight: bold; background: transparent;"
@@ -202,16 +205,21 @@ class ReminderDialog(QWidget):
         self._content_label.setText(content)
         self._time_label.setText(trigger_display)
         self._time_label.show()
+        self._undo_btn.setText("取消")
         self._undo_btn.show()
-        self._dismiss_btn.hide()
+        self._dismiss_btn.setText("确认")
+        self._dismiss_btn.show()
 
-        self._show_popup(auto_dismiss_ms=30000)
+        self._show_popup(auto_dismiss_ms=0)  # No auto-dismiss, wait for user
         _dlog(f"Confirm: id={reminder_id}, content='{content}', time={trigger_display}")
 
-    def show_notify(self, reminder_id: str, content: str, batch_count: int = 0):
+    def show_notify(
+        self, reminder_id: str, content: str, batch_count: int = 0, anchor_pos=None
+    ):
         """Show notification: reminder time has arrived."""
         self._mode = "notify"
         self._reminder_id = reminder_id
+        self._anchor_pos = anchor_pos
 
         if batch_count > 1:
             self._icon.setText("\U0001F514")  # Bell emoji
@@ -227,6 +235,7 @@ class ReminderDialog(QWidget):
         self._content_label.setText(content)
         self._time_label.hide()
         self._undo_btn.hide()
+        self._dismiss_btn.setText("知道了")
         self._dismiss_btn.show()
 
         self._show_popup(auto_dismiss_ms=30000)
@@ -241,13 +250,25 @@ class ReminderDialog(QWidget):
 
         self.adjustSize()
 
-        # Position: top-right corner of primary screen
-        screen = QApplication.primaryScreen()
-        if screen:
-            geo = screen.availableGeometry()
-            x = geo.right() - self.width() - 20
-            y = geo.top() + 60
+        # Position: above the floating ball (anchor), or fallback to screen center
+        anchor = getattr(self, "_anchor_pos", None)
+        if anchor:
+            x = anchor.x() - self.width() // 2
+            y = anchor.y() - self.height() - 10
+            # Keep on screen
+            screen = QApplication.primaryScreen()
+            if screen:
+                geo = screen.availableGeometry()
+                x = max(geo.left() + 5, min(x, geo.right() - self.width() - 5))
+                y = max(geo.top() + 5, y)
             self.move(x, y)
+        else:
+            screen = QApplication.primaryScreen()
+            if screen:
+                geo = screen.availableGeometry()
+                x = geo.center().x() - self.width() // 2
+                y = geo.center().y() - self.height() // 2
+                self.move(x, y)
 
         self.setWindowOpacity(0.0)
         self.show()
@@ -261,8 +282,11 @@ class ReminderDialog(QWidget):
         self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._fade_anim.start()
 
-        # Auto-dismiss timer
-        self._auto_dismiss_timer.start(auto_dismiss_ms)
+        # Auto-dismiss timer (0 = no auto-dismiss, user must click)
+        if auto_dismiss_ms > 0:
+            self._auto_dismiss_timer.start(auto_dismiss_ms)
+        else:
+            self._auto_dismiss_timer.stop()
 
     def _fade_out_and_close(self):
         """Fade out then hide."""

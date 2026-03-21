@@ -82,6 +82,21 @@ def main():
 
     reminder_dialog.undoClicked.connect(on_reminder_undo)
 
+    def on_reminder_confirmed(reminder_id: str):
+        """User confirmed the reminder — show tray notification."""
+        _log(f"[MAIN] Reminder confirmed: {reminder_id}")
+        if hasattr(tray, "showMessage"):
+            # Count pending reminders for tray tooltip
+            count = 0
+            if hasattr(backend, "reminder_store") and backend.reminder_store:
+                count = len(backend.reminder_store.get_pending())
+            tray.setToolTip(f"Aria — {count} 个提醒待触发" if count else "Aria")
+            tray.showMessage(
+                "Aria", "提醒已设置 \u23F0", QSystemTrayIcon.Information, 2000
+            )
+
+    reminder_dialog.dismissClicked.connect(on_reminder_confirmed)
+
     # Thread pool for background workers
     thread_pool = QThreadPool.globalInstance()
 
@@ -770,25 +785,28 @@ def main():
                 _log(traceback.format_exc())
 
         elif action.type == ActionType.SHOW_REMINDER_CONFIRM:
-            # Undo-model confirmation: reminder already active, show toast with [撤销]
             _log(
                 f"[MAIN] Reminder confirm: {action.content} @ {action.trigger_display}"
             )
+            # Position above the floating ball
+            ball_pos = ball.mapToGlobal(ball.rect().center())
             reminder_dialog.show_confirm(
                 reminder_id=action.reminder_id,
                 content=action.content,
                 trigger_display=action.trigger_display,
+                anchor_pos=ball_pos,
             )
 
         elif action.type == ActionType.SHOW_REMINDER_NOTIFY:
-            # Reminder fired — show notification + sound + ball flash
             _log(
                 f"[MAIN] Reminder notify: {action.content} (batch={action.batch_count})"
             )
+            ball_pos = ball.mapToGlobal(ball.rect().center())
             reminder_dialog.show_notify(
                 reminder_id=action.reminder_id,
                 content=action.content,
                 batch_count=action.batch_count,
+                anchor_pos=ball_pos,
             )
             # Sound
             try:
