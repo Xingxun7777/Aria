@@ -192,6 +192,7 @@ def main():
     bridge.highlightSaved.connect(
         ball.on_highlight_saved
     )  # Gold flash for highlight save
+    bridge.slowStage.connect(ball.on_slow_stage)  # Slow pipeline glow indicator
 
     def show_error_dialog(msg: str) -> None:
         """Show non-blocking error dialog to avoid trapping the event loop."""

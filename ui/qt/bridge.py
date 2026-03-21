@@ -74,6 +74,9 @@ class QtBridge(QObject):
     # Highlight saved: (text_preview, tags)
     highlightSaved = Signal(str, list)
 
+    # Slow pipeline stage: "gpu" or "api" (triggers ball glow indicator)
+    slowStage = Signal(str)
+
     def __init__(self):
         super().__init__()
         # Thread-safe queue for passing UIAction objects
@@ -168,6 +171,12 @@ class QtBridge(QObject):
             Qt.QueuedConnection,
         )
 
+    def emit_slow_stage(self, stage: str):
+        """Thread-safe slow stage indicator. stage: 'gpu' or 'api'."""
+        QMetaObject.invokeMethod(
+            self, "_do_emit_slow_stage", Qt.QueuedConnection, Q_ARG(str, stage)
+        )
+
     # --- Internal slots (must be called on main thread) ---
 
     @Slot(str)
@@ -229,3 +238,8 @@ class QtBridge(QObject):
                 _blog(f"highlightSaved.emit done")
         except Exception as e:
             _blog(f"_do_emit_highlight_saved error: {e}")
+
+    @Slot(str)
+    def _do_emit_slow_stage(self, stage: str):
+        _blog(f"_do_emit_slow_stage: '{stage}'")
+        self.slowStage.emit(stage)

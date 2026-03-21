@@ -1299,7 +1299,6 @@ class AriaApp:
                 import concurrent.futures
 
                 _pipeline_log("ASR", "Starting transcription...")
-                self._emit_text("识别中...", is_final=False)
                 asr_start = time_module.time()
                 # Update recent context for ASR (recent speech + screen OCR)
                 if hasattr(self.asr_engine, "set_recent_context"):
@@ -1318,14 +1317,11 @@ class AriaApp:
                     if parts:
                         self.asr_engine.set_recent_context(" ".join(parts))
 
-                # Use lock to prevent concurrent ASR (interim vs final)
-                # Timeout protection: if transcribe hangs (GPU error, model crash),
-                # don't block the worker forever — skip after 30 seconds.
-                # Slow-stage hint: if ASR takes >3s, show GPU busy hint
+                # Slow-stage indicator: after 3s, tell ball to show GPU-slow glow
                 _slow_hint_timer = threading.Timer(
                     3.0,
-                    lambda: self._emit_text(
-                        "识别较慢 (本地GPU可能被占用)", is_final=False
+                    lambda: (
+                        self._bridge.emit_slow_stage("gpu") if self._bridge else None
                     ),
                 )
                 _slow_hint_timer.daemon = True
@@ -1663,11 +1659,14 @@ class AriaApp:
                             f"Polish skipped: text too short ({len(text.strip())} chars)",
                         )
                     if _snap_polisher and not _skip_polish:
-                        self._emit_text("润色中...", is_final=False)
-                        # Slow-stage hint: if polish takes >3s, show API hint
+                        # Slow-stage indicator: after 3s, tell ball to show API-slow glow
                         _polish_hint_timer = threading.Timer(
                             3.0,
-                            lambda: self._emit_text("等待API响应...", is_final=False),
+                            lambda: (
+                                self._bridge.emit_slow_stage("api")
+                                if self._bridge
+                                else None
+                            ),
                         )
                         _polish_hint_timer.daemon = True
                         _polish_hint_timer.start()

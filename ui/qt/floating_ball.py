@@ -162,6 +162,10 @@ class FloatingBall(QWidget):
         self._command_flash_active = False
         self._command_flash_color = QColor(100, 180, 255, 200)  # Default: blue
 
+        # Slow pipeline stage glow (appears only after 3s threshold)
+        self._slow_glow_active = False
+        self._slow_glow_color = None
+
         # Bounce animation for command execution (physical feedback)
         self._bounce_active = False
         self._bounce_phase = 0.0  # 0.0 -> 1.0 during animation
@@ -750,6 +754,27 @@ class FloatingBall(QWidget):
             painter.setPen(QPen(flash_color, 2.5))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
+
+        # Slow-stage glow indicator (subtle pulsing center dot)
+        # Only visible when pipeline stage exceeds 3s threshold
+        if getattr(self, "_slow_glow_active", False) and getattr(
+            self, "_slow_glow_color", None
+        ):
+            glow_color = self._slow_glow_color
+            # Pulsing alpha using rainbow_angle (already animating at 50ms)
+            pulse = int(80 + 80 * math.sin(self._rainbow_angle * math.pi / 180))
+            glow_r = radius * 0.35  # Small center glow
+            glow_grad = QRadialGradient(QPointF(center), glow_r)
+            glow_grad.setColorAt(
+                0,
+                QColor(glow_color.red(), glow_color.green(), glow_color.blue(), pulse),
+            )
+            glow_grad.setColorAt(
+                1.0, QColor(glow_color.red(), glow_color.green(), glow_color.blue(), 0)
+            )
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(glow_grad))
+            painter.drawEllipse(QPointF(center), glow_r, glow_r)
 
         # Draw icon/indicator
         self._draw_indicator(painter, center, radius)
@@ -1499,6 +1524,7 @@ class FloatingBall(QWidget):
         # Cancel fallback timer
         self._shrink_fallback_timer.stop()
         self._is_processing = False
+        self._clear_slow_glow()  # Pipeline done, clear any slow indicator
 
         # FIX: If still recording, DON'T shrink — user is speaking in continuous mode.
         # The ball should stay active-sized until recording actually stops.
@@ -1565,6 +1591,30 @@ class FloatingBall(QWidget):
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(600, self._clear_command_flash)
+
+    @Slot(str)
+    def on_slow_stage(self, stage: str):
+        """Show subtle center glow when pipeline is slow.
+
+        stage: 'gpu' (ASR slow, orange) or 'api' (polish slow, blue)
+        Only appears after 3s threshold — invisible during normal operation.
+        Auto-clears when next state change occurs (IDLE/insert_complete).
+        """
+        if stage == "gpu":
+            self._slow_glow_color = QColor(245, 158, 11, 160)  # Amber
+        elif stage == "api":
+            self._slow_glow_color = QColor(96, 165, 250, 160)  # Light blue
+        else:
+            self._slow_glow_color = None
+        self._slow_glow_active = True
+        self.update()
+
+    def _clear_slow_glow(self):
+        """Clear the slow-stage glow indicator."""
+        if hasattr(self, "_slow_glow_active") and self._slow_glow_active:
+            self._slow_glow_active = False
+            self._slow_glow_color = None
+            self.update()
 
     def _clear_command_flash(self):
         """Clear command execution flash."""
