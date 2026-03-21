@@ -2268,82 +2268,86 @@ class SettingsWindow(QMainWindow):
 
     def _open_history_folder(self):
         """Export all history to readable txt files and open the folder."""
-        import subprocess
+        import json as _json
+        import os
 
-        project_dir = Path(__file__).parent.parent.parent.resolve()
-        history_dir = project_dir / "data" / "history"
-        export_dir = project_dir / "data" / "history_txt"
-        export_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            project_dir = Path(__file__).parent.parent.parent.resolve()
+            history_dir = project_dir / "data" / "history"
+            export_dir = project_dir / "data" / "history_txt"
+            export_dir.mkdir(parents=True, exist_ok=True)
 
-        exported = 0
-        if history_dir.exists():
-            for jsonl_file in sorted(history_dir.glob("*.jsonl")):
-                date_str = jsonl_file.stem  # e.g. "2026-03-21"
-                try:
-                    lines = []
-                    for line in jsonl_file.read_text(encoding="utf-8").splitlines():
-                        if not line.strip():
-                            continue
-                        import json
+            exported = 0
+            if history_dir.exists():
+                for jsonl_file in sorted(history_dir.glob("*.jsonl")):
+                    date_str = jsonl_file.stem
+                    try:
+                        lines = []
+                        for line in jsonl_file.read_text(encoding="utf-8").splitlines():
+                            if not line.strip():
+                                continue
+                            r = _json.loads(line)
+                            ts = r.get("timestamp", "")[:19].replace("T", " ")
+                            rtype = r.get("record_type", "")
+                            inp = r.get("input_text", "")
+                            out = r.get("output_text", "")
+                            text_line = f"[{ts}] [{rtype}]"
+                            if inp:
+                                text_line += f" {inp}"
+                            if out and out != inp:
+                                text_line += f" -> {out}"
+                            lines.append(text_line)
+                        if lines:
+                            txt_file = export_dir / f"{date_str}.txt"
+                            txt_file.write_text("\n".join(lines), encoding="utf-8")
+                            exported += 1
+                    except Exception:
+                        pass
 
-                        r = json.loads(line)
-                        ts = r.get("timestamp", "")[:19].replace("T", " ")
-                        rtype = r.get("record_type", "")
-                        inp = r.get("input_text", "")
-                        out = r.get("output_text", "")
-                        text_line = f"[{ts}] [{rtype}]"
-                        if inp:
-                            text_line += f" {inp}"
-                        if out and out != inp:
-                            text_line += f" -> {out}"
-                        lines.append(text_line)
-                    if lines:
-                        txt_file = export_dir / f"{date_str}.txt"
-                        txt_file.write_text("\n".join(lines), encoding="utf-8")
-                        exported += 1
-                except Exception:
-                    pass
-
-        # Open folder in Explorer
-        subprocess.Popen(["explorer", str(export_dir)])
+            # Use os.startfile — most reliable on Windows, works with pythonw.exe
+            os.startfile(str(export_dir))
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"打开历史记录失败: {e}")
 
     def _open_highlights_file(self):
         """Open the highlights file (important notes from save_highlight command)."""
-        import subprocess
+        import json as _json
+        import os
 
-        project_dir = Path(__file__).parent.parent.parent.resolve()
-        highlights_file = project_dir / "data" / "highlights.txt"
+        try:
+            project_dir = Path(__file__).parent.parent.parent.resolve()
+            highlights_file = project_dir / "data" / "highlights.txt"
 
-        if not highlights_file.exists():
-            # Generate from InsightStore data
-            insights_dir = project_dir / "data" / "insights"
-            lines = []
-            if insights_dir.exists():
-                import json
+            if not highlights_file.exists():
+                insights_dir = project_dir / "data" / "insights"
+                lines = []
+                if insights_dir.exists():
+                    for f in sorted(insights_dir.glob("*.json")):
+                        try:
+                            data = _json.loads(f.read_text(encoding="utf-8"))
+                            for entry in data.get("entries", []):
+                                ts = entry.get("timestamp", "")[:19].replace("T", " ")
+                                text = entry.get("text", "")
+                                tags = entry.get("attributes", {}).get("tags", [])
+                                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                                lines.append(f"[{ts}]{tag_str} {text}")
+                        except Exception:
+                            pass
+                if lines:
+                    highlights_file.parent.mkdir(parents=True, exist_ok=True)
+                    highlights_file.write_text("\n".join(lines), encoding="utf-8")
+                else:
+                    highlights_file.parent.mkdir(parents=True, exist_ok=True)
+                    highlights_file.write_text(
+                        "暂无重点记录。\n\n"
+                        "使用方法：对 Aria 说「小助手重点记一下 xxxxx」即可保存重点内容。\n",
+                        encoding="utf-8",
+                    )
 
-                for f in sorted(insights_dir.glob("*.json")):
-                    try:
-                        data = json.loads(f.read_text(encoding="utf-8"))
-                        for entry in data.get("entries", []):
-                            ts = entry.get("timestamp", "")[:19].replace("T", " ")
-                            text = entry.get("text", "")
-                            tags = entry.get("attributes", {}).get("tags", [])
-                            tag_str = f" [{', '.join(tags)}]" if tags else ""
-                            lines.append(f"[{ts}]{tag_str} {text}")
-                    except Exception:
-                        pass
-            if lines:
-                highlights_file.parent.mkdir(parents=True, exist_ok=True)
-                highlights_file.write_text("\n".join(lines), encoding="utf-8")
-            else:
-                highlights_file.parent.mkdir(parents=True, exist_ok=True)
-                highlights_file.write_text(
-                    "暂无重点记录。\n\n使用方法：对 Aria 说「小助手记一下 xxxxx」即可保存重点内容。\n",
-                    encoding="utf-8",
-                )
-
-        # Open file directly
-        subprocess.Popen(["explorer", "/select," + str(highlights_file)])
+            # Open with default text editor
+            os.startfile(str(highlights_file))
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"打开重点记录失败: {e}")
 
     def _populate_audio_devices(self):
         """Populate audio device dropdown at startup."""
