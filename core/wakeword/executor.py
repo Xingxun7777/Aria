@@ -446,11 +446,19 @@ class WakewordExecutor:
         import os
         import re
 
-        # Clean surrounding quotes, backticks, brackets, trailing punctuation
         text = text.strip()
-        text = re.sub(r"""^["'\u2018\u2019\u201c\u201d`\[（(]+""", "", text)
+
+        # Strip terminal prompt prefixes (PS C:\> , $ , user@host:~$ )
         text = re.sub(
-            r"""["'\u2018\u2019\u201c\u201d`\]）),:;.。，；！!]+$""", "", text
+            r"^(?:PS\s+|[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+:[^$#]*[$#]\s*|\$\s+|>\s*)",
+            "",
+            text,
+        )
+
+        # Clean surrounding quotes, backticks, brackets, angle brackets
+        text = re.sub(r"""^["'\u2018\u2019\u201c\u201d`\[（(<>]+""", "", text)
+        text = re.sub(
+            r"""["'\u2018\u2019\u201c\u201d`\]）),:;.。，；！!><]+$""", "", text
         )
         text = text.strip()
 
@@ -461,6 +469,10 @@ class WakewordExecutor:
         if re.match(r"https?://\S+", text, re.IGNORECASE):
             return text
 
+        # Git Bash / MSYS path: /g/AIBOX/... → G:\AIBOX\...
+        if re.match(r"^/[a-zA-Z]/", text):
+            text = f"{text[1].upper()}:{text[2:]}"
+
         # Expand ~ to user home
         if text.startswith("~/") or text.startswith("~\\"):
             text = os.path.expanduser(text)
@@ -468,10 +480,20 @@ class WakewordExecutor:
         # Normalize path separators
         normalized = os.path.normpath(text)
 
-        # If absolute path, check directly
+        # If absolute path, check directly or find closest existing parent
         if os.path.isabs(normalized):
             if os.path.exists(normalized):
                 return normalized
+            # Truncated path fallback: walk up to find existing parent
+            # Only if original text looks like a path (has separators)
+            if "/" in text or "\\" in text:
+                from pathlib import Path
+
+                parent = Path(normalized)
+                while str(parent) != parent.anchor:
+                    parent = parent.parent
+                    if parent.exists():
+                        return str(parent)
             return None
 
         # Relative path: try multiple base directories
