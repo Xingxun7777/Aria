@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QColor,
     QBrush,
     QPen,
+    QPixmap,
     QRadialGradient,
     QConicalGradient,
     QLinearGradient,
@@ -85,6 +86,8 @@ class _StickerPopup(QWidget):
 
     def __init__(self):
         super().__init__()
+        from PySide6.QtWidgets import QVBoxLayout, QLabel
+
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.Tool
@@ -109,6 +112,8 @@ class _StickerPopup(QWidget):
         self._dismiss_timer.timeout.connect(self._fade_out)
 
     def _load_sticker(self):
+        from pathlib import Path
+
         sticker_path = (
             Path(__file__).parent.parent.parent / "assets" / "yaoyao_sticker.png"
         )
@@ -127,7 +132,6 @@ class _StickerPopup(QWidget):
         self._img_label.setPixmap(scaled)
         self.setFixedSize(scaled.width() + 4, scaled.height() + 4)
 
-        # Position: above and slightly right of anchor
         x = anchor_pos.x() - self.width() // 2 + 15
         y = anchor_pos.y() - self.height() - 10
         self.move(x, y)
@@ -135,7 +139,6 @@ class _StickerPopup(QWidget):
         self.setWindowOpacity(0.0)
         self.show()
 
-        # Fade in
         self._fade_in_anim = QPropertyAnimation(self, b"windowOpacity")
         self._fade_in_anim.setDuration(200)
         self._fade_in_anim.setStartValue(0.0)
@@ -153,7 +156,7 @@ class _StickerPopup(QWidget):
         anim.setEasingCurve(QEasingCurve.InCubic)
         anim.finished.connect(self.hide)
         anim.start()
-        self._fade_out_anim = anim  # prevent GC
+        self._fade_out_anim = anim
 
 
 class FloatingBall(QWidget):
