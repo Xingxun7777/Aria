@@ -1023,29 +1023,26 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(QLabel("<h2>API 设置</h2>"))
 
-        # === 快速预设 ===
-        preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("快速预设:"))
-        self.api_preset = QComboBox()
-        for name in API_PRESETS:
-            self.api_preset.addItem(name)
-        self.api_preset.setCurrentText("自定义")
-        self.api_preset.currentTextChanged.connect(self._on_preset_changed)
-        preset_layout.addWidget(self.api_preset, 1)
-
-        preset_hint = QLabel("选择服务商自动填写地址")
-        preset_hint.setStyleSheet(self._label_style("muted", font_size=11))
-        preset_layout.addWidget(preset_hint)
-        layout.addLayout(preset_layout)
-        layout.addSpacing(10)
-
         # === 主 API 设置 ===
         main_group = QGroupBox("主 API（默认）")
         main_form = QFormLayout(main_group)
 
+        # API URL + auto-recognize button
+        url_layout = QHBoxLayout()
         self.api_url = QLineEdit()
-        self.api_url.setPlaceholderText("http://localhost:3000")
-        main_form.addRow("API 地址:", self.api_url)
+        self.api_url.setPlaceholderText("输入服务商名称或完整地址，如 deepseek")
+        url_layout.addWidget(self.api_url, 1)
+
+        self._auto_fill_btn = QPushButton("识别")
+        self._auto_fill_btn.setToolTip(
+            "输入服务商名称后点击自动填写完整地址\n"
+            "支持: deepseek, openrouter, openai, siliconflow,\n"
+            "groq, moonshot, stepfun, dashscope, zhipu,\n"
+            "baichuan, together, mistral, ollama, lmstudio"
+        )
+        self._auto_fill_btn.clicked.connect(self._auto_fill_api_url)
+        url_layout.addWidget(self._auto_fill_btn)
+        main_form.addRow("API 地址:", url_layout)
 
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
@@ -1214,16 +1211,75 @@ class SettingsWindow(QMainWindow):
         # Clear thread reference AFTER all UI updates (allow future tests)
         self._api_thread = None
 
-    def _on_preset_changed(self, name: str):
-        """Fill API URL from preset selection."""
-        preset = API_PRESETS.get(name)
-        if not preset or name == "自定义":
+    def _auto_fill_api_url(self):
+        """Recognize provider name in URL field and auto-fill the correct URL."""
+        raw = self.api_url.text().strip().lower()
+        if not raw:
+            QMessageBox.information(
+                self, "提示", "请先输入服务商名称，如 deepseek、openrouter"
+            )
             return
 
-        self.api_url.setText(preset["url"])
-        self.api_key.setPlaceholderText(preset.get("key_hint", "sk-..."))
-        # Clear model list — user should click "获取模型列表" to populate
-        self.model.clear()
+        # If already a full URL, skip
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return
+
+        # Fuzzy match against preset keywords
+        _KEYWORDS = {
+            "deepseek": "DeepSeek",
+            "openrouter": "OpenRouter",
+            "openai": "OpenAI",
+            "silicon": "硅基流动 (SiliconFlow)",
+            "siliconflow": "硅基流动 (SiliconFlow)",
+            "硅基": "硅基流动 (SiliconFlow)",
+            "groq": "Groq",
+            "moonshot": "月之暗面 (Moonshot)",
+            "月之暗面": "月之暗面 (Moonshot)",
+            "kimi": "月之暗面 (Moonshot)",
+            "stepfun": "阶跃星辰 (Stepfun)",
+            "阶跃": "阶跃星辰 (Stepfun)",
+            "dashscope": "通义千问 (DashScope)",
+            "通义": "通义千问 (DashScope)",
+            "千问": "通义千问 (DashScope)",
+            "qwen": "通义千问 (DashScope)",
+            "zhipu": "智谱 (Zhipu GLM)",
+            "智谱": "智谱 (Zhipu GLM)",
+            "glm": "智谱 (Zhipu GLM)",
+            "baichuan": "百川 (Baichuan)",
+            "百川": "百川 (Baichuan)",
+            "volcengine": "火山引擎 (豆包)",
+            "火山": "火山引擎 (豆包)",
+            "豆包": "火山引擎 (豆包)",
+            "doubao": "火山引擎 (豆包)",
+            "together": "Together AI",
+            "mistral": "Mistral AI",
+            "ollama": "本地 Ollama",
+            "lmstudio": "本地 LM Studio",
+            "lm studio": "本地 LM Studio",
+        }
+
+        matched_name = None
+        for keyword, preset_name in _KEYWORDS.items():
+            if keyword in raw:
+                matched_name = preset_name
+                break
+
+        if not matched_name:
+            QMessageBox.warning(
+                self,
+                "未识别",
+                f"无法识别「{raw}」\n\n"
+                "支持: deepseek, openrouter, openai, siliconflow, groq,\n"
+                "moonshot/kimi, stepfun, dashscope/通义, zhipu/智谱,\n"
+                "baichuan, 火山/豆包, together, mistral, ollama, lmstudio",
+            )
+            return
+
+        preset = API_PRESETS.get(matched_name)
+        if preset:
+            self.api_url.setText(preset["url"])
+            self.api_key.setPlaceholderText(preset.get("key_hint", "sk-..."))
+            self.model.clear()
 
     def _fetch_models(self):
         """Fetch available models from /v1/models endpoint."""
