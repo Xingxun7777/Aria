@@ -76,6 +76,86 @@ class _StreamingLabel(QLabel):
         super().paintEvent(event)
 
 
+class _StickerPopup(QWidget):
+    """Transparent popup for showing a sticker image above the floating ball.
+
+    Only used when wakeword is "瑶瑶"/"遥遥" — shows a cute sticker
+    after successful command execution as easter egg feedback.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.Tool
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+
+        self._pixmap = None
+        self._load_sticker()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._img_label = QLabel()
+        self._img_label.setStyleSheet("background: transparent;")
+        self._img_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._img_label)
+
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self._fade_out)
+
+    def _load_sticker(self):
+        sticker_path = (
+            Path(__file__).parent.parent.parent / "assets" / "yaoyao_sticker.png"
+        )
+        if sticker_path.exists():
+            self._pixmap = QPixmap(str(sticker_path))
+
+    def show_sticker(self, anchor_pos):
+        """Show sticker above the given anchor position (ball center)."""
+        if not self._pixmap or self._pixmap.isNull():
+            return
+
+        size = 80
+        scaled = self._pixmap.scaled(
+            size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self._img_label.setPixmap(scaled)
+        self.setFixedSize(scaled.width() + 4, scaled.height() + 4)
+
+        # Position: above and slightly right of anchor
+        x = anchor_pos.x() - self.width() // 2 + 15
+        y = anchor_pos.y() - self.height() - 10
+        self.move(x, y)
+
+        self.setWindowOpacity(0.0)
+        self.show()
+
+        # Fade in
+        self._fade_in_anim = QPropertyAnimation(self, b"windowOpacity")
+        self._fade_in_anim.setDuration(200)
+        self._fade_in_anim.setStartValue(0.0)
+        self._fade_in_anim.setEndValue(1.0)
+        self._fade_in_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_in_anim.start()
+
+        self._dismiss_timer.start(1500)
+
+    def _fade_out(self):
+        anim = QPropertyAnimation(self, b"windowOpacity")
+        anim.setDuration(300)
+        anim.setStartValue(self.windowOpacity())
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.InCubic)
+        anim.finished.connect(self.hide)
+        anim.start()
+        self._fade_out_anim = anim  # prevent GC
+
+
 class FloatingBall(QWidget):
     """
     Floating ball widget that serves as the main Aria interface.
@@ -265,6 +345,9 @@ class FloatingBall(QWidget):
 
     def _init_ui(self):
         """Initialize the ball appearance and streaming text label."""
+        # Sticker popup (easter egg for 瑶瑶/遥遥 wakeword)
+        self._sticker_popup = _StickerPopup()
+
         # Floating text label for streaming ASR results
         # Design: "Phantom HUD" - elegant, warm, premium feel
         self._streaming_label = _StreamingLabel()
@@ -1553,14 +1636,33 @@ class FloatingBall(QWidget):
 
     @Slot(str, bool)
     def on_command_executed(self, command_id: str, success: bool):
-        """Handle voice command execution - bounce animation only (no flash per user request)."""
+        """Handle voice command execution - bounce + optional sticker for 瑶瑶."""
         self._log(f"COMMAND_EXECUTED: {command_id}, success={success}")
 
-        # Only bounce animation for successful commands (flash disabled per user feedback)
         if success:
             self._bounce_active = True
             self._bounce_phase = 0.0
             self.update()
+
+            # Easter egg: show sticker when wakeword is 瑶瑶/遥遥
+            if command_id.startswith("小助手:"):
+                # Check wakeword config
+                try:
+                    from pathlib import Path
+                    import json
+
+                    wakeword_path = (
+                        Path(__file__).parent.parent.parent / "config" / "wakeword.json"
+                    )
+                    if wakeword_path.exists():
+                        with open(wakeword_path, "r", encoding="utf-8") as f:
+                            wc = json.load(f)
+                        ww = wc.get("wakeword", "")
+                        if ww in ("瑶瑶", "遥遥"):
+                            ball_center = self.mapToGlobal(self.rect().center())
+                            self._sticker_popup.show_sticker(ball_center)
+                except Exception:
+                    pass
 
     @Slot(str, list)
     def on_highlight_saved(self, text_preview: str, tags: list):
