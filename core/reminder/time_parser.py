@@ -474,9 +474,9 @@ _PIVOT_WORDS = ["提醒我", "帮我提醒", "提醒一下"]
 # Time signal words — if present, that segment likely contains the time
 _TIME_SIGNALS = re.compile(
     r"小时后|分钟后|天后|周后|星期后|月后|半小时后"
-    r"|今天|明天|后天|大后天"
+    r"|今天|明天|后天|大后天|今晚|明晚|今早|明早"
     r"|凌晨|早上|上午|中午|下午|傍晚|晚上|夜里"
-    r"|下周|下下周|这周"
+    r"|下周|下下周|这周|下礼拜|下星期"
     r"|[点时]"
 )
 
@@ -582,26 +582,33 @@ def _split_time_and_content(text: str, now: datetime) -> Tuple[Optional[datetime
     """Split a string that contains both time and content.
 
     e.g. "明天下午两点开会" → (tomorrow 14:00, "开会")
-    Strategy: find the end boundary of time expression using known time tokens,
-    then split there. Everything after the last time token is content.
+    e.g. "明天下午三点喝下午茶" → (tomorrow 15:00, "喝下午茶")
+
+    Strategy: find the rightmost time token boundary, but require period words
+    (下午/晚上/etc.) to be followed by a digit or 点/时 to avoid consuming
+    content words like "下午茶" or "晚上总结".
     """
-    # Search both original and normalized text for time tokens
-    # Use original text positions to avoid char-count mismatch
     cn_num = r"[零〇一壹二贰两三叁四肆五伍六陆七柒八捌九玖十拾\d]"
     time_end_patterns = [
-        # Relative patterns (work on original Chinese text)
+        # Relative patterns (unambiguous — always time tokens)
+        cn_num + r"+个?小时" + cn_num + r"+分(?:钟)?后",  # N小时M分后
         cn_num + r"+个?小时后",
         r"半小时后",
         cn_num + r"+分钟后",
         cn_num + r"+天后",
-        cn_num + r"+个?(?:周|星期)后",
+        cn_num + r"+个?(?:周|礼拜|星期)后",
         cn_num + r"+个?月后",
-        # Absolute time patterns
+        # Time with hour marker (unambiguous)
         cn_num + r"+[点时](?:" + cn_num + r"+分?|半)?",
-        r"(?:凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|夜间|半夜)",
-        r"(?:今天|明天|后天|大后天|今日|明日)",
+        # Day offsets (unambiguous)
+        r"(?:今天|明天|后天|大后天|今日|明日|今晚|明晚|今早|明早)",
+        # Weekday (unambiguous)
         r"下下?(?:周|礼拜|星期)[一二三四五六日天1-7]",
         r"[这本](?:周|礼拜|星期)[一二三四五六日天1-7]",
+        # Period words ONLY when followed by digit/点/时 (avoids 下午茶/晚上总结)
+        r"(?:凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|夜间|半夜)(?="
+        + cn_num
+        + r"|[点时])",
     ]
 
     rightmost_end = 0

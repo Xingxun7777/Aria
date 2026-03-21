@@ -112,14 +112,31 @@ class ReminderStore:
         return False
 
     def mark_fired(self, reminder_id: str) -> bool:
-        """Mark a reminder as fired (delivered to user)."""
+        """Mark a reminder as fired (delivered to user).
+
+        Only transitions from 'pending' to 'fired'. If user already
+        cancelled it between get_due() and mark_fired(), this is a no-op.
+        """
+        with self._lock:
+            data = self._load()
+            for r in data["reminders"]:
+                if r["id"] == reminder_id and r["status"] == "pending":
+                    r["status"] = "fired"
+                    self._save(data)
+                    _debug(f"Fired: {reminder_id}")
+                    return True
+        _debug(f"mark_fired skipped (not pending): {reminder_id}")
+        return False
+
+    def mark_error(self, reminder_id: str) -> bool:
+        """Mark a reminder as delivery_error (retries exhausted, NOT lost)."""
         with self._lock:
             data = self._load()
             for r in data["reminders"]:
                 if r["id"] == reminder_id:
-                    r["status"] = "fired"
+                    r["status"] = "delivery_error"
                     self._save(data)
-                    _debug(f"Fired: {reminder_id}")
+                    _debug(f"Delivery error: {reminder_id}")
                     return True
         return False
 

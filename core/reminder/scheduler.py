@@ -95,9 +95,10 @@ class ReminderScheduler:
                 retries = self._retry_counts.get(rid, 0)
                 if retries >= self.MAX_RETRIES:
                     _debug(
-                        f"Max retries ({self.MAX_RETRIES}) for {rid}, force marking fired"
+                        f"Max retries ({self.MAX_RETRIES}) for {rid}, marking as error (NOT fired)"
                     )
-                    self._store.mark_fired(rid)
+                    # Mark as delivery_error — NOT fired. User can see it in pending list.
+                    self._store.mark_error(rid)
                     self._retry_counts.pop(rid, None)
                 else:
                     actionable.append(r)
