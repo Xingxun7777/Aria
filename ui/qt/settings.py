@@ -248,11 +248,15 @@ class ApiTestWorker(QObject):
                 "max_tokens": 5,
             }
 
-            # Build URL: handle various input formats
+            # Build URL: handle various formats
+            # Many providers already include /v1 or /v3 or /v4 in their base URL
             api_url = self.api_url.rstrip("/")
-            if api_url.endswith("/v1/chat/completions"):
+            if api_url.endswith("/chat/completions"):
                 full_url = api_url
-            elif api_url.endswith("/v1"):
+            elif api_url.endswith(("/v1", "/v3", "/v4")):
+                full_url = f"{api_url}/chat/completions"
+            elif "/v1/" in api_url or "/v3/" in api_url or "/v4/" in api_url:
+                # URL like https://xxx/compatible-mode/v1 — append endpoint
                 full_url = f"{api_url}/chat/completions"
             else:
                 full_url = f"{api_url}/v1/chat/completions"
@@ -278,54 +282,72 @@ class ApiTestWorker(QObject):
 
 
 # Preset API providers for quick setup
+# URLs verified via web research — NO hardcoded model names (use "获取模型列表" instead)
+# "v1_in_url": True means the URL already ends with /v1, don't append again
 API_PRESETS = {
     "DeepSeek": {
         "url": "https://api.deepseek.com",
         "key_hint": "sk-...",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
     },
     "OpenRouter": {
-        "url": "https://openrouter.ai/api",
+        "url": "https://openrouter.ai/api/v1",
         "key_hint": "sk-or-v1-...",
-        "models": [
-            "deepseek/deepseek-chat-v3.1:free",
-            "google/gemini-2.5-flash-preview:free",
-            "meta-llama/llama-4-scout:free",
-        ],
     },
     "OpenAI": {
-        "url": "https://api.openai.com",
-        "key_hint": "sk-...",
-        "models": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano"],
+        "url": "https://api.openai.com/v1",
+        "key_hint": "sk-... / sk-proj-...",
     },
     "硅基流动 (SiliconFlow)": {
-        "url": "https://api.siliconflow.cn",
+        "url": "https://api.siliconflow.cn/v1",
         "key_hint": "sk-...",
-        "models": [
-            "deepseek-ai/DeepSeek-V3",
-            "Qwen/Qwen3-8B",
-            "THUDM/GLM-4-9B-Chat",
-        ],
-    },
-    "智谱 (Zhipu)": {
-        "url": "https://open.bigmodel.cn/api/paas",
-        "key_hint": "...",
-        "models": ["glm-4-flash", "glm-4-plus", "glm-4-air"],
     },
     "Groq": {
-        "url": "https://api.groq.com/openai",
+        "url": "https://api.groq.com/openai/v1",
         "key_hint": "gsk_...",
-        "models": ["llama-3.3-70b-versatile", "gemma2-9b-it", "mixtral-8x7b-32768"],
     },
-    "本地 (Ollama)": {
-        "url": "http://localhost:11434",
-        "key_hint": "(无需密钥)",
-        "models": [],
+    "月之暗面 (Moonshot)": {
+        "url": "https://api.moonshot.cn/v1",
+        "key_hint": "sk-...",
+    },
+    "阶跃星辰 (Stepfun)": {
+        "url": "https://api.stepfun.com/v1",
+        "key_hint": "sk-...",
+    },
+    "通义千问 (DashScope)": {
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "key_hint": "sk-...",
+    },
+    "智谱 (Zhipu GLM)": {
+        "url": "https://open.bigmodel.cn/api/paas/v4",
+        "key_hint": "(从 bigmodel.cn 获取)",
+    },
+    "百川 (Baichuan)": {
+        "url": "https://api.baichuan-ai.com/v1",
+        "key_hint": "sk-...",
+    },
+    "火山引擎 (豆包)": {
+        "url": "https://ark.cn-beijing.volces.com/api/v3",
+        "key_hint": "(从火山方舟获取)",
+    },
+    "Together AI": {
+        "url": "https://api.together.xyz/v1",
+        "key_hint": "(从 together.ai 获取)",
+    },
+    "Mistral AI": {
+        "url": "https://api.mistral.ai/v1",
+        "key_hint": "(从 console.mistral.ai 获取)",
+    },
+    "本地 Ollama": {
+        "url": "http://localhost:11434/v1",
+        "key_hint": "(无需密钥，填任意字符)",
+    },
+    "本地 LM Studio": {
+        "url": "http://localhost:1234/v1",
+        "key_hint": "(无需密钥，填任意字符)",
     },
     "自定义": {
         "url": "",
         "key_hint": "",
-        "models": [],
     },
 }
 
@@ -345,9 +367,11 @@ class ModelFetchWorker(QObject):
 
         try:
             api_url = self.api_url.rstrip("/")
-            if api_url.endswith("/v1/models"):
+            if api_url.endswith("/models"):
                 full_url = api_url
-            elif api_url.endswith("/v1"):
+            elif api_url.endswith(("/v1", "/v3", "/v4")):
+                full_url = f"{api_url}/models"
+            elif "/v1/" in api_url or "/v3/" in api_url or "/v4/" in api_url:
                 full_url = f"{api_url}/models"
             else:
                 full_url = f"{api_url}/v1/models"
@@ -1183,23 +1207,15 @@ class SettingsWindow(QMainWindow):
         self._api_thread = None
 
     def _on_preset_changed(self, name: str):
-        """Fill API URL and models from preset selection."""
+        """Fill API URL from preset selection."""
         preset = API_PRESETS.get(name)
         if not preset or name == "自定义":
             return
 
         self.api_url.setText(preset["url"])
         self.api_key.setPlaceholderText(preset.get("key_hint", "sk-..."))
-
-        # Populate model combo with preset models
-        current_model = self.model.currentText()
+        # Clear model list — user should click "获取模型列表" to populate
         self.model.clear()
-        for m in preset.get("models", []):
-            self.model.addItem(m)
-        if current_model:
-            self.model.setCurrentText(current_model)
-        elif preset.get("models"):
-            self.model.setCurrentIndex(0)
 
     def _fetch_models(self):
         """Fetch available models from /v1/models endpoint."""
