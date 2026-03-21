@@ -310,6 +310,10 @@ def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
     if period:
         hour = _adjust_hour_for_period(hour, period)
 
+    # Validate hour/minute range (prevents ValueError in datetime constructor)
+    if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+        return None
+
     # Determine the target date
     target_date = now.date()
     if day_offset is not None:
@@ -393,6 +397,10 @@ def _parse_weekday_time(text: str, now: datetime) -> Optional[datetime]:
             minute = 30
         if period:
             hour = _adjust_hour_for_period(hour, period)
+
+    # Validate hour/minute range
+    if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+        return None
 
     return datetime(
         target_date.year,
@@ -536,11 +544,20 @@ def parse_reminder_text(
         # Need to separate time from content in after_pivot
         trigger_time, content = _split_time_and_content(after_pivot, now)
     elif before_has_time and after_has_time:
-        # Ambiguous — try before first (more common pattern)
-        trigger_time = parse_chinese_time(before_pivot, now)
-        content = after_pivot or "提醒"
-        if trigger_time is None:
-            trigger_time, content = _split_time_and_content(after_pivot, now)
+        # Both have time signals — try combining them first
+        # e.g. "明天 提醒我 下午三点开会" → "明天下午三点" + "开会"
+        combined_time, combined_content = _split_time_and_content(
+            before_pivot + after_pivot, now
+        )
+        if combined_time:
+            trigger_time = combined_time
+            content = combined_content
+        else:
+            # Fallback: try before alone, then after alone
+            trigger_time = parse_chinese_time(before_pivot, now)
+            content = after_pivot or "提醒"
+            if trigger_time is None:
+                trigger_time, content = _split_time_and_content(after_pivot, now)
     else:
         # Neither has obvious time signals — try both
         trigger_time = parse_chinese_time(before_pivot, now)

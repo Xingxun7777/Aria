@@ -233,7 +233,12 @@ class ReminderDialog(QWidget):
         _dlog(f"Notify: id={reminder_id}, content='{content}', batch={batch_count}")
 
     def _show_popup(self, auto_dismiss_ms: int = 30000):
-        """Position and show the popup."""
+        """Position and show the popup. If already visible, hide first to reset."""
+        # If already showing, stop existing timers/animations before reuse
+        if self.isVisible():
+            self._auto_dismiss_timer.stop()
+            self.hide()
+
         self.adjustSize()
 
         # Position: top-right corner of primary screen

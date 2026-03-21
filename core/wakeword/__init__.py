@@ -11,8 +11,8 @@ Usage:
 
     result = detector.detect("小助手，开启自动发送")
     if result:
-        cmd_id, action, value, response = result
-        executor.execute(cmd_id, action, value, response)
+        cmd_id, action, value, response, following_text, command_text = result
+        executor.execute(cmd_id, action, value, response, following_text)
 """
 
 from .detector import WakewordDetector

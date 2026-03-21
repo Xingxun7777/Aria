@@ -47,6 +47,8 @@ class ReminderScheduler:
         self._on_due = on_reminder_due
         self._stop_event = stop_event
         self._thread: threading.Thread = None
+        self._retry_counts: dict = {}  # reminder_id -> retry count
+        self.MAX_RETRIES = 5  # Stop retrying after this many failures
 
     def start(self):
         """Start the scheduler daemon thread."""
@@ -86,35 +88,57 @@ class ReminderScheduler:
             if not due:
                 return
 
-            if len(due) == 1:
-                # Single reminder — notify first, then mark fired
-                reminder = due[0]
+            # Filter out reminders that exceeded max retries
+            actionable = []
+            for r in due:
+                rid = r["id"]
+                retries = self._retry_counts.get(rid, 0)
+                if retries >= self.MAX_RETRIES:
+                    _debug(
+                        f"Max retries ({self.MAX_RETRIES}) for {rid}, force marking fired"
+                    )
+                    self._store.mark_fired(rid)
+                    self._retry_counts.pop(rid, None)
+                else:
+                    actionable.append(r)
+
+            if not actionable:
+                return
+
+            if len(actionable) == 1:
+                reminder = actionable[0]
                 rid = reminder["id"]
                 _debug(f"Firing: id={rid}, content='{reminder.get('content', '')}'")
                 try:
                     self._on_due(reminder)
                     self._store.mark_fired(rid)
+                    self._retry_counts.pop(rid, None)
                 except Exception as e:
-                    _debug(f"Callback error for {rid}: {e}")
-                    # Don't mark fired — will retry next poll
+                    self._retry_counts[rid] = self._retry_counts.get(rid, 0) + 1
+                    _debug(
+                        f"Callback error for {rid} (retry {self._retry_counts[rid]}): {e}"
+                    )
             else:
-                # Multiple due (batched after sleep/hibernate)
-                _debug(f"Batching {len(due)} overdue reminders")
+                _debug(f"Batching {len(actionable)} overdue reminders")
                 summary = {
                     "id": "batch",
-                    "content": "\n".join(f"- {r.get('content', '提醒')}" for r in due),
-                    "trigger_time": due[0]["trigger_time"],
-                    "created_at": due[0]["created_at"],
-                    "batch_count": len(due),
-                    "batch_items": due,
+                    "content": "\n".join(
+                        f"- {r.get('content', '提醒')}" for r in actionable
+                    ),
+                    "trigger_time": actionable[0]["trigger_time"],
+                    "created_at": actionable[0]["created_at"],
+                    "batch_count": len(actionable),
+                    "batch_items": actionable,
                 }
                 try:
                     self._on_due(summary)
-                    # Only mark fired after successful notification
-                    for reminder in due:
+                    for reminder in actionable:
                         self._store.mark_fired(reminder["id"])
+                        self._retry_counts.pop(reminder["id"], None)
                 except Exception as e:
-                    _debug(f"Batch callback error: {e}")
-                    # Don't mark fired — will retry next poll
+                    for reminder in actionable:
+                        rid = reminder["id"]
+                        self._retry_counts[rid] = self._retry_counts.get(rid, 0) + 1
+                    _debug(f"Batch callback error (will retry): {e}")
         except Exception as e:
             _debug(f"Check error: {e}")
