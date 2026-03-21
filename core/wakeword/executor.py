@@ -238,6 +238,21 @@ class WakewordExecutor:
                 self.bridge.emit_highlight_saved(
                     following_text[:50], attributes["tags"]
                 )
+            # Also append to human-readable highlights.txt
+            try:
+                from pathlib import Path
+
+                highlights_file = (
+                    Path(__file__).parent.parent.parent / "data" / "highlights.txt"
+                )
+                highlights_file.parent.mkdir(parents=True, exist_ok=True)
+                ts_str = timestamp[:19].replace("T", " ")
+                tags = attributes.get("tags", [])
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                with open(highlights_file, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts_str}]{tag_str} {following_text.strip()}\n")
+            except Exception as e:
+                _debug(f"[HIGHLIGHT] Failed to write highlights.txt: {e}")
             return True
         return False
 

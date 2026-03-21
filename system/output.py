@@ -449,6 +449,35 @@ kernel32.QueryFullProcessImageNameW.argtypes = [
 ]
 kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
+# Typewriter mode: PostMessage + GetGUIThreadInfo for cross-thread focus detection
+WM_CHAR = 0x0102
+
+user32.PostMessageW.argtypes = [
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+]
+user32.PostMessageW.restype = wintypes.BOOL
+
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    ]
+
+
+user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = wintypes.BOOL
+
 
 @dataclass
 class OutputConfig:
@@ -887,117 +916,123 @@ class OutputInjector:
         result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
         return result == 2
 
+    def _get_focused_control(self) -> Optional[int]:
+        """
+        Get the focused control in the foreground window's thread (cross-thread safe).
+
+        Uses GetGUIThreadInfo instead of GetFocus — GetFocus only works within
+        the calling thread, but GetGUIThreadInfo works for any thread.
+
+        Returns:
+            HWND of the focused control, or None if detection failed.
+        """
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+
+        # Get the thread ID of the foreground window
+        tid = user32.GetWindowThreadProcessId(hwnd, None)
+        if not tid:
+            return hwnd  # Fallback to foreground window itself
+
+        # Get GUI thread info (cross-thread)
+        gti = GUITHREADINFO()
+        gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+        if user32.GetGUIThreadInfo(tid, ctypes.byref(gti)):
+            # hwndFocus is the actual focused control (edit box, text area, etc.)
+            if gti.hwndFocus:
+                return gti.hwndFocus
+            # hwndActive as fallback
+            if gti.hwndActive:
+                return gti.hwndActive
+
+        return hwnd  # Ultimate fallback
+
     def _insert_text_typewriter(self, text: str) -> bool:
         """
-        Insert text character-by-character using KEYEVENTF_UNICODE.
+        Insert text character-by-character using PostMessage WM_CHAR.
 
-        This is Layer 2 - for applications that don't support Ctrl+V paste.
+        Uses PostMessageW to send WM_CHAR directly to the focused control,
+        bypassing SendInput entirely. This works through remote desktop tools
+        (ToDesk, etc.) that filter LLKHF_INJECTED keystrokes from SendInput.
+
+        Cross-thread focus detection via GetGUIThreadInfo (not GetFocus).
 
         Features:
+        - Works through remote desktop (ToDesk, etc.)
         - Handles surrogate pairs (emoji) correctly
         - Detects focus loss and aborts
-        - Fixed delay (random delay is security theater)
-        - Control characters mapped to VK keys (Gemini review)
-        - Aborts on SendInput failure (Codex/Gemini review)
+        - Control characters sent as WM_CHAR with appropriate codepoint
 
         Limitations (by design, not bugs):
         - Does NOT work with DirectInput/RawInput games
-        - Does NOT bypass anti-cheat (LLKHF_INJECTED flag is kernel-level)
         - Slower than clipboard paste
         """
         if not text:
             return True
 
-        # Normalize CRLF to LF to avoid double Enter keypress (Gemini R3 review)
-        # Windows text often has \r\n, but both \r and \n map to VK_RETURN
+        # Normalize CRLF to LF to avoid double newline
         text = text.replace("\r\n", "\n")
 
-        # Control characters that should be sent as VK keys, not Unicode
-        # (Gemini review: some apps don't interpret Unicode control chars)
-        CONTROL_CHAR_TO_VK = {
-            "\n": VK_CODES["enter"],  # 0x0D - VK_RETURN
-            "\r": VK_CODES["enter"],  # 0x0D - VK_RETURN (kept for standalone \r)
-            "\t": VK_CODES["tab"],  # 0x09 - VK_TAB
-        }
-
-        # Record initial window for focus loss detection
+        # Record initial foreground window for focus loss detection
         initial_hwnd = user32.GetForegroundWindow()
         delay_s = self.config.typewriter_delay_ms / 1000
         chars_sent = 0
 
+        # Resolve the actual focused control
+        target_hwnd = self._get_focused_control()
+        if not target_hwnd:
+            logger.error("Typewriter mode: no focused window found")
+            return False
+
         logger.info(
-            f"Typewriter mode: sending {len(text)} chars to hwnd={initial_hwnd:#x}"
+            f"Typewriter mode: sending {len(text)} chars via WM_CHAR "
+            f"to hwnd={target_hwnd:#x} (fg={initial_hwnd:#x})"
         )
 
         for char in text:
-            # Focus loss detection (every character for safety)
-            current_hwnd = user32.GetForegroundWindow()
-            if current_hwnd != initial_hwnd:
-                logger.warning(
-                    f"Focus lost after {chars_sent} chars "
-                    f"(initial={initial_hwnd:#x}, current={current_hwnd:#x}), "
-                    f"aborting typewriter input"
-                )
-                return False
-
-            # Check for control characters that need VK key handling
-            if char in CONTROL_CHAR_TO_VK:
-                vk_code = CONTROL_CHAR_TO_VK[char]
-                if not self._send_vk_key(vk_code):
-                    logger.error(
-                        f"SendInput failed for control char '\\x{ord(char):02x}' "
-                        f"after {chars_sent} chars, aborting"
+            # Focus loss detection (every 5 chars to reduce overhead, plus first char)
+            if chars_sent % 5 == 0:
+                current_hwnd = user32.GetForegroundWindow()
+                if current_hwnd != initial_hwnd:
+                    logger.warning(
+                        f"Focus lost after {chars_sent} chars "
+                        f"(initial={initial_hwnd:#x}, current={current_hwnd:#x}), "
+                        f"aborting typewriter input"
                     )
                     return False
-                chars_sent += 1
-                time.sleep(delay_s)
-                continue
 
             codepoint = ord(char)
 
-            # Handle BMP and non-BMP characters differently
-            # SendInput's wScan is 16-bit, so characters outside BMP need surrogate pairs
+            # Map newline to carriage return for WM_CHAR (Windows convention)
+            if char == "\n":
+                codepoint = 0x0D  # CR = Enter for WM_CHAR
+
+            # Handle BMP characters directly, non-BMP via surrogate pairs
             if codepoint > 0xFFFF:
-                # Convert to UTF-16 surrogate pair
-                high_surrogate = 0xD800 + ((codepoint - 0x10000) >> 10)
-                low_surrogate = 0xDC00 + ((codepoint - 0x10000) & 0x3FF)
-                scancodes = [high_surrogate, low_surrogate]
+                high = 0xD800 + ((codepoint - 0x10000) >> 10)
+                low = 0xDC00 + ((codepoint - 0x10000) & 0x3FF)
+                codepoints = [high, low]
             else:
-                scancodes = [codepoint]
+                codepoints = [codepoint]
 
-            # Send each scancode
-            for scan in scancodes:
-                inputs = (INPUT * 2)()
-
-                # Key down
-                inputs[0].type = INPUT_KEYBOARD
-                inputs[0].union.ki.wVk = 0
-                inputs[0].union.ki.wScan = scan
-                inputs[0].union.ki.dwFlags = KEYEVENTF_UNICODE
-                inputs[0].union.ki.time = 0
-                inputs[0].union.ki.dwExtraInfo = 0
-
-                # Key up
-                inputs[1].type = INPUT_KEYBOARD
-                inputs[1].union.ki.wVk = 0
-                inputs[1].union.ki.wScan = scan
-                inputs[1].union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-                inputs[1].union.ki.time = 0
-                inputs[1].union.ki.dwExtraInfo = 0
-
-                result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
-                if result != 2:
-                    # Abort on failure instead of continuing (Codex/Gemini review)
+            for cp in codepoints:
+                result = user32.PostMessageW(target_hwnd, WM_CHAR, cp, 0)
+                if not result:
+                    err = ctypes.get_last_error()
                     logger.error(
-                        f"SendInput failed ({result}/2) for char '{char}' "
-                        f"after {chars_sent} chars, error={ctypes.get_last_error()}, aborting"
+                        f"PostMessageW WM_CHAR failed for '{char}' (U+{ord(char):04X}) "
+                        f"after {chars_sent} chars, error={err}, aborting"
                     )
                     return False
 
             chars_sent += 1
-            time.sleep(delay_s)
+            if delay_s > 0:
+                time.sleep(delay_s)
 
-        logger.info(f"Typewriter mode: successfully sent {chars_sent} chars")
+        logger.info(
+            f"Typewriter mode: successfully sent {chars_sent} chars via WM_CHAR"
+        )
         return True
 
     def _insert_text_clipboard(self, text: str) -> bool:

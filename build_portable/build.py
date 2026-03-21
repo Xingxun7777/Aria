@@ -438,11 +438,14 @@ def step_clean_sensitive_data():
             # Set default wakeword for distribution
             wakeword_config["wakeword"] = "小助手"
 
-            # Add to available list if not present
-            if "小助手" not in wakeword_config.get("available_wakewords", []):
-                wakeword_config.setdefault("available_wakewords", []).insert(
-                    0, "小助手"
-                )
+            # Replace available list with generic defaults (remove personal wakewords)
+            wakeword_config["available_wakewords"] = [
+                "小助手",
+                "助手",
+                "小白",
+                "小朋友",
+                "小溪",
+            ]
 
             with open(wakeword_file, "w", encoding="utf-8") as f:
                 json.dump(wakeword_config, f, ensure_ascii=False, indent=2)
