@@ -971,8 +971,9 @@ class OutputInjector:
         if not text:
             return True
 
-        # Normalize CRLF to LF to avoid double newline
-        text = text.replace("\r\n", "\n")
+        # Strip newlines — in typewriter mode, newlines become Enter keypresses
+        # which triggers "send" in terminals, chat apps, etc. Replace with space.
+        text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
 
         # Record initial foreground window for focus loss detection
         initial_hwnd = user32.GetForegroundWindow()
@@ -1003,10 +1004,6 @@ class OutputInjector:
                     return False
 
             codepoint = ord(char)
-
-            # Map newline to carriage return for WM_CHAR (Windows convention)
-            if char == "\n":
-                codepoint = 0x0D  # CR = Enter for WM_CHAR
 
             # Handle BMP characters directly, non-BMP via surrogate pairs
             if codepoint > 0xFFFF:
