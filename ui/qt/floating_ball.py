@@ -132,8 +132,9 @@ class _StickerPopup(QWidget):
         self._img_label.setPixmap(scaled)
         self.setFixedSize(scaled.width() + 4, scaled.height() + 4)
 
-        x = anchor_pos.x() - self.width() // 2 + 15
-        y = anchor_pos.y() - self.height() - 10
+        # Center horizontally on anchor, above it
+        x = anchor_pos.x() - self.width() // 2
+        y = anchor_pos.y() - self.height() - 5
         self.move(x, y)
 
         self.setWindowOpacity(0.0)
@@ -248,6 +249,9 @@ class FloatingBall(QWidget):
         # Slow pipeline stage glow (appears only after 3s threshold)
         self._slow_glow_active = False
         self._slow_glow_color = None
+
+        # Sticker easter egg state
+        self._pending_sticker = False
 
         # Bounce animation for command execution (physical feedback)
         self._bounce_active = False
@@ -1612,6 +1616,11 @@ class FloatingBall(QWidget):
         self._is_processing = False
         self._clear_slow_glow()  # Pipeline done, clear any slow indicator
 
+        # Sticker easter egg: show after pipeline completes (not on command dispatch)
+        if getattr(self, "_pending_sticker", False):
+            self._pending_sticker = False
+            self._try_show_sticker()
+
         # FIX: If still recording, DON'T shrink — user is speaking in continuous mode.
         # The ball should stay active-sized until recording actually stops.
         if self._state in (self.STATE_RECORDING, self.STATE_SELECTION_LISTENING):
@@ -1647,25 +1656,9 @@ class FloatingBall(QWidget):
             self._bounce_phase = 0.0
             self.update()
 
-            # Easter egg: show sticker when wakeword is 瑶瑶/遥遥
+            # Mark that a wakeword command succeeded (for sticker on completion)
             if command_id.startswith("小助手:"):
-                # Check wakeword config
-                try:
-                    from pathlib import Path
-                    import json
-
-                    wakeword_path = (
-                        Path(__file__).parent.parent.parent / "config" / "wakeword.json"
-                    )
-                    if wakeword_path.exists():
-                        with open(wakeword_path, "r", encoding="utf-8") as f:
-                            wc = json.load(f)
-                        ww = wc.get("wakeword", "")
-                        if ww in ("瑶瑶", "遥遥"):
-                            ball_center = self.mapToGlobal(self.rect().center())
-                            self._sticker_popup.show_sticker(ball_center)
-                except Exception:
-                    pass
+                self._pending_sticker = True
 
     @Slot(str, list)
     def on_highlight_saved(self, text_preview: str, tags: list):
@@ -1696,6 +1689,38 @@ class FloatingBall(QWidget):
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(600, self._clear_command_flash)
+
+    def _try_show_sticker(self):
+        """Show yaoyao sticker if wakeword is 瑶瑶/遥遥. Fades out streaming label first."""
+        try:
+            from pathlib import Path
+            import json
+
+            wakeword_path = (
+                Path(__file__).parent.parent.parent / "config" / "wakeword.json"
+            )
+            if not wakeword_path.exists():
+                return
+            with open(wakeword_path, "r", encoding="utf-8") as f:
+                wc = json.load(f)
+            if wc.get("wakeword", "") not in ("瑶瑶", "遥遥"):
+                return
+
+            # Fade out streaming label first, then show sticker after fade
+            if self._streaming_label.isVisible():
+                self._fade_out_streaming_label()
+                QTimer.singleShot(200, self._show_sticker_at_ball)
+            else:
+                self._show_sticker_at_ball()
+        except Exception:
+            pass
+
+    def _show_sticker_at_ball(self):
+        """Position sticker centered above the ball and show it."""
+        ball_global = self.mapToGlobal(self.rect().center())
+        # Center horizontally above ball, offset upward
+        anchor = QPoint(ball_global.x(), ball_global.y() - self.ball_size // 2)
+        self._sticker_popup.show_sticker(anchor)
 
     @Slot(str)
     def on_slow_stage(self, stage: str):
