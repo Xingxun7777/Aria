@@ -234,6 +234,21 @@
       ],
       "response": "正在生成回复...",
       "capture_following": true
+    },
+    "set_reminder": {
+      "action": "set_reminder",
+      "value": null,
+      "triggers": [
+        "提醒我",
+        "帮我提醒",
+        "设个提醒",
+        "设个闹钟",
+        "定个提醒",
+        "定个闹钟",
+        "提醒一下"
+      ],
+      "response": "正在设置提醒...",
+      "capture_following": true
     }
   }
 }

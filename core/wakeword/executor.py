@@ -89,6 +89,7 @@ class WakewordExecutor:
         self._last_exec_time = 0.0
         self._exec_count = 0
         self._pending_following_text: Optional[str] = None
+        self._pending_command_text: Optional[str] = None
 
         # Action -> Method mapping
         self._action_map: Dict[str, Callable[[Any], bool]] = {
@@ -100,6 +101,7 @@ class WakewordExecutor:
             "ask_ai": self._ask_ai,
             "save_highlight": self._save_highlight,
             "reply_popup": self._reply_popup,
+            "set_reminder": self._set_reminder,
         }
 
     def execute(
@@ -255,6 +257,83 @@ class WakewordExecutor:
                 _debug(f"[HIGHLIGHT] Failed to write highlights.txt: {e}")
             return True
         return False
+
+    def _set_reminder(self, _value) -> bool:
+        """Parse time + content from voice command and create reminder.
+
+        Uses undo model (Gemini review): reminder defaults to confirmed=True.
+        UI shows confirmation toast with [撤销] button.
+        """
+        from datetime import datetime, timedelta
+        from ..reminder.time_parser import parse_reminder_text
+        from ..action.types import ReminderConfirmAction
+
+        # Use full command text (includes time before/after trigger word)
+        full_text = self._pending_command_text or ""
+        if not full_text.strip():
+            full_text = self._pending_following_text or ""
+
+        if not full_text.strip():
+            _debug("[REMINDER] No text to parse")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("未检测到提醒内容")
+            return False
+
+        _debug(f"[REMINDER] Parsing: '{full_text}'")
+        content, trigger_time = parse_reminder_text(full_text)
+
+        if trigger_time is None:
+            _debug(f"[REMINDER] Failed to parse time from: '{full_text}'")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("无法识别提醒时间，请说明具体时间")
+            return False
+
+        if not content:
+            content = "提醒"
+
+        # Check reminder_store availability
+        if not hasattr(self.app, "reminder_store") or not self.app.reminder_store:
+            _debug("[REMINDER] ReminderStore not available")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("提醒服务不可用")
+            return False
+
+        # Add to store (confirmed=True by default, undo model)
+        reminder_id = self.app.reminder_store.add(
+            content=content,
+            trigger_time=trigger_time,
+            original_text=full_text,
+        )
+
+        # Format display string
+        now = datetime.now()
+        delta = trigger_time - now
+        if delta.total_seconds() < 3600:
+            relative = f"{int(delta.total_seconds() / 60)}分钟后"
+        elif delta.total_seconds() < 86400:
+            hours = delta.total_seconds() / 3600
+            relative = f"{hours:.1f}小时后".replace(".0小时后", "小时后")
+        else:
+            days = delta.days
+            relative = f"{days}天后"
+
+        display = f"{trigger_time.strftime('%m-%d %H:%M')} ({relative})"
+
+        _debug(
+            f"[REMINDER] Created: id={reminder_id}, content='{content}', time={display}"
+        )
+
+        # Emit confirmation action (undo model toast)
+        action = ReminderConfirmAction(
+            reminder_id=reminder_id,
+            content=content,
+            trigger_time=trigger_time.isoformat(),
+            trigger_display=display,
+        )
+        if self.bridge:
+            self.bridge.emit_action(action)
+
+        return True
 
     def _selection_process(self, command_type: str) -> bool:
         """

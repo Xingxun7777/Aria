@@ -65,7 +65,9 @@ class WakewordDetector:
         except Exception as e:
             print(f"[WAKEWORD] Failed to load config: {e}")
 
-    def detect(self, text: str) -> Optional[Tuple[str, str, Any, str, Optional[str]]]:
+    def detect(
+        self, text: str
+    ) -> Optional[Tuple[str, str, Any, str, Optional[str], str]]:
         """
         Detect wakeword and parse command from text using pinyin matching.
 
@@ -73,9 +75,10 @@ class WakewordDetector:
             text: Transcribed text to check
 
         Returns:
-            Tuple of (command_id, action, value, response, following_text) if detected, None otherwise
-            Example: ("auto_send_on", "set_auto_send", True, "已开启自动发送", None)
-            For capture_following commands: ("save_highlight_idea", "save_highlight", {...}, "已记录想法", "要记录的内容")
+            Tuple of (command_id, action, value, response, following_text, command_text) if detected, None otherwise
+            command_text is the full text after wakeword (needed by reminder parser for pre-trigger time).
+            Example: ("auto_send_on", "set_auto_send", True, "已开启自动发送", None, "开启自动发送")
+            For capture_following commands: ("save_highlight_idea", "save_highlight", {...}, "已记录想法", "要记录的内容", "记一下要记录的内容")
         """
         if not self.enabled or not text:
             return None
@@ -171,7 +174,7 @@ class WakewordDetector:
                 log_msg += f", following='{preview}'"
             print(log_msg)
 
-            return (cmd_id, action, value, response, following_text)
+            return (cmd_id, action, value, response, following_text, command_text)
 
         print(f"[WAKEWORD] Unknown command: '{command_text}'")
         return None

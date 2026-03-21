@@ -70,6 +70,18 @@ def main():
     ai_chat_window = AIChatWindow()
     elevation_dialog = ElevationWarningDialog()
 
+    from .reminder_dialog import ReminderDialog
+
+    reminder_dialog = ReminderDialog()
+
+    # Connect undo signal — cancel the reminder in store
+    def on_reminder_undo(reminder_id: str):
+        _log(f"[MAIN] Reminder undo: {reminder_id}")
+        if hasattr(backend, "reminder_store") and backend.reminder_store:
+            backend.reminder_store.cancel(reminder_id)
+
+    reminder_dialog.undoClicked.connect(on_reminder_undo)
+
     # Thread pool for background workers
     thread_pool = QThreadPool.globalInstance()
 
@@ -422,6 +434,8 @@ def main():
             ChatAction,
             ClipboardTranslationAction,
             ReplyAction,
+            ReminderConfirmAction,
+            ReminderNotifyAction,
         )
 
         _log(f"[MAIN] on_action_triggered: {action.type}, id={action.request_id}")
@@ -753,6 +767,38 @@ def main():
                 import traceback
 
                 _log(traceback.format_exc())
+
+        elif action.type == ActionType.SHOW_REMINDER_CONFIRM:
+            # Undo-model confirmation: reminder already active, show toast with [撤销]
+            _log(
+                f"[MAIN] Reminder confirm: {action.content} @ {action.trigger_display}"
+            )
+            reminder_dialog.show_confirm(
+                reminder_id=action.reminder_id,
+                content=action.content,
+                trigger_display=action.trigger_display,
+            )
+
+        elif action.type == ActionType.SHOW_REMINDER_NOTIFY:
+            # Reminder fired — show notification + sound + ball flash
+            _log(
+                f"[MAIN] Reminder notify: {action.content} (batch={action.batch_count})"
+            )
+            reminder_dialog.show_notify(
+                reminder_id=action.reminder_id,
+                content=action.content,
+                batch_count=action.batch_count,
+            )
+            # Sound
+            try:
+                from .sound import play_sound
+
+                play_sound("reminder")
+            except Exception:
+                pass
+            # Ball flash
+            if hasattr(ball, "on_reminder_fired"):
+                ball.on_reminder_fired()
 
     def on_clipboard_translation_finished(request_id: str, translated_text: str):
         """Handle clipboard translation completion."""

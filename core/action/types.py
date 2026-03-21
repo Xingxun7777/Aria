@@ -21,6 +21,8 @@ class ActionType(Enum):
     CLIPBOARD_TRANSLATION = auto()  # Translate and copy to clipboard
     OPEN_CHAT = auto()  # AI chat dialog
     SHOW_REPLY = auto()  # Reply popup (generate reply to message)
+    SHOW_REMINDER_CONFIRM = auto()  # Reminder set confirmation (undo model)
+    SHOW_REMINDER_NOTIFY = auto()  # Reminder fired notification
 
 
 def _generate_request_id() -> str:
@@ -170,3 +172,42 @@ class ReplyAction(UIAction):
 
     def __post_init__(self):
         object.__setattr__(self, "type", ActionType.SHOW_REPLY)
+
+
+@dataclass
+class ReminderConfirmAction(UIAction):
+    """
+    Action to show reminder confirmation popup (undo model).
+
+    Default: reminder is already active (confirmed=True in store).
+    Popup shows what was set and offers [撤销] button.
+    If user doesn't interact within 30s, reminder stays active.
+    """
+
+    type: ActionType = field(default=ActionType.SHOW_REMINDER_CONFIRM, init=False)
+    reminder_id: str = ""
+    content: str = ""
+    trigger_time: str = ""  # ISO format
+    trigger_display: str = ""  # Human-readable "2026-03-21 20:00 (3小时后)"
+
+    def __post_init__(self):
+        object.__setattr__(self, "type", ActionType.SHOW_REMINDER_CONFIRM)
+
+
+@dataclass
+class ReminderNotifyAction(UIAction):
+    """
+    Action to show reminder notification when time arrives.
+
+    For batched reminders (after sleep/hibernate), batch_count > 0
+    and content contains merged bullet list.
+    """
+
+    type: ActionType = field(default=ActionType.SHOW_REMINDER_NOTIFY, init=False)
+    reminder_id: str = ""
+    content: str = ""
+    created_at: str = ""
+    batch_count: int = 0  # >0 means batched/merged notification
+
+    def __post_init__(self):
+        object.__setattr__(self, "type", ActionType.SHOW_REMINDER_NOTIFY)

@@ -956,6 +956,36 @@ class AriaApp:
         except Exception as e:
             print(f"[HISTORY] Migration skipped: {e}")
 
+        # Reminder system (voice-triggered alarms)
+        from .core.reminder import ReminderStore, ReminderScheduler
+        from .core.action.types import ReminderNotifyAction
+
+        self.reminder_store = ReminderStore(
+            data_path=Path(__file__).parent / "data" / "reminders.json"
+        )
+        self.reminder_store.cleanup()  # Clean old fired/cancelled on startup
+
+        def _on_reminder_due(reminder):
+            """Callback from scheduler thread — emit action via bridge."""
+            batch_count = reminder.get("batch_count", 0)
+            action = ReminderNotifyAction(
+                reminder_id=reminder.get("id", ""),
+                content=reminder.get("content", ""),
+                created_at=reminder.get("created_at", ""),
+                batch_count=batch_count,
+            )
+            if self._bridge:
+                self._bridge.emit_action(action)
+
+        self.reminder_scheduler = ReminderScheduler(
+            store=self.reminder_store,
+            on_reminder_due=_on_reminder_due,
+            stop_event=self._stop_event,
+        )
+        self.reminder_scheduler.start()
+        pending = self.reminder_store.get_pending()
+        print(f"[REMINDER] Scheduler started ({len(pending)} pending reminders)")
+
         # Selection mode components
         self.selection_detector = SelectionDetector(self.output_injector)
         self.selection_processor = SelectionProcessor(self.polisher)
@@ -1502,9 +1532,15 @@ class AriaApp:
                 if text and self.wakeword_detector and self.wakeword_executor:
                     wakeword_result = self.wakeword_detector.detect(text)
                     if wakeword_result:
-                        cmd_id, action, value, response, following_text = (
-                            wakeword_result
-                        )
+                        (
+                            cmd_id,
+                            action,
+                            value,
+                            response,
+                            following_text,
+                            command_text,
+                        ) = wakeword_result
+                        self.wakeword_executor._pending_command_text = command_text
                         success = self.wakeword_executor.execute(
                             cmd_id, action, value, response, following_text
                         )

@@ -55,6 +55,7 @@ class SoundManager:
             "lock": self._play_lock,
             "unlock": self._play_unlock,
             "error": self._play_error,
+            "reminder": self._play_reminder,
         }
 
         if event in sound_map:
@@ -99,6 +100,26 @@ class SoundManager:
     def _play_error(self):
         """Play error sound - DISABLED for silent operation."""
         pass  # No sound
+
+    def _play_reminder(self):
+        """Play reminder notification - ascending two-tone chime."""
+        # Try wav first, fallback to pleasant beep sequence
+        wav_path = self._sounds_dir / "reminder.wav"
+        if wav_path.exists():
+            self._play_wav("reminder.wav")
+        elif sys.platform == "win32":
+            try:
+                import winsound
+                import threading
+
+                def _chime():
+                    winsound.Beep(784, 150)  # G5
+                    winsound.Beep(1047, 200)  # C6
+
+                # Run in thread to avoid blocking (Beep is synchronous)
+                threading.Thread(target=_chime, daemon=True).start()
+            except Exception:
+                pass
 
     def _beep(self, frequency: int, duration: int):
         """Generate a beep sound."""

@@ -13,6 +13,8 @@ from .types import (
     ReplaceTextAction,
     ClipboardTranslationAction,
     ReplyAction,
+    ReminderConfirmAction,
+    ReminderNotifyAction,
 )
 
 __all__ = [
@@ -24,4 +26,6 @@ __all__ = [
     "ReplaceTextAction",
     "ClipboardTranslationAction",
     "ReplyAction",
+    "ReminderConfirmAction",
+    "ReminderNotifyAction",
 ]

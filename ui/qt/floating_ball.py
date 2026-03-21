@@ -1553,6 +1553,19 @@ class FloatingBall(QWidget):
 
         QTimer.singleShot(400, self._clear_command_flash)
 
+    def on_reminder_fired(self):
+        """Handle reminder notification - blue flash + bounce animation."""
+        self._log("REMINDER_FIRED: blue flash + bounce")
+        self._command_flash_color = QColor(59, 130, 246, 220)  # Blue #3B82F6
+        self._command_flash_active = True
+        self._bounce_active = True
+        self._bounce_phase = 0.0
+        self.update()
+
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(600, self._clear_command_flash)
+
     def _clear_command_flash(self):
         """Clear command execution flash."""
         self._command_flash_active = False
