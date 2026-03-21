@@ -390,8 +390,7 @@ class WakewordExecutor:
                 import subprocess
 
                 subprocess.Popen(
-                    f'explorer /select,"{target}"',
-                    shell=True,
+                    ["explorer", f"/select,{target}"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -417,27 +416,38 @@ class WakewordExecutor:
         import os
         import re
 
-        # Strip ANSI escape codes
-        raw = re.sub(r"[\x1b\x9b]\[[0-9;]*[a-zA-Z]", "", raw)
+        # Strip ANSI escape codes (full: CSI, OSC hyperlinks, etc.)
+        raw = re.sub(
+            r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))",
+            "",
+            raw,
+        )
 
-        # If multi-line, try each line as a path candidate
+        # Strategy 1: Try each line as a complete path
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        if not lines:
-            return None
-
-        # Try each line (prefer the one that resolves to an existing path)
-        candidates = lines if len(lines) > 1 else [raw.strip()]
-
-        for candidate in candidates:
-            result = self._try_resolve_single(candidate)
+        for line in lines or [raw.strip()]:
+            result = self._try_resolve_single(line)
             if result:
                 return result
 
-        # Last resort: try the entire raw text as one path
-        if len(lines) > 1:
-            result = self._try_resolve_single(raw.strip())
-            if result:
-                return result
+        # Strategy 2: Extract embedded path substrings from each line
+        # (handles "some text C:\Users\foo more text" or "cd G:\AIBOX")
+        path_patterns = [
+            r"https?://\S+",  # URL
+            r"\\\\[^\s:*?\"<>|,;]+",  # UNC \\server\share
+            r"[A-Za-z]:[/\\][^\s:*?\"<>|,;]*",  # Windows absolute
+            r"~[/\\][^\s:*?\"<>|,;]*",  # Tilde path
+            r"/mnt/[a-zA-Z]/[^\s:*?\"<>|,;]*",  # WSL
+            r"/[a-zA-Z]/[^\s:*?\"<>|,;]*",  # Git Bash
+            r"\.\.?[/\\][^\s:*?\"<>|,;]*",  # Dot-relative
+        ]
+        combined = "|".join(f"({p})" for p in path_patterns)
+        for line in lines or [raw.strip()]:
+            for m in re.finditer(combined, line):
+                candidate = m.group(0).strip()
+                result = self._try_resolve_single(candidate)
+                if result:
+                    return result
 
         return None
 
@@ -469,8 +479,13 @@ class WakewordExecutor:
         if re.match(r"https?://\S+", text, re.IGNORECASE):
             return text
 
+        # WSL path: /mnt/c/Users/... → C:\Users\...
+        wsl_m = re.match(r"^/mnt/([a-zA-Z])/(.*)", text)
+        if wsl_m:
+            text = f"{wsl_m.group(1).upper()}:\\{wsl_m.group(2).replace('/', chr(92))}"
+
         # Git Bash / MSYS path: /g/AIBOX/... → G:\AIBOX\...
-        if re.match(r"^/[a-zA-Z]/", text):
+        elif re.match(r"^/[a-zA-Z]/", text):
             text = f"{text[1].upper()}:{text[2:]}"
 
         # Expand ~ to user home
