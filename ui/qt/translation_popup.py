@@ -90,8 +90,8 @@ class TranslationPopup(QWidget):
         super().__init__(parent)
         self._theme = styles.get_theme_palette()
         # Semi-transparent background (more glassmorphism feel)
-        self.BG_COLOR = QColor(30, 28, 36, 220)  # Warm dark, ~86% opacity
-        self.BORDER_COLOR = QColor(255, 165, 50, 60)  # Warm amber border
+        self.BG_COLOR = QColor(32, 28, 26, 220)  # Warm dark brown-black, ~86% opacity
+        self.BORDER_COLOR = QColor(200, 130, 50, 50)  # Warm amber border
         self.TEXT_COLOR = styles.qcolor(self._theme.text_primary)
         self.SOURCE_COLOR = styles.qcolor(self._theme.text_secondary)
         self.LOADING_COLOR = QColor(245, 158, 11)  # Amber #F59E0B
@@ -679,9 +679,10 @@ class TranslationPopup(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        """Start auto-dismiss timer when mouse leaves (v1.2: 8s, respects pin)."""
-        if not self._is_loading and not self._pinned:
-            self._dismiss_timer.start(8000)  # v1.2: 8 seconds (was 1.5s)
+        """Auto-dismiss only during loading state. Results stay until user closes."""
+        if self._is_loading and not self._pinned:
+            self._dismiss_timer.start(15000)
+        # Results shown: never auto-dismiss. User clicks X or presses Esc.
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):
