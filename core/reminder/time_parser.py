@@ -428,6 +428,9 @@ def parse_chinese_time(text: str, now: datetime = None) -> Optional[datetime]:
     if now is None:
         now = datetime.now()
 
+    # Normalize synonyms: 之后→后, 以后→后
+    text = text.strip().replace("之后", "后").replace("以后", "后")
+
     # Normalize Chinese numerals to Arabic
     normalized = _normalize_chinese_nums(text.strip())
 
