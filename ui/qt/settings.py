@@ -2310,39 +2310,22 @@ class SettingsWindow(QMainWindow):
             QMessageBox.warning(self, "错误", f"打开历史记录失败: {e}")
 
     def _open_highlights_file(self):
-        """Open the highlights file (important notes from save_highlight command)."""
-        import json as _json
+        """Open the highlights file (important notes from save_highlight command only)."""
         import os
 
         try:
             project_dir = Path(__file__).parent.parent.parent.resolve()
             highlights_file = project_dir / "data" / "highlights.txt"
 
+            # highlights.txt is written to ONLY by executor._save_highlight()
+            # Do NOT import from InsightStore — that contains ALL voice records
             if not highlights_file.exists():
-                insights_dir = project_dir / "data" / "insights"
-                lines = []
-                if insights_dir.exists():
-                    for f in sorted(insights_dir.glob("*.json")):
-                        try:
-                            data = _json.loads(f.read_text(encoding="utf-8"))
-                            for entry in data.get("entries", []):
-                                ts = entry.get("timestamp", "")[:19].replace("T", " ")
-                                text = entry.get("text", "")
-                                tags = entry.get("attributes", {}).get("tags", [])
-                                tag_str = f" [{', '.join(tags)}]" if tags else ""
-                                lines.append(f"[{ts}]{tag_str} {text}")
-                        except Exception:
-                            pass
-                if lines:
-                    highlights_file.parent.mkdir(parents=True, exist_ok=True)
-                    highlights_file.write_text("\n".join(lines), encoding="utf-8")
-                else:
-                    highlights_file.parent.mkdir(parents=True, exist_ok=True)
-                    highlights_file.write_text(
-                        "暂无重点记录。\n\n"
-                        "使用方法：对 Aria 说「小助手重点记一下 xxxxx」即可保存重点内容。\n",
-                        encoding="utf-8",
-                    )
+                highlights_file.parent.mkdir(parents=True, exist_ok=True)
+                highlights_file.write_text(
+                    "暂无重点记录。\n\n"
+                    "使用方法：对 Aria 说「小助手重点记一下 xxxxx」即可保存重点内容。\n",
+                    encoding="utf-8",
+                )
 
             # Open with default text editor
             os.startfile(str(highlights_file))
