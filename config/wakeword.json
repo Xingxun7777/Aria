@@ -253,6 +253,19 @@
       ],
       "response": "正在设置提醒...",
       "capture_following": true
+    },
+    "open_path": {
+      "action": "open_path",
+      "value": null,
+      "triggers": [
+        "帮我打开",
+        "打开目录",
+        "打开文件",
+        "打开文件夹",
+        "打开路径",
+        "打开这个"
+      ],
+      "response": "正在打开..."
     }
   }
 }

@@ -102,6 +102,7 @@ class WakewordExecutor:
             "save_highlight": self._save_highlight,
             "reply_popup": self._reply_popup,
             "set_reminder": self._set_reminder,
+            "open_path": self._open_path,
         }
 
     def execute(
@@ -334,6 +335,100 @@ class WakewordExecutor:
             self.bridge.emit_action(action)
 
         return True
+
+    def _open_path(self, _value) -> bool:
+        """Open selected text as a file/directory path.
+
+        Detection: reads currently selected text via Ctrl+C.
+        Supports: absolute paths (C:\\..., /...), UNC paths (\\\\server\\...),
+        URLs (http/https), and common path-like strings.
+        """
+        import os
+        import re
+        import subprocess
+
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("[OPEN_PATH] No selection_detector")
+            return False
+
+        # Step 1: Get selected text
+        detection = self.app.selection_detector.detect()
+        if not detection.has_selection or not detection.selected_text:
+            _debug("[OPEN_PATH] No text selected")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("未检测到选中文本，请先选中路径")
+            return False
+
+        # Restore clipboard
+        if detection.original_clipboard is not None:
+            self.app.selection_detector.restore_clipboard(detection.original_clipboard)
+
+        raw = detection.selected_text.strip()
+        # Clean common artifacts: quotes, trailing punctuation, ANSI codes
+        raw = re.sub(r"[\x1b\x9b]\[[0-9;]*[a-zA-Z]", "", raw)  # ANSI escape
+        raw = raw.strip("\"'`\u200b\u00a0 \t\n\r")
+
+        _debug(f"[OPEN_PATH] Raw selected: '{raw}'")
+
+        if not raw:
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("选中内容为空")
+            return False
+
+        # Step 2: Detect path type and resolve
+        target = None
+
+        # URL
+        if re.match(r"https?://", raw, re.IGNORECASE):
+            target = raw
+            _debug(f"[OPEN_PATH] Detected URL: {target}")
+        # Absolute Windows path (C:\... or \\server\...)
+        elif re.match(r"[A-Za-z]:[/\\]", raw) or raw.startswith("\\\\"):
+            target = os.path.normpath(raw)
+            _debug(f"[OPEN_PATH] Detected absolute path: {target}")
+        # Unix-style absolute path
+        elif raw.startswith("/") and len(raw) > 1:
+            target = os.path.normpath(raw)
+            _debug(f"[OPEN_PATH] Detected unix path: {target}")
+        else:
+            # Try as-is (might be relative or partial)
+            target = os.path.normpath(raw)
+            _debug(f"[OPEN_PATH] Treating as path: {target}")
+
+        # Step 3: Validate (skip for URLs)
+        is_url = target.startswith("http://") or target.startswith("https://")
+        if not is_url and not os.path.exists(target):
+            _debug(f"[OPEN_PATH] Path does not exist: {target}")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error(f"路径不存在: {target}")
+            return False
+
+        # Step 4: Open
+        _debug(f"[OPEN_PATH] Opening: {target}")
+        try:
+            if is_url:
+                os.startfile(target)
+            elif os.path.isdir(target):
+                # Open directory in Explorer
+                subprocess.Popen(["explorer", target])
+            elif os.path.isfile(target):
+                # Open file: select in Explorer (safer than startfile for unknown types)
+                subprocess.Popen(["explorer", "/select,", target])
+            else:
+                os.startfile(target)
+
+            print(f"[OPEN_PATH] Opened: {target}")
+            if self.bridge and hasattr(self.bridge, "emit_command"):
+                self.bridge.emit_command("open_path", True)
+            return True
+        except Exception as e:
+            _debug(f"[OPEN_PATH] Failed to open: {e}")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error(f"打开失败: {e}")
+            return False
 
     def _selection_process(self, command_type: str) -> bool:
         """
