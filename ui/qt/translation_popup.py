@@ -89,11 +89,12 @@ class TranslationPopup(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._theme = styles.get_theme_palette()
-        self.BG_COLOR = styles.qcolor(self._theme.panel_bg)
-        self.BORDER_COLOR = styles.qcolor(self._theme.border)
+        # Semi-transparent background (more glassmorphism feel)
+        self.BG_COLOR = QColor(30, 28, 36, 220)  # Warm dark, ~86% opacity
+        self.BORDER_COLOR = QColor(255, 165, 50, 60)  # Warm amber border
         self.TEXT_COLOR = styles.qcolor(self._theme.text_primary)
         self.SOURCE_COLOR = styles.qcolor(self._theme.text_secondary)
-        self.LOADING_COLOR = styles.qcolor(self._theme.accent)
+        self.LOADING_COLOR = QColor(245, 158, 11)  # Amber #F59E0B
 
         # Window flags for non-activating popup
         self.setWindowFlags(
@@ -288,19 +289,19 @@ class TranslationPopup(QWidget):
         action_bar.setContentsMargins(0, 4, 0, 0)
         action_bar.setSpacing(8)
 
-        btn_style = f"""
-            QPushButton {{
-                background: {self._theme.button_bg};
-                border: 1px solid {self._theme.border};
+        btn_style = """
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 165, 50, 0.25);
                 border-radius: 4px;
-                color: {self._theme.text_primary};
+                color: #E5E7EB;
                 font-size: 12px;
                 padding: 4px 12px;
-            }}
-            QPushButton:hover {{
-                background: {self._theme.button_hover_bg};
-                border-color: {self._theme.accent};
-            }}
+            }
+            QPushButton:hover {
+                background: rgba(245, 158, 11, 0.20);
+                border-color: rgba(245, 158, 11, 0.60);
+            }
         """
 
         self._copy_btn = QPushButton("复制")
@@ -458,13 +459,17 @@ class TranslationPopup(QWidget):
             pass
 
         _tlog(
-            f"show_loading START: request_id={request_id}, text_len={len(source_text)}"
+            f"show_loading START: request_id={request_id}, text_len={len(source_text)}, pinned={self._pinned}"
         )
         try:
+            # If pinned, do NOT reset or replace the current popup content
+            if self._pinned and self.isVisible():
+                _tlog("show_loading SKIPPED: popup is pinned, ignoring new request")
+                return
+
             self._current_request_id = request_id
             self._is_loading = True
             self._translated_text = ""
-            self._pinned = False  # Reset pin state for new request
             self._title_prefix = title_prefix
             self._title_done = title_done
             self._loading_text = loading_text
@@ -702,15 +707,15 @@ class TranslationPopup(QWidget):
         self._pinned = not self._pinned
         if self._pinned:
             self._pin_btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: {self._theme.accent};
+                """
+                QPushButton {
+                    background: rgba(245, 158, 11, 0.80);
                     border: none;
-                    color: {self._theme.text_primary};
+                    color: #FFFFFF;
                     font-size: 12px;
                     padding: 0;
                     border-radius: 4px;
-                }}
+                }
             """
             )
             self._pin_btn.setToolTip("取消固定")
