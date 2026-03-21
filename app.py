@@ -1723,8 +1723,6 @@ class AriaApp:
                         except Exception as polish_err:
                             # Polish is optional — never block text insertion
                             print(f"[POLISH] EXCEPTION (degraded to raw): {polish_err}")
-                        finally:
-                            _polish_hint_timer.cancel()
                             _pipeline_log("POST", f"Polish exception: {polish_err}")
                             polish_debug = {
                                 "enabled": True,
@@ -1740,6 +1738,8 @@ class AriaApp:
                                 "full_prompt": "",
                                 "http_status": 0,
                             }
+                        finally:
+                            _polish_hint_timer.cancel()
 
                         # Log Polish debug info
                         debug.log_polish(
