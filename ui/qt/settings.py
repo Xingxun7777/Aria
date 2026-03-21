@@ -277,6 +277,107 @@ class ApiTestWorker(QObject):
             self.finished.emit(False, str(e), 0)
 
 
+# Preset API providers for quick setup
+API_PRESETS = {
+    "DeepSeek": {
+        "url": "https://api.deepseek.com",
+        "key_hint": "sk-...",
+        "models": ["deepseek-chat", "deepseek-reasoner"],
+    },
+    "OpenRouter": {
+        "url": "https://openrouter.ai/api",
+        "key_hint": "sk-or-v1-...",
+        "models": [
+            "deepseek/deepseek-chat-v3.1:free",
+            "google/gemini-2.5-flash-preview:free",
+            "meta-llama/llama-4-scout:free",
+        ],
+    },
+    "OpenAI": {
+        "url": "https://api.openai.com",
+        "key_hint": "sk-...",
+        "models": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano"],
+    },
+    "硅基流动 (SiliconFlow)": {
+        "url": "https://api.siliconflow.cn",
+        "key_hint": "sk-...",
+        "models": [
+            "deepseek-ai/DeepSeek-V3",
+            "Qwen/Qwen3-8B",
+            "THUDM/GLM-4-9B-Chat",
+        ],
+    },
+    "智谱 (Zhipu)": {
+        "url": "https://open.bigmodel.cn/api/paas",
+        "key_hint": "...",
+        "models": ["glm-4-flash", "glm-4-plus", "glm-4-air"],
+    },
+    "Groq": {
+        "url": "https://api.groq.com/openai",
+        "key_hint": "gsk_...",
+        "models": ["llama-3.3-70b-versatile", "gemma2-9b-it", "mixtral-8x7b-32768"],
+    },
+    "本地 (Ollama)": {
+        "url": "http://localhost:11434",
+        "key_hint": "(无需密钥)",
+        "models": [],
+    },
+    "自定义": {
+        "url": "",
+        "key_hint": "",
+        "models": [],
+    },
+}
+
+
+class ModelFetchWorker(QObject):
+    """Worker for fetching available models from /v1/models endpoint."""
+
+    finished = Signal(bool, list, str)  # success, model_list, error_msg
+
+    def __init__(self, api_url: str, api_key: str):
+        super().__init__()
+        self.api_url = api_url
+        self.api_key = api_key
+
+    def run(self):
+        import requests
+
+        try:
+            api_url = self.api_url.rstrip("/")
+            if api_url.endswith("/v1/models"):
+                full_url = api_url
+            elif api_url.endswith("/v1"):
+                full_url = f"{api_url}/models"
+            else:
+                full_url = f"{api_url}/v1/models"
+
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+
+            response = requests.get(full_url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                models = []
+                for m in data.get("data", []):
+                    model_id = m.get("id", "")
+                    if model_id:
+                        models.append(model_id)
+                models.sort()
+                self.finished.emit(True, models, "")
+            else:
+                self.finished.emit(
+                    False, [], f"HTTP {response.status_code}: {response.text[:100]}"
+                )
+        except requests.exceptions.Timeout:
+            self.finished.emit(False, [], "请求超时")
+        except requests.exceptions.ConnectionError:
+            self.finished.emit(False, [], "无法连接服务器")
+        except Exception as e:
+            self.finished.emit(False, [], str(e))
+
+
 class SettingsWindow(QMainWindow):
     """Settings window with 5 configuration tabs."""
 
@@ -890,6 +991,22 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(QLabel("<h2>API 设置</h2>"))
 
+        # === 快速预设 ===
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("快速预设:"))
+        self.api_preset = QComboBox()
+        for name in API_PRESETS:
+            self.api_preset.addItem(name)
+        self.api_preset.setCurrentText("自定义")
+        self.api_preset.currentTextChanged.connect(self._on_preset_changed)
+        preset_layout.addWidget(self.api_preset, 1)
+
+        preset_hint = QLabel("选择服务商自动填写地址")
+        preset_hint.setStyleSheet(self._label_style("muted", font_size=11))
+        preset_layout.addWidget(preset_hint)
+        layout.addLayout(preset_layout)
+        layout.addSpacing(10)
+
         # === 主 API 设置 ===
         main_group = QGroupBox("主 API（默认）")
         main_form = QFormLayout(main_group)
@@ -903,13 +1020,23 @@ class SettingsWindow(QMainWindow):
         self.api_key.setPlaceholderText("sk-...")
         main_form.addRow("API 密钥:", self.api_key)
 
-        self.model = QLineEdit()
-        self.model.setPlaceholderText("google/gemini-2.5-flash-lite-preview-09-2025")
-        main_form.addRow("模型名称:", self.model)
+        # Model: editable combo + fetch button
+        model_layout = QHBoxLayout()
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        self.model.setInsertPolicy(QComboBox.NoInsert)
+        self.model.lineEdit().setPlaceholderText("填写或从列表选择模型")
+        model_layout.addWidget(self.model, 1)
+
+        self._fetch_models_btn = QPushButton("获取模型列表")
+        self._fetch_models_btn.setToolTip("从 API 获取可用模型列表")
+        self._fetch_models_btn.clicked.connect(self._fetch_models)
+        model_layout.addWidget(self._fetch_models_btn)
+        main_form.addRow("模型名称:", model_layout)
 
         self.timeout = QSpinBox()
         self.timeout.setRange(5, 120)
-        self.timeout.setValue(10)  # Match PolishConfig default (10s)
+        self.timeout.setValue(10)
         self.timeout.setSuffix(" 秒")
         main_form.addRow("超时时间:", self.timeout)
 
@@ -1003,7 +1130,7 @@ class SettingsWindow(QMainWindow):
         # Use backup key if set, otherwise use main key
         api_key = self.api_key_backup.text().strip() or self.api_key.text().strip()
         # Use backup model if set, otherwise use main model
-        model = self.model_backup.text().strip() or self.model.text().strip()
+        model = self.model_backup.text().strip() or self.model.currentText().strip()
 
         # Prevent concurrent tests
         if (
@@ -1055,6 +1182,74 @@ class SettingsWindow(QMainWindow):
         # Clear thread reference AFTER all UI updates (allow future tests)
         self._api_thread = None
 
+    def _on_preset_changed(self, name: str):
+        """Fill API URL and models from preset selection."""
+        preset = API_PRESETS.get(name)
+        if not preset or name == "自定义":
+            return
+
+        self.api_url.setText(preset["url"])
+        self.api_key.setPlaceholderText(preset.get("key_hint", "sk-..."))
+
+        # Populate model combo with preset models
+        current_model = self.model.currentText()
+        self.model.clear()
+        for m in preset.get("models", []):
+            self.model.addItem(m)
+        if current_model:
+            self.model.setCurrentText(current_model)
+        elif preset.get("models"):
+            self.model.setCurrentIndex(0)
+
+    def _fetch_models(self):
+        """Fetch available models from /v1/models endpoint."""
+        api_url = self.api_url.text().strip()
+        api_key = self.api_key.text().strip()
+
+        if not api_url:
+            QMessageBox.warning(self, "错误", "请先填写 API 地址")
+            return
+
+        if (
+            hasattr(self, "_model_thread")
+            and self._model_thread is not None
+            and self._model_thread.isRunning()
+        ):
+            return
+
+        self._fetch_models_btn.setEnabled(False)
+        self._fetch_models_btn.setText("获取中...")
+
+        self._model_thread = QThread()
+        self._model_worker = ModelFetchWorker(api_url, api_key)
+        self._model_worker.moveToThread(self._model_thread)
+        self._model_thread.started.connect(self._model_worker.run)
+        self._model_worker.finished.connect(self._on_models_fetched)
+        self._model_worker.finished.connect(self._model_thread.quit)
+        self._model_worker.finished.connect(self._model_worker.deleteLater)
+        self._model_thread.finished.connect(self._model_thread.deleteLater)
+        self._model_thread.start()
+
+    def _on_models_fetched(self, success: bool, models: list, error_msg: str):
+        """Handle model list fetch result."""
+        self._fetch_models_btn.setEnabled(True)
+        self._fetch_models_btn.setText("获取模型列表")
+
+        if success and models:
+            current = self.model.currentText()
+            self.model.clear()
+            for m in models:
+                self.model.addItem(m)
+            if current:
+                self.model.setCurrentText(current)
+            QMessageBox.information(self, "成功", f"获取到 {len(models)} 个可用模型")
+        elif success and not models:
+            QMessageBox.information(self, "提示", "API 返回了空模型列表")
+        else:
+            QMessageBox.warning(self, "获取失败", f"无法获取模型列表:\n{error_msg}")
+
+        self._model_thread = None
+
     def _test_api_connection(self):
         """Test API connection with a simple request (non-blocking)."""
         # Prevent concurrent tests
@@ -1067,7 +1262,7 @@ class SettingsWindow(QMainWindow):
 
         api_url = self.api_url.text().strip()
         api_key = self.api_key.text().strip()
-        model = self.model.text().strip()
+        model = self.model.currentText().strip()
 
         if not api_url:
             QMessageBox.warning(self, "错误", "请先填写 API 地址")
@@ -1526,7 +1721,7 @@ class SettingsWindow(QMainWindow):
         # === API tab ===
         self.api_url.setText(polish.get("api_url", ""))
         self.api_key.setText(polish.get("api_key", ""))
-        self.model.setText(polish.get("model", ""))
+        self.model.setCurrentText(polish.get("model", ""))
         self.timeout.setValue(polish.get("timeout", 10))
 
         # 备用 API 配置
@@ -1727,7 +1922,7 @@ class SettingsWindow(QMainWindow):
         self.config["polish"]["enabled"] = self.radio_quality.isChecked()
         self.config["polish"]["api_url"] = self.api_url.text()
         self.config["polish"]["api_key"] = self.api_key.text()
-        self.config["polish"]["model"] = self.model.text()
+        self.config["polish"]["model"] = self.model.currentText()
         self.config["polish"]["timeout"] = self.timeout.value()
         self.config["polish"]["prompt_template"] = self.prompt_edit.toPlainText()
 
