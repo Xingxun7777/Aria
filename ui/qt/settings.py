@@ -583,6 +583,14 @@ class SettingsWindow(QMainWindow):
 
         layout.addWidget(data_group)
 
+        layout.addSpacing(10)
+
+        # Voice command guide
+        btn_guide = QPushButton("语音指令指南")
+        btn_guide.setToolTip("查看所有可用的语音唤醒词指令")
+        btn_guide.clicked.connect(self._show_voice_guide)
+        layout.addWidget(btn_guide)
+
         layout.addStretch()
 
         # Save button
@@ -1552,29 +1560,29 @@ class SettingsWindow(QMainWindow):
 
         self.chk_typewriter_mode = QCheckBox("打字机模式 (逐字符输入)")
         self.chk_typewriter_mode.setToolTip(
-            "适用于不支持 Ctrl+V 粘贴的应用程序\n"
-            "开启后将逐字符发送，速度较慢但兼容性更好"
+            "逐字符输入模式，完全不占用剪贴板。\n\n"
+            "优点：\n"
+            "  - 不影响剪贴板内容（复制的图片/文件不会丢失）\n"
+            "  - 适用于远程桌面（ToDesk/向日葵/RDP）\n"
+            "  - 不会触发富文本编辑器的粘贴对话框\n"
+            "  - 不会误按快捷键（只发送纯文字）\n\n"
+            "缺点：\n"
+            "  - 速度较慢（100字约1.5秒 vs 剪贴板瞬间完成）\n"
+            "  - 换行会变为空格（防止在聊天框误触发送）\n"
+            "  - 在代码编辑器中会触发自动补全\n"
+            "  - 不适用于 DirectInput 游戏"
         )
         output_layout.addWidget(self.chk_typewriter_mode)
 
-        # Warning about limitations
-        typewriter_hint = QLabel("注意：此模式适用于不支持 Ctrl+V 的普通应用")
+        typewriter_hint = QLabel(
+            "关闭 = 剪贴板模式（快速，适合日常）  |  "
+            "开启 = 打字机模式（兼容性强，适合远程桌面）"
+        )
+        typewriter_hint.setWordWrap(True)
         typewriter_hint.setStyleSheet(
-            self._label_style("warning", extra="margin-left: 20px;")
+            self._label_style("secondary", extra="margin-left: 20px;", font_size=11)
         )
         output_layout.addWidget(typewriter_hint)
-
-        typewriter_warn1 = QLabel("不适用于使用 DirectInput 的游戏（大多数 3D 游戏）")
-        typewriter_warn1.setStyleSheet(
-            self._label_style("muted", extra="margin-left: 20px;")
-        )
-        output_layout.addWidget(typewriter_warn1)
-
-        typewriter_warn2 = QLabel("ℹ️ 仅适用于普通应用，游戏请用管理员启动 Aria")
-        typewriter_warn2.setStyleSheet(
-            self._label_style("muted", extra="margin-left: 20px;")
-        )
-        output_layout.addWidget(typewriter_warn2)
 
         # Typewriter delay
         typewriter_delay_layout = QHBoxLayout()
@@ -2198,6 +2206,65 @@ class SettingsWindow(QMainWindow):
             except Exception:
                 pass
             QMessageBox.critical(self, "错误", f"保存失败: {e}")
+
+    def _show_voice_guide(self):
+        """Show a dialog with all available voice commands."""
+        guide_text = (
+            "<h3>语音指令指南</h3>"
+            "<p>所有指令格式：<b>「唤醒词」+ 指令</b>（唤醒词可在上方设置）</p>"
+            "<hr>"
+            "<h4>基础控制</h4>"
+            "<table cellpadding='3'>"
+            "<tr><td><b>开启自动发送</b></td><td>说完话自动按回车发送</td></tr>"
+            "<tr><td><b>关闭自动发送</b></td><td>取消自动发送</td></tr>"
+            "<tr><td><b>休眠 / 别听了</b></td><td>暂停语音监听</td></tr>"
+            "<tr><td><b>醒来 / 继续听</b></td><td>恢复语音监听</td></tr>"
+            "</table>"
+            "<h4>文本处理（需先选中文字）</h4>"
+            "<table cellpadding='3'>"
+            "<tr><td><b>润色 / 帮我润色</b></td><td>优化文字表达</td></tr>"
+            "<tr><td><b>翻译成英文/中文/日文</b></td><td>翻译选中内容（弹窗显示）</td></tr>"
+            "<tr><td><b>什么意思</b></td><td>自动检测语言并翻译</td></tr>"
+            "<tr><td><b>扩写 / 缩写</b></td><td>展开或精简选中内容</td></tr>"
+            "<tr><td><b>重写 / 改写</b></td><td>换一种方式表达</td></tr>"
+            "<tr><td><b>总结 / 帮我总结</b></td><td>生成摘要（弹窗显示）</td></tr>"
+            "</table>"
+            "<h4>智能功能</h4>"
+            "<table cellpadding='3'>"
+            "<tr><td><b>问问AI / 解释一下</b></td><td>选中文字发给 AI 解答</td></tr>"
+            "<tr><td><b>帮我回复 [风格]</b></td><td>选中消息生成回复建议</td></tr>"
+            "<tr><td><b>重点记一下 [内容]</b></td><td>语音记录重要事项</td></tr>"
+            "<tr><td><b>提醒我 [时间] [事项]</b></td><td>设置定时提醒闹钟</td></tr>"
+            "<tr><td><b>帮我打开</b></td><td>打开选中的文件路径/URL</td></tr>"
+            "</table>"
+            "<h4>提醒时间格式示例</h4>"
+            "<p style='margin-left:10px'>"
+            "三小时后、半小时后、十分钟后、五天后<br>"
+            "晚上八点、明天下午两点、后天上午十点半<br>"
+            "下周五、下下周一下午三点、今晚八点</p>"
+            "<h4>快捷按键</h4>"
+            "<table cellpadding='3'>"
+            "<tr><td><b>发送</b> → Enter</td>"
+            "<td><b>删除</b> → Backspace</td>"
+            "<td><b>撤销</b> → Ctrl+Z</td></tr>"
+            "<tr><td><b>复制</b> → Ctrl+C</td>"
+            "<td><b>粘贴</b> → Ctrl+V</td>"
+            "<td><b>全选</b> → Ctrl+A</td></tr>"
+            "<tr><td><b>保存</b> → Ctrl+S</td>"
+            "<td><b>剪切</b> → Ctrl+X</td>"
+            "<td><b>重做</b> → Ctrl+Y</td></tr>"
+            "</table>"
+            "<hr>"
+            "<p style='color:gray;font-size:11px'>"
+            "提示：唤醒词使用拼音匹配，同音字均可识别。"
+            "指令间有 500ms 冷却防误触。</p>"
+        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Aria 语音指令指南")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(guide_text)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec()
 
     def _open_history_folder(self):
         """Export all history to readable txt files and open the folder."""
