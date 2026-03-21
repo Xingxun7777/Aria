@@ -469,7 +469,13 @@ def _validate_result(result: datetime, now: datetime) -> Optional[datetime]:
 # ============================================================================
 
 # Pivot words that separate time from content
-_PIVOT_WORDS = ["提醒我", "帮我提醒", "提醒一下"]
+_PIVOT_WORDS = [
+    "提醒我",
+    "帮我提醒",
+    "提醒一下",
+    "帮我定时",
+    "定时提醒",
+]
 
 # Time signal words — if present, that segment likely contains the time
 _TIME_SIGNALS = re.compile(
