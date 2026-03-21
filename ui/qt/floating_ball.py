@@ -137,17 +137,22 @@ class _StickerPopup(QWidget):
         y = anchor_pos.y() - self.height() - 5
         self.move(x, y)
 
+        # Show at zero opacity, then fade in on next event loop tick
+        # (avoids 1-frame flash at full opacity on Windows)
         self.setWindowOpacity(0.0)
         self.show()
+        self.raise_()
 
-        self._fade_in_anim = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_in_anim.setDuration(200)
-        self._fade_in_anim.setStartValue(0.0)
-        self._fade_in_anim.setEndValue(1.0)
-        self._fade_in_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._fade_in_anim.start()
+        def _start_fade():
+            self._fade_in_anim = QPropertyAnimation(self, b"windowOpacity")
+            self._fade_in_anim.setDuration(150)  # Quick but visible
+            self._fade_in_anim.setStartValue(0.0)
+            self._fade_in_anim.setEndValue(1.0)
+            self._fade_in_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._fade_in_anim.start()
 
-        self._dismiss_timer.start(1500)
+        QTimer.singleShot(10, _start_fade)
+        self._dismiss_timer.start(1800)
 
     def _fade_out(self):
         anim = QPropertyAnimation(self, b"windowOpacity")
