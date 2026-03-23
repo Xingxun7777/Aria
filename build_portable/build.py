@@ -354,6 +354,14 @@ def step_copy_site_packages():
         "scripts",
     }
 
+    # OpenCV subdirectories/files not needed (RapidOCR only uses image processing)
+    CV2_SKIP_FILES = {
+        "data",  # Haar cascade XML files (9 MB)
+    }
+    CV2_SKIP_DLLS = {
+        "opencv_videoio_ffmpeg4110_64.dll",  # Video I/O (27 MB)
+    }
+
     # Specific DLLs safe to remove (multi-GPU only)
     TORCH_SKIP_DLLS = {
         "cusolvermg64_11.dll",  # multi-GPU solver (150 MB)
@@ -423,6 +431,19 @@ def step_copy_site_packages():
 
                 # PySide6/Qt/qml (nested path)
                 if len(parts) >= 3 and parts[:3] == ["pyside6", "qt", "qml"]:
+                    ignored.append(name)
+                    continue
+
+                # cv2: skip non-runtime subdirs and DLLs
+                if len(parts) >= 2 and parts[0] == "cv2":
+                    if parts[1] in CV2_SKIP_FILES:
+                        ignored.append(name)
+                        continue
+                if (
+                    len(parts) >= 2
+                    and parts[0] == "cv2"
+                    and name_lower in CV2_SKIP_DLLS
+                ):
                     ignored.append(name)
                     continue
 
