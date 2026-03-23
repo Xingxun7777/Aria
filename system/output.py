@@ -1153,7 +1153,30 @@ class OutputInjector:
         # ========================================
         # Layer 1 or 2: Choose input method
         # ========================================
-        if self.config.typewriter_mode:
+        use_typewriter = self.config.typewriter_mode
+
+        # Force clipboard mode for terminal apps (WM_CHAR silently fails on them)
+        if use_typewriter:
+            _TERMINAL_PROCESSES = {
+                "windowsterminal.exe",
+                "cmd.exe",
+                "powershell.exe",
+                "pwsh.exe",
+                "conhost.exe",
+                "wezterm-gui.exe",
+                "alacritty.exe",
+                "hyper.exe",
+            }
+            try:
+                fg_info = get_foreground_window_info()
+                proc = fg_info.get("process_name", "").lower()
+                if proc in _TERMINAL_PROCESSES:
+                    use_typewriter = False
+                    logger.info(f"Terminal detected ({proc}), forcing clipboard mode")
+            except Exception:
+                pass
+
+        if use_typewriter:
             # Layer 2: Typewriter mode
             success = self._insert_text_typewriter(text)
         else:

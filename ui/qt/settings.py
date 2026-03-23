@@ -493,14 +493,19 @@ class SettingsWindow(QMainWindow):
         self.hotkey_edit.setKeySequence(
             QKeySequence("`")
         )  # Default: grave/backtick key
+        self.hotkey_edit.setToolTip("点击此处后按下想要的快捷键进行设置")
         hotkey_layout.addWidget(self.hotkey_edit)
         btn_clear_hotkey = QPushButton("清除")
+        btn_clear_hotkey.setToolTip("清除当前快捷键，恢复为默认的 ` 键")
         btn_clear_hotkey.clicked.connect(lambda: self.hotkey_edit.clear())
         hotkey_layout.addWidget(btn_clear_hotkey)
         form.addRow("录音热键:", hotkey_layout)
 
         # Audio device
         self.audio_device = QComboBox()
+        self.audio_device.setToolTip(
+            "选择麦克风设备，「系统默认」会自动使用当前默认录音设备"
+        )
         self._populate_audio_devices()
         form.addRow("音频设备:", self.audio_device)
 
@@ -527,6 +532,7 @@ class SettingsWindow(QMainWindow):
         wakeword_label = QLabel("唤醒词:")
         self.wakeword_edit = QLineEdit()
         self.wakeword_edit.setPlaceholderText("小助手")
+        self.wakeword_edit.setToolTip("语音指令的触发前缀，说「唤醒词+命令」执行操作")
         self.wakeword_edit.textChanged.connect(self._on_wakeword_text_changed)
         wakeword_input_layout.addWidget(wakeword_label)
         wakeword_input_layout.addWidget(self.wakeword_edit)
@@ -555,6 +561,9 @@ class SettingsWindow(QMainWindow):
         translate_layout = QFormLayout(translate_group)
 
         self.translate_mode = QComboBox()
+        self.translate_mode.setToolTip(
+            "弹窗：悬浮窗展示翻译结果；剪贴板：翻译后自动复制"
+        )
         self.translate_mode.addItem("弹窗显示", "popup")
         self.translate_mode.addItem("复制到剪贴板", "clipboard")
         translate_layout.addRow("翻译输出方式:", self.translate_mode)
@@ -627,6 +636,9 @@ class SettingsWindow(QMainWindow):
         context_label = QLabel("使用场景:")
         self.domain_ctx = QLineEdit()
         self.domain_ctx.setPlaceholderText("如：编程开发、医疗诊断、法律咨询...")
+        self.domain_ctx.setToolTip(
+            "填写后会同时影响语音识别和 AI 润色，帮助区分同音词（如3D建模→顶点而非景点）"
+        )
         context_layout.addWidget(context_label)
         context_layout.addWidget(self.domain_ctx, 1)
         layout.addLayout(context_layout)
@@ -683,14 +695,17 @@ class SettingsWindow(QMainWindow):
         # Action buttons
         btn_layout = QHBoxLayout()
         btn_add_word = QPushButton("+ 添加")
+        btn_add_word.setToolTip("添加一个专业词汇，支持中英文")
         btn_add_word.clicked.connect(self._add_prompt_word)
         btn_layout.addWidget(btn_add_word)
 
         btn_import = QPushButton("批量导入")
+        btn_import.setToolTip("一次导入多个词汇，每行一个")
         btn_import.clicked.connect(self._batch_import_words)
         btn_layout.addWidget(btn_import)
 
         btn_remove_word = QPushButton("删除选中")
+        btn_remove_word.setToolTip("删除表格中选中的词汇（可多选）")
         btn_remove_word.clicked.connect(self._remove_prompt_words)
         btn_layout.addWidget(btn_remove_word)
 
@@ -724,10 +739,12 @@ class SettingsWindow(QMainWindow):
         # Table buttons
         tbl_btn_layout = QHBoxLayout()
         btn_add_rule = QPushButton("+ 添加规则")
+        btn_add_rule.setToolTip("添加一条手动纠错规则，如「景点 → 顶点」")
         btn_add_rule.clicked.connect(self._add_replacement_row)
         tbl_btn_layout.addWidget(btn_add_rule)
 
         btn_remove_rule = QPushButton("- 删除选中")
+        btn_remove_rule.setToolTip("删除选中的纠错规则")
         btn_remove_rule.clicked.connect(self._remove_replacement_row)
         tbl_btn_layout.addWidget(btn_remove_rule)
 
@@ -909,8 +926,15 @@ class SettingsWindow(QMainWindow):
         # Mode selection
         mode_group = QButtonGroup(w)
         self.radio_off = QRadioButton("关闭润色 (直接输出识别结果)")
+        self.radio_off.setToolTip("语音识别结果直接输出，不经过任何润色处理")
         self.radio_fast = QRadioButton("本地润色 (需自行配置模型)")
+        self.radio_fast.setToolTip(
+            "使用本地 GGUF 模型离线润色，需在高级设置中配置模型路径"
+        )
         self.radio_quality = QRadioButton("高质量模式 (Gemini API, ~1.7s)")
+        self.radio_quality.setToolTip(
+            "通过云端 API 调用大语言模型润色，效果最好但需要网络"
+        )
         mode_group.addButton(self.radio_off)
         mode_group.addButton(self.radio_fast)
         mode_group.addButton(self.radio_quality)
@@ -927,6 +951,9 @@ class SettingsWindow(QMainWindow):
 
         # 口语过滤开关
         self.chk_filter_filler = QCheckBox("口语过滤")
+        self.chk_filter_filler.setToolTip(
+            "开启后润色时自动移除口语填充词，关闭则保留原始口语表达"
+        )
         self.chk_filter_filler.setChecked(True)
         filler_hint = QLabel('自动去除"嗯"、"那个"、"就是说"等口语填充词')
         filler_hint.setStyleSheet("color: #888; font-size: 12px; margin-left: 24px;")
@@ -937,6 +964,7 @@ class SettingsWindow(QMainWindow):
 
         # 自动结构化开关
         self.chk_auto_structure = QCheckBox("自动结构化")
+        self.chk_auto_structure.setToolTip("适合口述长段落，短句聊天建议关闭")
         self.chk_auto_structure.setChecked(False)
         structure_hint = QLabel("将口述长文本自动整理为带换行、编号的结构化文本")
         structure_hint.setStyleSheet("color: #888; font-size: 12px; margin-left: 24px;")
@@ -949,6 +977,9 @@ class SettingsWindow(QMainWindow):
         rules_label = QLabel("个性化规则（每行一条）：")
         skill_layout.addWidget(rules_label)
         self.personalization_rules_edit = QPlainTextEdit()
+        self.personalization_rules_edit.setToolTip(
+            "用自然语言描述你的润色偏好，每行一条规则"
+        )
         self.personalization_rules_edit.setPlaceholderText(
             "例如：\n不要把口语化的表达改成书面语\n英文专有名词保留原始大小写\n每句话单独成段"
         )
@@ -968,6 +999,7 @@ class SettingsWindow(QMainWindow):
         reply_hint.setStyleSheet("color: #888; font-size: 12px;")
         reply_layout.addWidget(reply_hint)
         self.reply_style_edit = QPlainTextEdit()
+        self.reply_style_edit.setToolTip("定义 AI 帮你回复消息时的语气和风格")
         self.reply_style_edit.setPlaceholderText(
             "例如：\n回复简短一些，像朋友聊天\n语气专业正式\n用轻松幽默的方式回复"
         )
@@ -980,6 +1012,9 @@ class SettingsWindow(QMainWindow):
         # Prompt editor
         layout.addWidget(QLabel("<b>高质量模式 Prompt 模板:</b>"))
         self.prompt_edit = QPlainTextEdit()
+        self.prompt_edit.setToolTip(
+            "高级用户可自定义润色 Prompt，支持 {text}、{hotwords_chinese}、{hotwords_english} 变量"
+        )
         self.prompt_edit.setPlainText(self.DEFAULT_PROMPT)
         self.prompt_edit.setMinimumHeight(200)
         layout.addWidget(self.prompt_edit)
@@ -987,6 +1022,7 @@ class SettingsWindow(QMainWindow):
         # Restore default button
         btn_layout = QHBoxLayout()
         btn_restore = QPushButton("恢复默认 Prompt")
+        btn_restore.setToolTip("将 Prompt 模板恢复为系统默认内容，自定义修改将丢失")
         btn_restore.setObjectName("dangerBtn")
         btn_restore.clicked.connect(self._restore_default_prompt)
         btn_layout.addWidget(btn_restore)
@@ -1047,6 +1083,7 @@ class SettingsWindow(QMainWindow):
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("sk-...")
+        self.api_key.setToolTip("API 密钥仅保存在本地配置文件中，不会上传到任何服务器")
         main_form.addRow("API 密钥:", self.api_key)
 
         # Model: editable combo + fetch button
@@ -1067,6 +1104,7 @@ class SettingsWindow(QMainWindow):
         self.timeout.setRange(5, 120)
         self.timeout.setValue(10)
         self.timeout.setSuffix(" 秒")
+        self.timeout.setToolTip("API 请求超时时间，超时后会跳过润色直接输出原文")
         main_form.addRow("超时时间:", self.timeout)
 
         layout.addWidget(main_group)
@@ -1457,6 +1495,9 @@ class SettingsWindow(QMainWindow):
         engine_layout = QFormLayout(engine_group)
 
         self.engine_combo = QComboBox()
+        self.engine_combo.setToolTip(
+            "Qwen3 支持多语言和上下文热词；FunASR 中文识别速度更快"
+        )
         self.engine_combo.addItems(
             [
                 "FunASR (中文优化，离线即用)",
@@ -1477,6 +1518,9 @@ class SettingsWindow(QMainWindow):
         funasr_layout = QFormLayout(self.funasr_group)
 
         self.funasr_model = QComboBox()
+        self.funasr_model.setToolTip(
+            "大模型准确度更高但占用更多显存，显存不足时选小模型"
+        )
         self.funasr_model.addItems(
             [
                 "大模型 (paraformer-zh) - 推荐，准确度高",
@@ -1487,6 +1531,7 @@ class SettingsWindow(QMainWindow):
         funasr_layout.addRow("模型:", self.funasr_model)
 
         self.funasr_device = QComboBox()
+        self.funasr_device.setToolTip("cuda 使用 GPU 加速，cpu 不需要显卡但速度较慢")
         self.funasr_device.addItems(["cuda", "cpu"])
         funasr_layout.addRow("设备:", self.funasr_device)
 
@@ -1501,6 +1546,7 @@ class SettingsWindow(QMainWindow):
         qwen3_layout = QFormLayout(self.qwen3_group)
 
         self.qwen3_model = QComboBox()
+        self.qwen3_model.setToolTip("自动选择会根据显存大小决定用 1.7B 还是 0.6B")
         self.qwen3_model.addItems(
             [
                 "自动选择 - 根据显存自动决定 (推荐)",
@@ -1512,10 +1558,14 @@ class SettingsWindow(QMainWindow):
         qwen3_layout.addRow("模型:", self.qwen3_model)
 
         self.qwen3_device = QComboBox()
+        self.qwen3_device.setToolTip("cuda 使用 GPU 加速，cpu 不需要显卡但速度较慢")
         self.qwen3_device.addItems(["cuda", "cpu"])
         qwen3_layout.addRow("设备:", self.qwen3_device)
 
         self.qwen3_dtype = QComboBox()
+        self.qwen3_dtype.setToolTip(
+            "RTX 30/40/50 系显卡用 bfloat16，GTX 16/20 系用 float16"
+        )
         self.qwen3_dtype.addItems(
             ["bfloat16 - 推荐 (RTX 30/40/50系)", "float16 - 旧显卡兼容"]
         )
@@ -1678,6 +1728,9 @@ class SettingsWindow(QMainWindow):
 
         self.local_model_path = QLineEdit()
         self.local_model_path.setPlaceholderText("请填入 .gguf 模型文件路径")
+        self.local_model_path.setToolTip(
+            "GGUF 格式的量化模型文件完整路径，如 C:\\models\\qwen2.5-1.5b-q4_k_m.gguf"
+        )
         local_layout.addRow("模型路径:", self.local_model_path)
 
         self.local_n_gpu_layers = QSpinBox()

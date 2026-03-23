@@ -131,3 +131,8 @@ umap-learn==0.5.11
 urllib3==2.6.3
 uvicorn==0.40.0
 Werkzeug==3.1.5
+winocr==0.0.15
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.18.1
+uiautomation==2.0.29
+comtypes==1.4.16

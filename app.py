@@ -480,9 +480,14 @@ class AriaApp:
         if digit_ratio > 0.5 and len(text) > 5:
             return True
 
-        # Pattern 4: Repeated patterns (same char 4+ times)
-        if re.search(r"(.)\1{3,}", text):
-            return True
+        # Pattern 4: Repeated non-CJK patterns (same char 4+ times)
+        # CJK repetition like "落落落落" is an ASR stutter bug, not hallucination
+        # — handled by _deduplicate_sentences instead
+        non_cjk_repeat = re.search(r"(.)\1{3,}", text)
+        if non_cjk_repeat:
+            char = non_cjk_repeat.group(1)
+            if not re.match(r"[\u4e00-\u9fff\u3400-\u4dbf]", char):
+                return True
 
         # Pattern 5: Repeated sentences (same phrase 3+ times = hallucination)
         # Note: 2x repetition is handled by _deduplicate_sentences (ASR bug, not hallucination)
@@ -496,24 +501,238 @@ class AriaApp:
                 if count >= 3 and len(phrase) > 5:
                     return True
 
-        # Pattern 6: Common hallucination phrases
-        hallucination_phrases = [
-            "请不吝点赞",
-            "订阅",
-            "谢谢观看",
-            "感谢收看",
-            "字幕",
-            "subtitle",
-            "www.",
-            "http",
-            "再次回断",
-        ]
-        text_lower = text.lower()
-        for phrase in hallucination_phrases:
-            if phrase in text_lower:
-                return True
+        # Pattern 6 removed: Whisper-era hallucination phrases ("字幕", "订阅", etc.)
+        # were only relevant to Whisper's YouTube training data residue.
+        # Qwen3-ASR and FunASR do not produce these patterns.
+        # Patterns 1-5 already cover their actual hallucination modes.
 
         return False
+
+    def _extract_ocr_keywords(self, ocr_text: str) -> str:
+        """Extract meaningful keywords from raw OCR text for ASR context.
+
+        Raw OCR contains UI noise (window titles, line numbers, buttons).
+        Qwen3's context parameter needs a clean word list, not paragraphs.
+        This extracts unique CJK terms and English words, filters noise.
+        """
+        import re
+
+        cjk_range = r"\u4e00-\u9fff\u3400-\u4dbf"
+
+        # Extract CJK sequences (2-10 chars; >10 is a sentence fragment, not a keyword)
+        cjk_words = [
+            w for w in re.findall(f"[{cjk_range}]{{2,}}", ocr_text) if len(w) <= 10
+        ]
+
+        # Extract English/mixed words (3+ chars, skip pure numbers)
+        eng_words = re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", ocr_text)
+
+        # Common UI noise to filter out
+        noise = {
+            "到",
+            "的",
+            "在",
+            "了",
+            "是",
+            "和",
+            "有",
+            "不",
+            "这",
+            "那",
+            "为",
+            "与",
+            "或",
+            "按",
+            "从",
+            "被",
+            "把",
+            "让",
+            "向",
+            "将",
+            "可以",
+            "进行",
+            "使用",
+            "设置",
+            "选择",
+            "显示",
+            "输入",
+            "打开",
+            "关闭",
+            "确认",
+            "取消",
+            "保存",
+            "删除",
+            "编辑",
+            "文件",
+            "窗口",
+            "菜单",
+            "按钮",
+            "选项",
+            "工具",
+            "帮助",
+            # Browser UI noise (from UI Automation)
+            "书签",
+            "标签页",
+            "分组",
+            "返回",
+            "前进",
+            "查找",
+            "刷新",
+            "下载",
+            "扩展",
+            "收藏",
+            "收藏夹",
+            "历史",
+            "新建",
+            "地址栏",
+            "已停用",
+            "更多",
+            "最小化",
+            "最大化",
+            "the",
+            "and",
+            "for",
+            "this",
+            "that",
+            "with",
+            "from",
+            "are",
+            "not",
+            "was",
+            "but",
+            "has",
+            "have",
+            "will",
+            "None",
+            "True",
+            "False",
+            "null",
+            "undefined",
+        }
+
+        # Substring noise check — "未命名书签" contains "书签" → filtered
+        def _is_noise(word: str) -> bool:
+            wl = word.lower()
+            if wl in noise:
+                return True
+            # For CJK: check if word contains any noise substring (2+ chars)
+            for n in noise:
+                if len(n) >= 2 and n in wl:
+                    return True
+            return False
+
+        seen = set()
+        keywords = []
+
+        for w in cjk_words:
+            if w not in seen and not _is_noise(w) and len(w) >= 2:
+                seen.add(w)
+                keywords.append(w)
+
+        for w in eng_words:
+            w_lower = w.lower()
+            if w_lower not in seen and w_lower not in noise and len(w) >= 3:
+                seen.add(w_lower)
+                keywords.append(w)
+
+        # Cap at 20 keywords to keep context focused and each word impactful
+        keywords = keywords[:20]
+
+        return " ".join(keywords)
+
+    def _screen_pinyin_correct(self, text: str, screen_keywords: str) -> tuple:
+        """Unified L2.5 Phonetic Matcher — screen-aware homophone correction.
+
+        Design (三方会谈 consensus 2026-03-23):
+        - Pre-compute pinyin array for entire text (one pass, cached)
+        - Sliding window scan for screen keywords (CJK 3+ chars only)
+        - Toneless pinyin for broader recall (ASR tones unreliable)
+        - 3+ char minimum to avoid 2-char false positives (银行/银航)
+        - Longest match first to prevent overlap conflicts
+
+        Returns: (corrected_text, num_corrections)
+        """
+        import re
+        from functools import lru_cache
+
+        try:
+            from pypinyin import pinyin, Style
+        except ImportError:
+            return text, 0
+
+        cjk_range = r"\u4e00-\u9fff\u3400-\u4dbf"
+        cjk_re = re.compile(f"[{cjk_range}]")
+
+        # Screen keywords: 3-8 chars (min 3 to avoid false positives)
+        screen_words = [
+            w
+            for w in re.findall(f"[{cjk_range}]{{3,}}", screen_keywords)
+            if len(w) <= 8
+        ]
+
+        if not screen_words:
+            return text, 0
+
+        @lru_cache(maxsize=256)
+        def get_pinyin_cached(s: str) -> tuple:
+            return tuple(p[0] for p in pinyin(s, style=Style.NORMAL, errors="ignore"))
+
+        # Pre-compute screen word pinyin, sort longest first
+        screen_py = {}
+        for w in screen_words:
+            py = get_pinyin_cached(w)
+            if py:
+                screen_py[w] = py
+
+        if not screen_py:
+            return text, 0
+
+        sorted_screen = sorted(screen_py.items(), key=lambda x: len(x[0]), reverse=True)
+
+        # Pre-compute per-character pinyin array for entire text (one pass)
+        text_chars = list(text)
+        text_pinyin = []
+        for c in text_chars:
+            if cjk_re.match(c):
+                py = get_pinyin_cached(c)
+                text_pinyin.append(py[0] if py else "")
+            else:
+                text_pinyin.append(None)
+
+        corrections = 0
+        replaced = set()
+
+        for screen_word, s_py in sorted_screen:
+            n = len(screen_word)
+            for i in range(len(text_pinyin) - n + 1):
+                if any(j in replaced for j in range(i, i + n)):
+                    continue
+
+                window_py = text_pinyin[i : i + n]
+                if any(p is None for p in window_py):
+                    continue
+
+                candidate = "".join(text_chars[i : i + n])
+                if candidate == screen_word:
+                    continue
+
+                if tuple(window_py) == s_py:
+                    print(
+                        f"[SCREEN-FIX] '{candidate}' → '{screen_word}' (pinyin: {list(s_py)})"
+                    )
+                    _pipeline_log(
+                        "POST",
+                        f"Screen homophone: '{candidate}' → '{screen_word}'",
+                    )
+                    for j, ch in enumerate(screen_word):
+                        text_chars[i + j] = ch
+                        py = get_pinyin_cached(ch)
+                        text_pinyin[i + j] = py[0] if py else ""
+                    for j in range(i, i + n):
+                        replaced.add(j)
+                    corrections += 1
+
+        return "".join(text_chars), corrections
 
     def _deduplicate_sentences(self, text: str) -> str:
         """
@@ -850,15 +1069,17 @@ class AriaApp:
             f"[HOTWORD] {len(self.hotword_manager.config.prompt_words)} words, {len(self.hotword_manager.config.replacements)} replacements"
         )
 
-        # Layer 2.5: Pinyin fuzzy matching (only weight >= 1.0 hotwords)
+        # Layer 2.5: Pinyin fuzzy matching
+        # Static hotwords: weight >= 1.0 only (lower weights too risky for fuzzy)
+        # Screen keywords: handled separately by _screen_pinyin_correct (3+ chars)
         layer_hotwords = self.hotword_manager.get_hotwords_by_layer()
-        fuzzy_hotwords = layer_hotwords["layer2_5_pinyin"]
+        fuzzy_hotwords = layer_hotwords.get("layer2_5_pinyin", [])
         self.fuzzy_matcher = PinyinFuzzyMatcher(
             fuzzy_hotwords,
-            FuzzyMatchConfig(enabled=True, threshold=0.7, min_word_length=2),
+            FuzzyMatchConfig(enabled=True, threshold=0.75, min_word_length=2),
         )
         print(
-            f"[FUZZY] Pinyin matcher enabled with {len(fuzzy_hotwords)} hotwords (weight>=1.0 only)"
+            f"[FUZZY] Pinyin matcher: {len(fuzzy_hotwords)} static hotwords (weight>=1.0) + screen scan (3+ chars)"
         )
 
         # Layer 3: Polish (optional, mode-based)
@@ -1300,22 +1521,36 @@ class AriaApp:
 
                 _pipeline_log("ASR", "Starting transcription...")
                 asr_start = time_module.time()
-                # Update recent context for ASR (recent speech + screen OCR)
+                # Update screen keywords (injected at hotword level for strong bias)
+                if self._screen_ocr and hasattr(self.asr_engine, "set_screen_keywords"):
+                    # Pass current foreground hwnd to detect stale context
+                    import ctypes as _ctypes_asr
+
+                    current_hwnd = _ctypes_asr.windll.user32.GetForegroundWindow()
+                    ocr_text = self._screen_ocr.get_text(current_hwnd=current_hwnd)
+                    _pipeline_log(
+                        "ASR",
+                        f"OCR get_text: {len(ocr_text)} chars"
+                        + (
+                            f" = '{ocr_text[:80]}...'" if ocr_text else " (empty/stale)"
+                        ),
+                    )
+                    if ocr_text:
+                        ocr_keywords = self._extract_ocr_keywords(ocr_text)
+                        self.asr_engine.set_screen_keywords(ocr_keywords)
+                        if ocr_keywords:
+                            _pipeline_log("ASR", f"OCR keywords: '{ocr_keywords[:80]}'")
+                    else:
+                        self.asr_engine.set_screen_keywords("")
+
+                # Update recent ASR context (for continuity, weaker position)
                 if hasattr(self.asr_engine, "set_recent_context"):
-                    parts = []
                     if self._recent_asr_buffer:
-                        parts.append(" ".join(self._recent_asr_buffer))
-                    if self._screen_ocr:
-                        ocr_text = self._screen_ocr.get_text()
-                        _pipeline_log(
-                            "ASR",
-                            f"OCR get_text: {len(ocr_text)} chars"
-                            + (f" = '{ocr_text[:80]}...'" if ocr_text else " (empty)"),
+                        self.asr_engine.set_recent_context(
+                            " ".join(self._recent_asr_buffer)
                         )
-                        if ocr_text:
-                            parts.append(ocr_text)
-                    if parts:
-                        self.asr_engine.set_recent_context(" ".join(parts))
+                    else:
+                        self.asr_engine.set_recent_context("")
 
                 # Slow-stage indicator: after 3s, tell ball to show GPU-slow glow
                 _slow_hint_timer = threading.Timer(
@@ -1439,15 +1674,17 @@ class AriaApp:
                             text = ""
 
                 # Post-ASR: context leakage detection
-                # Two checks: 1) text impossibly long for audio duration
-                #              2) text is verbatim substring of recent context
+                # Checks: 1) text impossibly long for audio duration (any length)
+                #          2) text is verbatim substring of recent context
                 if text:
                     audio_duration_s = len(audio) / 16000
-                    max_reasonable_chars = int(audio_duration_s * 10)
                     is_leakage = False
 
-                    # Check 1: length vs duration (< 5s audio)
-                    if len(text) > max_reasonable_chars and audio_duration_s < 5.0:
+                    # Check 1: text length vs audio duration ratio
+                    # Chinese speech: ~4-6 chars/sec normal, ~8 max fast speech
+                    # 12 chars/sec is generous upper bound for any language
+                    max_reasonable_chars = int(audio_duration_s * 12)
+                    if len(text) > max(max_reasonable_chars, 20):
                         is_leakage = True
 
                     # Check 2: output is substring of recent context buffer
@@ -1499,12 +1736,13 @@ class AriaApp:
                         _pipeline_log("NOISE", f"Filtered: '{text}'")
                         text = ""
 
-                # Short audio + short text = likely noise (not worth processing)
-                # e.g., 1.2s audio producing "猴子" — random ASR artifact
+                # Short audio + single char = likely noise (random ASR artifact)
+                # Only block single-character outputs; 2-3 char phrases are
+                # legitimate in Chinese (e.g., "顶点", "怎么了", "优化嘛")
                 if text and self._noise_filter_enabled:
                     audio_dur = len(audio) / 16000
                     text_len = len(re.sub(r"[，。！？、,\.!\?\s]", "", text))
-                    if audio_dur < 1.5 and text_len <= 3:
+                    if audio_dur < 1.5 and text_len <= 1:
                         print(
                             f"[NOISE] Short audio noise: '{text}' ({audio_dur:.1f}s/{text_len}chars)"
                         )
@@ -1634,10 +1872,26 @@ class AriaApp:
                         "POST", f"Layer 2: HotWord done ({layer2_time:.0f}ms)"
                     )
 
-                    # Layer 2.5: Pinyin fuzzy matching
+                    # Layer 2.5: Screen-aware homophone correction
+                    # Sliding pinyin scan: find exact homophones (same pinyin+tone)
+                    # in ASR output that match screen keywords, and replace them.
+                    # Uses toned pinyin to avoid false positives (大学≠大雪).
                     _pipeline_log("POST", "Layer 2.5: Fuzzy matching starting...")
+                    screen_kw = (
+                        self.asr_engine._screen_keywords
+                        if hasattr(self.asr_engine, "_screen_keywords")
+                        else ""
+                    )
+                    if screen_kw and text:
+                        text, n_fixes = self._screen_pinyin_correct(text, screen_kw)
+                        if n_fixes:
+                            _pipeline_log(
+                                "POST",
+                                f"Layer 2.5: {n_fixes} screen homophone fix(es)",
+                            )
+
+                    # Also run static hotword fuzzy matching
                     if _snap_fuzzy:
-                        before_fuzzy = text
                         text, fuzzy_corrections = _snap_fuzzy.process_with_info(text)
                         if fuzzy_corrections:
                             for corr in fuzzy_corrections:
@@ -2457,13 +2711,13 @@ class AriaApp:
                         f"[HOT-RELOAD] Updated {len(new_replacements)} replacement rules"
                     )
 
-                # Update Layer 2.5: Fuzzy matcher (only weight >= 1.0 hotwords)
+                # Update Layer 2.5: Fuzzy matcher (weight >= 1.0 only)
                 if self.fuzzy_matcher:
                     layer_hotwords = self.hotword_manager.get_hotwords_by_layer()
-                    fuzzy_hotwords = layer_hotwords["layer2_5_pinyin"]
+                    fuzzy_hotwords = layer_hotwords.get("layer2_5_pinyin", [])
                     self.fuzzy_matcher.update_hotwords(fuzzy_hotwords)
                     print(
-                        f"[HOT-RELOAD] Updated fuzzy matcher with {len(fuzzy_hotwords)} hotwords (weight>=1.0)"
+                        f"[HOT-RELOAD] Updated fuzzy matcher: {len(fuzzy_hotwords)} hotwords (weight>=1.0)"
                     )
 
                 # Update Layer 3: Polisher (close old one first to free GPU/HTTP resources)

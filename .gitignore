@@ -33,6 +33,7 @@ DebugLog/
 
 # === User Config (contains API keys and personal settings) ===
 config/hotwords.json
+config/*.backup.*.json
 
 # === User Data ===
 data/

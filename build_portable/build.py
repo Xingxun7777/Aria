@@ -23,6 +23,8 @@ import json
 import re
 from pathlib import Path
 
+from release_sanitizer import sanitize_release_tree, verify_release_tree
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -285,206 +287,13 @@ def step_clean_sensitive_data():
     log("Step 4.5: Cleaning sensitive and user data...")
 
     aria_dir = DIST_DIR / "_internal" / "app" / "aria"
-    config_dir = aria_dir / "config"
-
-    if not config_dir.exists():
-        log("  No config directory found, skipping.")
-        return
-
-    # ==========================================================================
-    # 1. Replace hotwords.json with template (clean defaults for distribution)
-    # ==========================================================================
-    hotwords_file = config_dir / "hotwords.json"
-    template_file = config_dir / "hotwords.template.json"
-
-    if template_file.exists():
-        try:
-            # Use the template as the distribution config (has safe defaults)
-            shutil.copy2(template_file, hotwords_file)
-            log("  Replaced hotwords.json with template (clean defaults)")
-
-            # Verify no API keys leaked
-            with open(hotwords_file, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            api_key = config.get("polish", {}).get("api_key", "")
-            if api_key and "YOUR_" not in api_key.upper():
-                # Template somehow has a real key - sanitize it
-                config["polish"]["api_key"] = "YOUR_OPENROUTER_API_KEY_HERE"
-                with open(hotwords_file, "w", encoding="utf-8") as f:
-                    json.dump(config, f, ensure_ascii=False, indent=2)
-                log("  WARNING: Template had real API key - sanitized")
-
-        except Exception as e:
-            log(f"  WARNING: Failed to use template: {e}")
-            # Fallback: try to clean existing hotwords.json
-            if hotwords_file.exists():
-                try:
-                    with open(hotwords_file, "r", encoding="utf-8") as f:
-                        config = json.load(f)
-                    if "polish" in config and "api_key" in config["polish"]:
-                        config["polish"]["api_key"] = "YOUR_API_KEY_HERE"
-                    config.get("hotwords", []).clear()
-                    config.get("replacements", {}).clear()
-                    with open(hotwords_file, "w", encoding="utf-8") as f:
-                        json.dump(config, f, ensure_ascii=False, indent=2)
-                    log("  Fallback: cleaned hotwords.json in place")
-                except Exception as e2:
-                    log(f"  WARNING: Fallback clean also failed: {e2}")
-    elif hotwords_file.exists():
-        log("  WARNING: No template found, cleaning hotwords.json in place")
-        try:
-            with open(hotwords_file, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            if "polish" in config and "api_key" in config["polish"]:
-                config["polish"]["api_key"] = "YOUR_API_KEY_HERE"
-            for key in ["hotwords", "hotword_weights", "replacements"]:
-                if key in config:
-                    if isinstance(config[key], list):
-                        config[key] = []
-                    elif isinstance(config[key], dict):
-                        config[key] = {}
-            if "domain_context" in config:
-                config["domain_context"] = ""
-            if "general" in config:
-                config["general"]["audio_device"] = ""
-            with open(hotwords_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-            log("  Cleaned hotwords.json (no template available)")
-        except Exception as e:
-            log(f"  WARNING: Failed to clean hotwords.json: {e}")
-
-    # ==========================================================================
-    # 2. Remove backup files (may contain API keys)
-    # ==========================================================================
-    for bak_file in config_dir.glob("*.bak"):
-        bak_file.unlink()
-        log(f"  Removed: {bak_file.name}")
-
-    # ==========================================================================
-    # 3. Remove ALL log files
-    # ==========================================================================
-    for log_file in aria_dir.glob("*.log"):
-        log_file.unlink()
-        log(f"  Removed: {log_file.name}")
-
-    for log_file in aria_dir.glob("*_error.log"):
-        log_file.unlink()
-        log(f"  Removed: {log_file.name}")
-
-    # ==========================================================================
-    # 4. Clean DebugLog directory (session files, audio recordings, debug logs)
-    # ==========================================================================
-    debug_log_dir = aria_dir / "DebugLog"
-    if debug_log_dir.exists():
-        # Count files before removal
-        session_count = len(list(debug_log_dir.glob("session_*.json")))
-        log_count = len(list(debug_log_dir.glob("*.log")))
-        audio_count = len(list(debug_log_dir.glob("*.wav")))
-
-        rmtree_force(debug_log_dir)
-        log(
-            f"  Removed: DebugLog/ ({session_count} sessions, {log_count} logs, {audio_count} audio)"
+    sanitize_release_tree(aria_dir, log, cache_roots=[aria_dir])
+    issues = verify_release_tree(aria_dir)
+    if issues:
+        raise RuntimeError(
+            "Release sanitization verification failed:\n"
+            + "\n".join(f"  - {issue}" for issue in issues)
         )
-
-    # Recreate empty DebugLog directory (needed at runtime)
-    debug_log_dir.mkdir(exist_ok=True)
-    log("  Created: empty DebugLog/")
-
-    # ==========================================================================
-    # 5. Clean InsightStore data (user voice transcripts)
-    # ==========================================================================
-    insights_dir = aria_dir / "data" / "insights"
-    if insights_dir.exists():
-        insight_files = list(insights_dir.glob("*.json"))
-        for f in insight_files:
-            f.unlink()
-        if insight_files:
-            log(f"  Removed: {len(insight_files)} insight file(s) from data/insights/")
-
-    # Recreate empty insights directory
-    insights_dir.mkdir(parents=True, exist_ok=True)
-    log("  Created: empty data/insights/")
-
-    # ==========================================================================
-    # 5b. Clean HistoryStore data (user voice/translation/reply history)
-    # ==========================================================================
-    history_dir = aria_dir / "data" / "history"
-    if history_dir.exists():
-        history_files = list(history_dir.glob("*.jsonl"))
-        for f in history_files:
-            f.unlink()
-        if history_files:
-            log(f"  Removed: {len(history_files)} history file(s) from data/history/")
-    history_dir.mkdir(parents=True, exist_ok=True)
-    log("  Created: empty data/history/")
-
-    # ==========================================================================
-    # 5c. Clean OCR debug log
-    # ==========================================================================
-    ocr_log = aria_dir / "DebugLog" / "ocr_debug.log"
-    if ocr_log.exists():
-        ocr_log.unlink()
-        log("  Removed: ocr_debug.log")
-
-    # ==========================================================================
-    # 6. Reset wakeword.json to default (user-friendly wakeword)
-    # ==========================================================================
-    wakeword_file = config_dir / "wakeword.json"
-    if wakeword_file.exists():
-        try:
-            with open(wakeword_file, "r", encoding="utf-8") as f:
-                wakeword_config = json.load(f)
-
-            # Set default wakeword for distribution
-            wakeword_config["wakeword"] = "小助手"
-
-            # Replace available list with generic defaults (remove personal wakewords)
-            wakeword_config["available_wakewords"] = [
-                "小助手",
-                "助手",
-                "小白",
-                "小朋友",
-                "小溪",
-            ]
-
-            with open(wakeword_file, "w", encoding="utf-8") as f:
-                json.dump(wakeword_config, f, ensure_ascii=False, indent=2)
-
-            log("  Set: wakeword = 小助手 (default)")
-
-        except Exception as e:
-            log(f"  WARNING: Failed to reset wakeword.json: {e}")
-
-    # ==========================================================================
-    # 7. Reset commands.json prefix to match wakeword
-    # ==========================================================================
-    commands_file = config_dir / "commands.json"
-    if commands_file.exists():
-        try:
-            with open(commands_file, "r", encoding="utf-8") as f:
-                cmd_config = json.load(f)
-
-            cmd_config["prefix"] = "小助手"
-
-            with open(commands_file, "w", encoding="utf-8") as f:
-                json.dump(cmd_config, f, ensure_ascii=False, indent=2)
-
-            log("  Set: commands.json prefix = 小助手 (matches wakeword)")
-
-        except Exception as e:
-            log(f"  WARNING: Failed to reset commands.json: {e}")
-
-    # ==========================================================================
-    # 8. Remove __pycache__ directories
-    # ==========================================================================
-    pycache_count = 0
-    for pycache in aria_dir.rglob("__pycache__"):
-        if pycache.is_dir():
-            rmtree_force(pycache)
-            pycache_count += 1
-    if pycache_count > 0:
-        log(f"  Removed: {pycache_count} __pycache__ directories")
-
     log("All sensitive and user data cleaned.")
 
 
@@ -1170,13 +979,8 @@ def step_bundle_models():
             continue
 
         if not model_dir.is_dir():
-            # Copy loose files (e.g., GGUF models for local_polish)
-            dst_file = models_dst / model_dir.name
-            models_dst.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(model_dir, dst_file)
-            size_mb = model_dir.stat().st_size / (1024 * 1024)
-            log(f"  Copied model file: {model_dir.name} ({size_mb:.0f} MB)")
-            bundled += 1
+            # Skip loose files (e.g., GGUF for local_polish — user-specific, not bundled)
+            log(f"  Skipping loose file: {model_dir.name} (not bundled)")
             continue
 
         # Check if directory has model files (safetensors, bin, gguf)

@@ -217,6 +217,9 @@ class Qwen3ASREngine(ASREngine):
         self._model: Any | None = None
         self._lock: threading.Lock = threading.Lock()
         self._context_string: str = " ".join(self.config.hotwords).strip()
+        self._screen_keywords: str = (
+            ""  # OCR-extracted keywords (refreshed each transcription)
+        )
         self._recent_context: str = ""  # Recent ASR outputs for continuity
         # Track actual device used (may differ from config if fallback occurred)
         self._actual_device: str = self.config.device
@@ -256,6 +259,16 @@ class Qwen3ASREngine(ASREngine):
     def set_initial_prompt(self, prompt: str) -> None:
         """Set initial prompt (alias for set_context for compatibility)."""
         self.set_context(prompt)
+
+    def set_screen_keywords(self, keywords: str) -> None:
+        """Set OCR-extracted screen keywords for dynamic biasing.
+
+        These are placed right after hotwords in the system prompt,
+        giving them strong biasing power (same level as hotwords).
+        Refreshed before each transcription.
+        """
+        with self._lock:
+            self._screen_keywords = (keywords or "").strip()
 
     def set_recent_context(self, recent_text: str) -> None:
         """Set recent ASR outputs as additional context for continuity.
@@ -554,8 +567,17 @@ class Qwen3ASREngine(ASREngine):
                 if not hotword_context and self.config.hotwords:
                     hotword_context = " ".join(self.config.hotwords).strip()
 
-                # Combine hotword context + recent ASR context for the model
-                # Recent context is excluded from leakage detection
+                # Screen keywords go RIGHT AFTER hotwords in system prompt
+                # for strong biasing (same level as hotwords, not diluted)
+                screen_kw = self._screen_keywords
+                if screen_kw:
+                    hotword_context = (
+                        hotword_context + " " + screen_kw
+                        if hotword_context
+                        else screen_kw
+                    )
+
+                # Recent ASR context appended last (weaker position, for continuity)
                 recent_ctx = self._recent_context
                 if hotword_context and recent_ctx:
                     full_context = hotword_context + " " + recent_ctx

@@ -103,6 +103,7 @@ class WakewordExecutor:
             "reply_popup": self._reply_popup,
             "set_reminder": self._set_reminder,
             "open_path": self._open_path,
+            "open_directory": self._open_directory,
         }
 
     def execute(
@@ -385,16 +386,8 @@ class WakewordExecutor:
                 os.startfile(target)
             elif os.path.isdir(target):
                 os.startfile(target)  # Opens in Explorer
-            elif os.path.isfile(target):
-                # Select file in Explorer (shows the file highlighted)
-                import subprocess
-
-                subprocess.Popen(
-                    ["explorer", f"/select,{target}"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
             else:
+                # Open file with default application (image→viewer, doc→editor, etc.)
                 os.startfile(target)
 
             _debug(f"[OPEN_PATH] Opened: {target}")
@@ -407,6 +400,78 @@ class WakewordExecutor:
                 self.bridge.emit_error(f"打开失败: {e}")
             return False
 
+    def _open_directory(self, _value) -> bool:
+        """Open the containing directory of a selected file/path.
+
+        If a file is selected, opens Explorer with the file highlighted.
+        If a directory is selected, opens it directly.
+        If nothing is selected, opens the project root.
+        """
+        import os
+        import subprocess
+
+        if (
+            not hasattr(self.app, "selection_detector")
+            or not self.app.selection_detector
+        ):
+            _debug("[OPEN_DIR] No selection_detector")
+            return False
+
+        detection = self.app.selection_detector.detect()
+
+        # No selection → open project root
+        if not detection.has_selection or not detection.selected_text:
+            _debug("[OPEN_DIR] No selection, opening project root")
+            from pathlib import Path
+
+            project_root = str(Path(__file__).parent.parent.parent.resolve())
+            try:
+                os.startfile(project_root)
+                return True
+            except Exception as e:
+                _debug(f"[OPEN_DIR] Failed to open project root: {e}")
+                return False
+
+        if detection.original_clipboard is not None:
+            self.app.selection_detector.restore_clipboard(detection.original_clipboard)
+
+        raw = detection.selected_text.strip()
+        _debug(f"[OPEN_DIR] Raw: '{raw[:100]}'")
+
+        target = self._extract_and_resolve_path(raw)
+
+        if not target:
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("未识别到有效路径")
+            return False
+
+        _debug(f"[OPEN_DIR] Locating: {target}")
+        try:
+            is_url = target.startswith("http://") or target.startswith("https://")
+            if is_url:
+                os.startfile(target)
+            elif os.path.isfile(target):
+                # Highlight file in its containing folder
+                subprocess.Popen(
+                    ["explorer", f"/select,{target}"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif os.path.isdir(target):
+                os.startfile(target)
+            else:
+                os.startfile(target)
+
+            _debug(f"[OPEN_DIR] Opened: {target}")
+            if self.bridge and hasattr(self.bridge, "emit_command"):
+                self.bridge.emit_command("open_directory", True)
+            return True
+        except Exception as e:
+            _debug(f"[OPEN_DIR] Failed: {e}")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error(f"打开失败: {e}")
+            return False
+
     def _extract_and_resolve_path(self, raw: str):
         """Extract a valid path from messy selected text.
 
@@ -415,6 +480,10 @@ class WakewordExecutor:
         """
         import os
         import re
+
+        # Guard against excessively long input
+        if len(raw) > 5000:
+            raw = raw[:5000]
 
         # Strip ANSI escape codes (full: CSI, OSC hyperlinks, etc.)
         raw = re.sub(
@@ -435,7 +504,8 @@ class WakewordExecutor:
         path_patterns = [
             r"https?://\S+",  # URL
             r"\\\\[^\s:*?\"<>|,;]+",  # UNC \\server\share
-            r"[A-Za-z]:[/\\][^\s:*?\"<>|,;]*",  # Windows absolute
+            r'"([A-Za-z]:[/\\][^"]*)"',  # Quoted Windows path (spaces OK)
+            r"[A-Za-z]:[/\\][^\s:*?\"<>|,;]*",  # Windows absolute (no spaces)
             r"~[/\\][^\s:*?\"<>|,;]*",  # Tilde path
             r"/mnt/[a-zA-Z]/[^\s:*?\"<>|,;]*",  # WSL
             r"/[a-zA-Z]/[^\s:*?\"<>|,;]*",  # Git Bash
@@ -444,7 +514,10 @@ class WakewordExecutor:
         combined = "|".join(f"({p})" for p in path_patterns)
         for line in lines or [raw.strip()]:
             for m in re.finditer(combined, line):
-                candidate = m.group(0).strip()
+                # Prefer capture group (for quoted patterns) over full match
+                candidate = next(
+                    (g for g in m.groups() if g is not None), m.group(0)
+                ).strip()
                 result = self._try_resolve_single(candidate)
                 if result:
                     return result
@@ -464,6 +537,9 @@ class WakewordExecutor:
             "",
             text,
         )
+        # Strip shell command suffixes: "G:\AIBOX> ls" → "G:\AIBOX"
+        # > $ # are not valid in Windows paths, safe to strip
+        text = re.sub(r"\s*[>$#]\s+\S.*$", "", text)
 
         # Clean surrounding quotes, backticks, brackets, angle brackets
         text = re.sub(r"""^["'\u2018\u2019\u201c\u201d`\[（(<>]+""", "", text)
@@ -492,23 +568,96 @@ class WakewordExecutor:
         if text.startswith("~/") or text.startswith("~\\"):
             text = os.path.expanduser(text)
 
+        # Fix truncated drive letter: ":\Users\..." → try all drives
+        if re.match(r"^:[/\\]", text):
+            for drive in "CDEFGAB":
+                candidate = drive + text
+                if os.path.exists(os.path.normpath(candidate)):
+                    text = candidate
+                    break
+
+        # Fix missing separator after drive: "C:Users\..." → "C:\Users\..."
+        if re.match(r"^[A-Za-z]:[^/\\]", text):
+            text = text[0:2] + "\\" + text[2:]
+
+        # Fix missing drive: "Users\84238\..." → "C:\Users\84238\..."
+        # Also handles common Windows root dirs (Program Files, Windows, etc.)
+        _WINDOWS_ROOT_DIRS = (
+            "Users",
+            "Program Files",
+            "Program Files (x86)",
+            "Windows",
+            "ProgramData",
+        )
+        for root_dir in _WINDOWS_ROOT_DIRS:
+            if text.lower().startswith(
+                root_dir.lower() + "\\"
+            ) or text.lower().startswith(root_dir.lower() + "/"):
+                candidate = "C:\\" + text
+                if os.path.exists(os.path.normpath(candidate)):
+                    text = candidate
+                break
+
+        # Fix user subdirs without full path: "AppData\...", "Documents\..." → expand from user home
+        _USER_SUBDIRS = (
+            "AppData",
+            "Documents",
+            "Downloads",
+            "Desktop",
+            "Pictures",
+            "Videos",
+            "Music",
+        )
+        for subdir in _USER_SUBDIRS:
+            if text.lower().startswith(
+                subdir.lower() + "\\"
+            ) or text.lower().startswith(subdir.lower() + "/"):
+                candidate = os.path.join(os.path.expanduser("~"), text)
+                if os.path.exists(os.path.normpath(candidate)):
+                    text = candidate
+                break
+
         # Normalize path separators
         normalized = os.path.normpath(text)
 
+        # Fix root-relative path on wrong drive: "\Users\..." resolves to current drive
+        # but usually means C:\Users\... — try common drives if current drive fails
+        if (
+            normalized.startswith("\\")
+            and not normalized.startswith("\\\\")
+            and not os.path.exists(normalized)
+        ):
+            for drive in "CDEG":
+                candidate = drive + ":" + normalized
+                if os.path.exists(candidate):
+                    normalized = candidate
+                    break
+
         # If absolute path, check directly or find closest existing parent
         if os.path.isabs(normalized):
-            if os.path.exists(normalized):
+            # UNC paths (\\server\share) can hang 30s+ on network timeout
+            # Return directly, let os.startfile handle errors
+            if normalized.startswith("\\\\"):
                 return normalized
+            try:
+                if os.path.exists(normalized):
+                    return normalized
+            except OSError:
+                return None
             # Truncated path fallback: walk up to find existing parent
-            # Only if original text looks like a path (has separators)
-            if "/" in text or "\\" in text:
+            # Only for local drive paths (C:\...), skip UNC/backslash-only paths
+            has_drive = len(normalized) >= 2 and normalized[1] == ":"
+            if ("/" in text or "\\" in text) and has_drive:
                 from pathlib import Path
 
                 parent = Path(normalized)
-                while str(parent) != parent.anchor:
-                    parent = parent.parent
-                    if parent.exists():
-                        return str(parent)
+                try:
+                    while str(parent) != parent.anchor:
+                        parent = parent.parent
+                        if parent.exists():
+                            return str(parent)
+                except OSError:
+                    return None
             return None
 
         # Relative path: try multiple base directories
@@ -525,8 +674,11 @@ class WakewordExecutor:
 
         for base in bases:
             full = base / normalized
-            if full.exists():
-                return str(full.resolve())
+            try:
+                if full.exists():
+                    return str(full.resolve())
+            except OSError:
+                continue
 
         return None
 
@@ -833,59 +985,61 @@ class WakewordExecutor:
 
     def _ask_ai(self, _value) -> bool:
         """
-        Open AI chat dialog with selected text as context (v1.1 feature).
+        Open AI chat dialog with optional selected text + spoken question.
 
-        Unlike selection_process which replaces text, this:
-        1. Detects selected text
-        2. Immediately restores clipboard
-        3. Emits ChatAction to UI (non-blocking)
-        4. UI opens chat window with context
+        Two modes:
+        1. Selected text + spoken question: "瑶瑶帮我看一下这段代码有什么问题"
+           → context = selected text, initial_question = "这段代码有什么问题"
+        2. Spoken question only: "瑶瑶帮我看一下最近有什么新闻"
+           → no context, initial_question = "最近有什么新闻"
 
         Returns:
             True if action emitted successfully
         """
         _debug("_ask_ai() called")
 
-        # Check if app has selection detector
-        if (
-            not hasattr(self.app, "selection_detector")
-            or not self.app.selection_detector
-        ):
-            _debug("No selection_detector available")
+        # Get spoken question from capture_following
+        question = getattr(self, "_pending_following_text", None) or ""
+        question = question.strip()
+
+        # Try to get selected text (optional)
+        selected_text = ""
+        if hasattr(self.app, "selection_detector") and self.app.selection_detector:
+            _debug("Detecting selection for AI chat...")
+            detection = self.app.selection_detector.detect()
+            try:
+                if detection.has_selection and detection.selected_text:
+                    selected_text = detection.selected_text
+                    _debug(f"Found context: {len(selected_text)} chars")
+            finally:
+                if detection.original_clipboard is not None:
+                    self.app.selection_detector.restore_clipboard(
+                        detection.original_clipboard
+                    )
+
+        # Need at least a question or selected text
+        if not question and not selected_text:
+            _debug("No question and no selection")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("请说出问题，或先选中要询问的内容")
             return False
-
-        # Detect selected text
-        _debug("Detecting selection for AI chat...")
-        detection = self.app.selection_detector.detect()
-
-        # Immediately restore clipboard (before any processing)
-        try:
-            if not detection.has_selection or not detection.selected_text:
-                _debug("No text selected for AI chat")
-                print("[ASK_AI] 未检测到选中文本")
-                if self.bridge and hasattr(self.bridge, "emit_error"):
-                    self.bridge.emit_error("未检测到选中文本，请先选中要询问的内容")
-                return False
-
-            selected_text = detection.selected_text
-            _debug(f"Found text for AI chat: {len(selected_text)} chars")
-
-        finally:
-            # Always restore clipboard
-            if detection.original_clipboard is not None:
-                self.app.selection_detector.restore_clipboard(
-                    detection.original_clipboard
-                )
-                _debug("Clipboard restored")
 
         # Emit ChatAction to UI (non-blocking)
         from ..action import ChatAction
 
-        action = ChatAction(context_text=selected_text)
+        action = ChatAction(
+            context_text=selected_text,
+            initial_question=question if question else None,
+        )
         if self.bridge and hasattr(self.bridge, "emit_action"):
             self.bridge.emit_action(action)
-            _debug(f"ChatAction emitted: {action.request_id}")
-            print(f"[ASK_AI] 已发送AI对话请求 ({len(selected_text)} 字符)")
+            parts = []
+            if selected_text:
+                parts.append(f"上下文{len(selected_text)}字")
+            if question:
+                parts.append(f"问题: {question[:30]}")
+            _debug(f"ChatAction emitted: {', '.join(parts)}")
+            print(f"[ASK_AI] 已发送AI对话请求 ({', '.join(parts)})")
             return True
         else:
             _debug("No bridge.emit_action available")
