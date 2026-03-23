@@ -254,8 +254,14 @@ class ScreenOCR:
             else:
                 self._ocr_backend = "none"
 
-            # Available if we have any OCR backend OR uiautomation
-            self._available = self._ocr_backend != "none"
+            # Available if we have any OCR backend OR uiautomation package
+            try:
+                import uiautomation
+
+                _has_uia = True
+            except ImportError:
+                _has_uia = False
+            self._available = self._ocr_backend != "none" or _has_uia
             _ocr_log(f"OCR backend: {self._ocr_backend}")
         return self._available
 

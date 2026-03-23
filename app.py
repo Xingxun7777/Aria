@@ -1681,10 +1681,10 @@ class AriaApp:
                     is_leakage = False
 
                     # Check 1: text length vs audio duration ratio
-                    # Chinese speech: ~4-6 chars/sec normal, ~8 max fast speech
-                    # 12 chars/sec is generous upper bound for any language
-                    max_reasonable_chars = int(audio_duration_s * 12)
-                    if len(text) > max(max_reasonable_chars, 20):
+                    # Chinese: ~4-8 chars/sec | English: ~15-20 chars/sec
+                    # Use 25 chars/sec as safe upper bound for mixed language
+                    max_reasonable_chars = int(audio_duration_s * 25)
+                    if len(text) > max(max_reasonable_chars, 30):
                         is_leakage = True
 
                     # Check 2: output is substring of recent context buffer
@@ -1737,19 +1737,22 @@ class AriaApp:
                         text = ""
 
                 # Short audio + single char = likely noise (random ASR artifact)
-                # Only block single-character outputs; 2-3 char phrases are
-                # legitimate in Chinese (e.g., "顶点", "怎么了", "优化嘛")
+                # Only block single-character outputs if they are NOT valid Chinese characters;
+                # 2-3 char phrases are legitimate in Chinese. Single valid CJK chars like '好', '行' must be kept.
                 if text and self._noise_filter_enabled:
                     audio_dur = len(audio) / 16000
                     text_len = len(re.sub(r"[，。！？、,\.!\?\s]", "", text))
                     if audio_dur < 1.5 and text_len <= 1:
-                        print(
-                            f"[NOISE] Short audio noise: '{text}' ({audio_dur:.1f}s/{text_len}chars)"
-                        )
-                        _pipeline_log(
-                            "NOISE", f"Short noise: '{text}' ({audio_dur:.1f}s)"
-                        )
-                        text = ""
+                        # Check if the single character is a valid CJK character
+                        _is_cjk = bool(re.search(r"[\u4e00-\u9fff]", text))
+                        if not _is_cjk:
+                            print(
+                                f"[NOISE] Short audio noise: '{text}' ({audio_dur:.1f}s/{text_len}chars)"
+                            )
+                            _pipeline_log(
+                                "NOISE", f"Short noise: '{text}' ({audio_dur:.1f}s)"
+                            )
+                            text = ""
 
                 # Add successful ASR result to recent context buffer (deduplicated)
                 if text:
