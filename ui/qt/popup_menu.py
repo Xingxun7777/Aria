@@ -283,6 +283,7 @@ class PopupMenu(QWidget):
 
         # ── Toggle Rows ──
         self._add_toggle_row(cl, "翻译弹窗", self._on_translate_toggled, "translate")
+        self.translate_toggle.setChecked(True, emit=False)  # Default: popup mode ON
         cl.addSpacing(4)
         self._add_toggle_row(cl, "实时字幕", self._on_streaming_toggled, "streaming")
         cl.addSpacing(4)

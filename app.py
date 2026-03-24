@@ -68,6 +68,24 @@ _CRASH_LOG_PATH = Path(__file__).parent / "DebugLog" / "crash.log"
 
 _PIPELINE_LOG_ENABLED = os.environ.get("ARIA_DEBUG", "1") == "1"
 
+# Module-level pinyin cache (shared across all _screen_pinyin_correct calls)
+try:
+    from functools import lru_cache as _lru_cache
+    from pypinyin import pinyin as _pinyin, Style as _PinyinStyle
+
+    @_lru_cache(maxsize=512)
+    def __get_pinyin_cached(s: str) -> tuple:
+        return tuple(
+            p[0] for p in _pinyin(s, style=_PinyinStyle.NORMAL, errors="ignore")
+        )
+
+    _PYPINYIN_AVAILABLE = True
+except ImportError:
+    _PYPINYIN_AVAILABLE = False
+
+    def __get_pinyin_cached(s: str) -> tuple:
+        return ()
+
 
 def _pipeline_log(stage: str, msg: str):
     """Log to pipeline debug file - works even without console. Gated by ARIA_DEBUG env."""
@@ -653,11 +671,8 @@ class AriaApp:
         Returns: (corrected_text, num_corrections)
         """
         import re
-        from functools import lru_cache
 
-        try:
-            from pypinyin import pinyin, Style
-        except ImportError:
+        if not _PYPINYIN_AVAILABLE:
             return text, 0
 
         cjk_range = r"\u4e00-\u9fff\u3400-\u4dbf"
@@ -673,14 +688,10 @@ class AriaApp:
         if not screen_words:
             return text, 0
 
-        @lru_cache(maxsize=256)
-        def get_pinyin_cached(s: str) -> tuple:
-            return tuple(p[0] for p in pinyin(s, style=Style.NORMAL, errors="ignore"))
-
         # Pre-compute screen word pinyin, sort longest first
         screen_py = {}
         for w in screen_words:
-            py = get_pinyin_cached(w)
+            py = __get_pinyin_cached(w)
             if py:
                 screen_py[w] = py
 
@@ -694,7 +705,7 @@ class AriaApp:
         text_pinyin = []
         for c in text_chars:
             if cjk_re.match(c):
-                py = get_pinyin_cached(c)
+                py = _get_pinyin_cached(c)
                 text_pinyin.append(py[0] if py else "")
             else:
                 text_pinyin.append(None)
@@ -726,7 +737,7 @@ class AriaApp:
                     )
                     for j, ch in enumerate(screen_word):
                         text_chars[i + j] = ch
-                        py = get_pinyin_cached(ch)
+                        py = _get_pinyin_cached(ch)
                         text_pinyin[i + j] = py[0] if py else ""
                     for j in range(i, i + n):
                         replaced.add(j)

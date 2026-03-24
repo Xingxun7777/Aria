@@ -559,18 +559,19 @@ class Qwen3ASREngine(ASREngine):
                 else:
                     audio_float = audio_array.astype(np.float32)
 
+                # Compute energy BEFORE normalization (for leakage detection)
+                audio_energy = float(np.sqrt(np.mean(audio_float**2)))
+
                 # RMS normalization — boost quiet speech to consistent level
                 # Quiet speech has lower SNR → worse ASR accuracy
-                # Normalizing to target RMS makes volume-independent recognition
-                rms = float(np.sqrt(np.mean(audio_float**2)))
                 target_rms = 0.05  # ~-26 dBFS, typical speech level
-                if rms > 1e-6:  # Avoid division by near-zero (silence)
-                    gain = target_rms / rms
-                    # Cap gain to avoid amplifying noise in very quiet segments
-                    gain = min(gain, 10.0)  # Max 20dB boost
-                    if gain > 1.1:  # Only boost if meaningfully quieter
+                if audio_energy > 0.003:  # Only boost real speech, not noise
+                    gain = target_rms / audio_energy
+                    gain = min(
+                        gain, 5.0
+                    )  # Max 14dB boost (was 10x/20dB, too aggressive)
+                    if gain > 1.1:
                         audio_float = audio_float * gain
-                        # Clip to prevent overflow
                         audio_float = np.clip(audio_float, -1.0, 1.0)
 
                 # Qwen3-ASR expects tuple (audio_array, sample_rate)
