@@ -309,6 +309,14 @@ def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
     # Apply time-of-day adjustment
     if period:
         hour = _adjust_hour_for_period(hour, period)
+    elif 1 <= hour <= 11:
+        # No period specified + ambiguous hour (1-11) → smart AM/PM inference
+        # If AM has already passed, try PM today before jumping to tomorrow
+        # e.g., at 15:00 user says "八点" → 20:00 today, not 08:00 tomorrow
+        am_candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if am_candidate <= now - timedelta(minutes=5):
+            # AM already passed → use PM today
+            hour = hour + 12
 
     # Validate hour/minute range (prevents ValueError in datetime constructor)
     if not (0 <= hour <= 23) or not (0 <= minute <= 59):
@@ -322,7 +330,7 @@ def _parse_absolute_time(text: str, now: datetime) -> Optional[datetime]:
         # No day specified — infer today or tomorrow
         candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate.date() == now.date() and candidate <= now - timedelta(minutes=5):
-            # Already past today, auto-advance to tomorrow
+            # Already past today (even PM), auto-advance to tomorrow
             target_date = (now + timedelta(days=1)).date()
 
     result = datetime(
