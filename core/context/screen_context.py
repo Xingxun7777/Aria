@@ -62,7 +62,6 @@ class AppCategoryDetector:
         # 设计
         "Photoshop.exe": "设计",
         "blender.exe": "3D建模",
-        "krita.exe": "绘画",
     }
 
     def __init__(self, user_overrides: Optional[Dict[str, str]] = None):
