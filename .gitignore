@@ -73,3 +73,5 @@ debug_audio_*.wav
 *.zip
 *.tar
 .tmp_arxiv/
+Aria-v1.0.2-lite/
+Aria-v1.0.2-full/
