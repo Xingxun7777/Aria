@@ -393,20 +393,19 @@ class AIPolisher:
         # v1.2: Inject feature rules block (personalization + one-click toggles)
         feature_parts = []
 
-        # 一键开关：结构化
-        if self.config.auto_structure:
-            feature_parts.append(
-                "- 当内容较长且包含多个要点时，适当用换行分段、用编号列举。"
-                "短句或单一话题不要加结构。禁止使用Markdown格式符，只输出纯文本"
-            )
-
-        # 默认：自动分段（长文本按话题/语义自然断段，不加编号）
-        # 终端场景除外（终端中换行=发送命令）
+        # 默认：自动分段（长文本按语义断段，终端除外）
         feature_parts.append(
             "- 当文本较长（超过3句话）时，按话题或语义自然分段（插入换行），"
             "使输出更易阅读。短句不分段。不要加编号或列表符号，只用换行分隔。"
             "但如果用户在终端/命令行中，绝对不要插入换行（终端中换行会触发命令执行）"
         )
+
+        # 一键开关：结构化（在分段基础上额外加编号列举）
+        if self.config.auto_structure:
+            feature_parts.append(
+                "- 在分段的基础上，当内容包含多个并列要点时，用编号列举。"
+                "禁止使用Markdown格式符，只输出纯文本"
+            )
 
         # 一键开关：口语过滤
         if self.config.filter_filler_words:
