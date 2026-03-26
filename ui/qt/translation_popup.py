@@ -159,6 +159,7 @@ class TranslationPopup(QWidget):
         self._pin_btn = QPushButton("📌")
         self._pin_btn.setFixedSize(20, 20)
         self._pin_btn.setCursor(Qt.PointingHandCursor)
+        self._pin_btn.setFocusPolicy(Qt.NoFocus)
         self._pin_btn.setToolTip("固定弹窗")
         self._pin_btn.setStyleSheet(
             f"""
@@ -183,6 +184,7 @@ class TranslationPopup(QWidget):
         self._close_btn = QPushButton("×")
         self._close_btn.setFixedSize(20, 20)
         self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.setFocusPolicy(Qt.NoFocus)
         self._close_btn.setStyleSheet(
             f"""
             QPushButton {{
@@ -302,12 +304,14 @@ class TranslationPopup(QWidget):
 
         self._copy_btn = QPushButton("复制")
         self._copy_btn.setCursor(Qt.PointingHandCursor)
+        self._copy_btn.setFocusPolicy(Qt.NoFocus)
         self._copy_btn.setStyleSheet(btn_style)
         self._copy_btn.clicked.connect(self._on_copy_clicked)
         action_bar.addWidget(self._copy_btn)
 
         self._insert_btn = QPushButton("插入")
         self._insert_btn.setCursor(Qt.PointingHandCursor)
+        self._insert_btn.setFocusPolicy(Qt.NoFocus)
         self._insert_btn.setStyleSheet(btn_style)
         self._insert_btn.clicked.connect(self._on_insert_clicked)
         action_bar.addWidget(self._insert_btn)
@@ -756,38 +760,51 @@ class TranslationPopup(QWidget):
             QTimer.singleShot(2000, lambda: self._hint_label.hide())
 
     def _on_insert_clicked(self):
-        """v1.2: Insert result into the original target window."""
+        """v1.2: Insert result into the original target window.
+
+        Uses chained QTimer for fully non-blocking async flow:
+        hide() → activate target window → send Ctrl+V → emit closed
+        No time.sleep() — never blocks the Qt event loop.
+        """
         if not self._translated_text or not self._translated_text.strip():
             return
 
         _tlog(f"_on_insert_clicked: inserting to hwnd={self._target_hwnd}")
 
-        # Save state before dismiss (dismiss clears _translated_text)
+        # Prevent double-click
+        self._insert_btn.setEnabled(False)
+
+        # Save state before hide
         text_to_paste = self._translated_text
         target_hwnd = self._target_hwnd
 
-        # Copy to clipboard immediately
+        # Copy to clipboard
         try:
             QApplication.clipboard().setText(text_to_paste)
             self.copyRequested.emit(text_to_paste)
         except Exception as e:
             _tlog(f"_on_insert_clicked: clipboard error: {e}")
 
-        # Dismiss popup FIRST, then paste via delayed callback
-        # (avoids Qt crash from SetForegroundWindow while popup has focus)
+        # Step 1: Hide popup (let Qt process the hide before switching focus)
         self.hide()
-        self.closed.emit()
 
-        def _do_paste():
-            try:
-                if target_hwnd and sys.platform == "win32":
+        # Step 2: Activate target window (delayed to let hide complete)
+        def _step2_activate():
+            if target_hwnd and sys.platform == "win32":
+                try:
                     user32 = ctypes.windll.user32
-                    user32.SetForegroundWindow(target_hwnd)
+                    if user32.GetForegroundWindow() != target_hwnd:
+                        user32.SetForegroundWindow(target_hwnd)
+                except Exception as e:
+                    _tlog(f"_on_insert_clicked: activate error: {e}")
+            # Step 3: Send Ctrl+V (delayed to let focus switch complete)
+            QTimer.singleShot(100, _step3_paste)
 
-                    import time
-
-                    time.sleep(0.1)
-
+        # Step 3: Simulate Ctrl+V
+        def _step3_paste():
+            if sys.platform == "win32":
+                try:
+                    user32 = ctypes.windll.user32
                     VK_CONTROL = 0x11
                     VK_V = 0x56
                     KEYEVENTF_KEYUP = 0x0002
@@ -796,10 +813,12 @@ class TranslationPopup(QWidget):
                     user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
                     user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
                     _tlog("_on_insert_clicked: paste complete")
-            except Exception as e:
-                _tlog(f"_on_insert_clicked: paste error: {e}")
+                except Exception as e:
+                    _tlog(f"_on_insert_clicked: paste error: {e}")
+            # Step 4: Safe cleanup — emit closed AFTER everything is done
+            self.closed.emit()
 
-        QTimer.singleShot(150, _do_paste)
+        QTimer.singleShot(50, _step2_activate)
 
     def _on_close_clicked(self):
         """Handle close button click."""
