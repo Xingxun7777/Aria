@@ -761,38 +761,45 @@ class TranslationPopup(QWidget):
             return
 
         _tlog(f"_on_insert_clicked: inserting to hwnd={self._target_hwnd}")
+
+        # Save state before dismiss (dismiss clears _translated_text)
+        text_to_paste = self._translated_text
+        target_hwnd = self._target_hwnd
+
+        # Copy to clipboard immediately
         try:
-            # Copy to clipboard first
-            clipboard = QApplication.clipboard()
-            clipboard.setText(self._translated_text)
-
-            # Restore focus to original target window, then paste via Ctrl+V
-            if self._target_hwnd and sys.platform == "win32":
-                import time
-                from ctypes import wintypes
-
-                user32 = ctypes.windll.user32
-                # SetForegroundWindow to the captured HWND
-                user32.SetForegroundWindow(self._target_hwnd)
-                time.sleep(0.15)  # Brief delay for window activation
-
-                # Simulate Ctrl+V via keybd_event
-                VK_CONTROL = 0x11
-                VK_V = 0x56
-                KEYEVENTF_KEYUP = 0x0002
-                user32.keybd_event(VK_CONTROL, 0, 0, 0)
-                user32.keybd_event(VK_V, 0, 0, 0)
-                user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
-                user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-                _tlog("_on_insert_clicked: paste complete")
-            else:
-                _tlog("_on_insert_clicked: no target_hwnd, copy only")
-
-            self.copyRequested.emit(self._translated_text)
+            QApplication.clipboard().setText(text_to_paste)
+            self.copyRequested.emit(text_to_paste)
         except Exception as e:
-            _tlog(f"_on_insert_clicked: error: {e}")
+            _tlog(f"_on_insert_clicked: clipboard error: {e}")
 
-        self.dismiss()
+        # Dismiss popup FIRST, then paste via delayed callback
+        # (avoids Qt crash from SetForegroundWindow while popup has focus)
+        self.hide()
+        self.closed.emit()
+
+        def _do_paste():
+            try:
+                if target_hwnd and sys.platform == "win32":
+                    user32 = ctypes.windll.user32
+                    user32.SetForegroundWindow(target_hwnd)
+
+                    import time
+
+                    time.sleep(0.1)
+
+                    VK_CONTROL = 0x11
+                    VK_V = 0x56
+                    KEYEVENTF_KEYUP = 0x0002
+                    user32.keybd_event(VK_CONTROL, 0, 0, 0)
+                    user32.keybd_event(VK_V, 0, 0, 0)
+                    user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+                    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+                    _tlog("_on_insert_clicked: paste complete")
+            except Exception as e:
+                _tlog(f"_on_insert_clicked: paste error: {e}")
+
+        QTimer.singleShot(150, _do_paste)
 
     def _on_close_clicked(self):
         """Handle close button click."""
