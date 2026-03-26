@@ -50,8 +50,10 @@ class WakewordDetector:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
 
-            self.enabled = config.get("enabled", False)
-            self.wakeword = config.get("wakeword", "小助手")
+            self.wakeword = config.get("wakeword", "") or "小助手"
+            self.enabled = (
+                True  # Always enabled — wakeword system is core functionality
+            )
             self.available_wakewords = config.get(
                 "available_wakewords", ["小助手", "小朋友", "小溪", "助手"]
             )
@@ -124,6 +126,13 @@ class WakewordDetector:
                 # Check match type
                 trigger_in_command = trigger_normalized in command_text_normalized
                 command_in_trigger = command_text_normalized in trigger_normalized
+
+                # Reject "command IN trigger" when command is too short relative to trigger
+                # e.g., "发送"(2chars) should NOT match "开启自动发送"(6chars)
+                # This prevents wakeword system from stealing keyboard commands
+                if command_in_trigger and not trigger_in_command:
+                    if len(command_text_normalized) < len(trigger_normalized) * 0.6:
+                        continue
 
                 if not trigger_in_command and not command_in_trigger:
                     continue

@@ -451,16 +451,23 @@ class WakewordExecutor:
             if is_url:
                 os.startfile(target)
             elif os.path.isfile(target):
-                # Highlight file in its containing folder
-                subprocess.Popen(
-                    ["explorer", f"/select,{target}"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                # Open the PARENT directory of the file
+                parent_dir = os.path.dirname(target)
+                if parent_dir and os.path.isdir(parent_dir):
+                    os.startfile(parent_dir)
+                    _debug(f"[OPEN_DIR] Opened parent: {parent_dir}")
+                else:
+                    os.startfile(target)
             elif os.path.isdir(target):
                 os.startfile(target)
             else:
-                os.startfile(target)
+                # Path doesn't exist yet — try parent
+                parent_dir = os.path.dirname(target)
+                if parent_dir and os.path.isdir(parent_dir):
+                    os.startfile(parent_dir)
+                    _debug(f"[OPEN_DIR] Opened parent (fallback): {parent_dir}")
+                else:
+                    os.startfile(target)
 
             _debug(f"[OPEN_DIR] Opened: {target}")
             if self.bridge and hasattr(self.bridge, "emit_command"):

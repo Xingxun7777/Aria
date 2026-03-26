@@ -85,33 +85,35 @@ class MessageBubble(QFrame):
 
         layout.addWidget(self._content_label)
 
-        # Style based on role
+        # Style based on role (warm amber palette)
         if self.message.role == "user":
             self.setStyleSheet(
-                f"""
-                MessageBubble {{
-                    background: {self._theme.user_bubble_bg};
+                """
+                MessageBubble {
+                    background: rgba(245, 158, 11, 0.18);
                     border-radius: 12px;
                     margin-left: 40px;
-                }}
-                QLabel {{
-                    color: {self._theme.user_bubble_text};
+                }
+                QLabel {
+                    color: #FDE68A;
                     font-size: 13px;
-                }}
+                    background: transparent;
+                }
             """
             )
         else:
             self.setStyleSheet(
-                f"""
-                MessageBubble {{
-                    background: {self._theme.assistant_bubble_bg};
+                """
+                MessageBubble {
+                    background: rgba(255, 255, 255, 0.06);
                     border-radius: 12px;
                     margin-right: 40px;
-                }}
-                QLabel {{
-                    color: {self._theme.assistant_bubble_text};
+                }
+                QLabel {
+                    color: #E5E7EB;
                     font-size: 13px;
-                }}
+                    background: transparent;
+                }
             """
             )
 
@@ -178,19 +180,32 @@ class AIChatWindow(QWidget):
     insertRequested = Signal(str)  # Emits text to insert
     closed = Signal()
 
-    WINDOW_WIDTH = 400
-    WINDOW_HEIGHT = 500
+    WINDOW_WIDTH = 420
+    WINDOW_HEIGHT = 520
+    CORNER_RADIUS = 8
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._theme = styles.get_theme_palette()
-        self.BG_COLOR = styles.qcolor(self._theme.panel_bg)
-        self.BORDER_COLOR = styles.qcolor(self._theme.border)
-        self.HEADER_COLOR = styles.qcolor(self._theme.header_bg)
 
-        self.setWindowFlags(
-            Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
+        # Warm amber palette (matches TranslationPopup)
+        self.BG_COLOR = QColor(32, 28, 26, 240)  # Warm dark brown-black
+        self.BORDER_COLOR = QColor(200, 130, 50, 50)  # Warm amber border
+        self.HEADER_COLOR = QColor(26, 22, 20, 250)  # Darker warm header
+        self.ACCENT_COLOR = "#F59E0B"  # Amber accent
+        self.ACCENT_HOVER = "#D97706"  # Darker amber
+        self.TEXT_PRIMARY = "#E5E7EB"
+        self.TEXT_SECONDARY = "#9CA3AF"
+        self.TEXT_MUTED = "#6B7280"
+        self.INPUT_BG = "rgba(0, 0, 0, 0.32)"
+        self.BUTTON_BG = "rgba(255, 255, 255, 0.08)"
+        self.BUTTON_HOVER = "rgba(255, 255, 255, 0.16)"
+        self.USER_BUBBLE_BG = "rgba(245, 158, 11, 0.18)"  # Amber tint
+        self.USER_BUBBLE_TEXT = "#FDE68A"  # Warm yellow
+        self.ASSISTANT_BUBBLE_BG = "rgba(255, 255, 255, 0.06)"
+        self.ASSISTANT_BUBBLE_TEXT = "#E5E7EB"
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         self._messages: List[ChatMessage] = []
@@ -201,40 +216,58 @@ class AIChatWindow(QWidget):
         self._init_ui()
         self._setup_drag()
 
+    def paintEvent(self, event):
+        """Draw warm translucent background with amber border."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setPen(QPen(self.BORDER_COLOR, 1))
+        painter.setBrush(QBrush(self.BG_COLOR))
+        painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
+        painter.end()
+
     def _init_ui(self):
         """Initialize UI components."""
         self.setFixedSize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
 
-        # Main layout
+        # Small header button style (reused)
+        header_btn_style = f"""
+            QPushButton {{
+                background: transparent;
+                color: {self.TEXT_SECONDARY};
+                font-size: 11px;
+                border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 4px;
+                padding: 0 8px;
+            }}
+            QPushButton:hover {{
+                background: {self.BUTTON_HOVER};
+                color: {self.TEXT_PRIMARY};
+            }}
+        """
+
+        # Main layout (no container frame — QPainter handles bg)
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(1, 1, 1, 1)
         main_layout.setSpacing(0)
 
-        # Container with background
         container = QFrame()
-        container.setStyleSheet(
-            f"""
-            QFrame {{
-                background: {self._theme.panel_bg};
-                border: 1px solid {self._theme.border};
-                border-radius: 8px;
-            }}
-        """
-        )
+        container.setStyleSheet("background: transparent;")
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
-        # Header with title and close button
+        # Header
         header = QFrame()
         header.setFixedHeight(36)
         header.setStyleSheet(
             f"""
             QFrame {{
-                background: {self._theme.header_bg};
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                border-bottom: 1px solid {self._theme.border};
+                background: rgba(0, 0, 0, 0.20);
+                border-top-left-radius: {self.CORNER_RADIUS}px;
+                border-top-right-radius: {self.CORNER_RADIUS}px;
+                border-bottom: 1px solid rgba(255,255,255,0.08);
             }}
         """
         )
@@ -243,54 +276,22 @@ class AIChatWindow(QWidget):
 
         title = QLabel("AI 对话")
         title.setStyleSheet(
-            f"color: {self._theme.text_primary}; font-size: 13px; font-weight: bold;"
+            f"color: {self.ACCENT_COLOR}; font-size: 11px; font-weight: bold; background: transparent;"
         )
         header_layout.addWidget(title)
         header_layout.addStretch()
 
-        # New chat button
         new_chat_btn = QPushButton("新对话")
         new_chat_btn.setFixedHeight(22)
         new_chat_btn.setCursor(Qt.PointingHandCursor)
-        new_chat_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                color: {self._theme.text_secondary};
-                font-size: 11px;
-                border: 1px solid {self._theme.border_strong};
-                border-radius: 4px;
-                padding: 0 8px;
-            }}
-            QPushButton:hover {{
-                background: {self._theme.button_hover_bg};
-                color: {self._theme.text_primary};
-            }}
-        """
-        )
+        new_chat_btn.setStyleSheet(header_btn_style)
         new_chat_btn.clicked.connect(self._new_chat)
         header_layout.addWidget(new_chat_btn)
 
-        # Save chat button
         save_btn = QPushButton("保存")
         save_btn.setFixedHeight(22)
         save_btn.setCursor(Qt.PointingHandCursor)
-        save_btn.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                color: {self._theme.text_secondary};
-                font-size: 11px;
-                border: 1px solid {self._theme.border_strong};
-                border-radius: 4px;
-                padding: 0 8px;
-            }}
-            QPushButton:hover {{
-                background: {self._theme.button_hover_bg};
-                color: {self._theme.text_primary};
-            }}
-        """
-        )
+        save_btn.setStyleSheet(header_btn_style)
         save_btn.clicked.connect(self._save_chat)
         header_layout.addWidget(save_btn)
 
@@ -300,14 +301,14 @@ class AIChatWindow(QWidget):
             f"""
             QPushButton {{
                 background: transparent;
-                color: {self._theme.text_secondary};
+                color: {self.TEXT_SECONDARY};
                 font-size: 18px;
                 border: none;
                 border-radius: 4px;
             }}
             QPushButton:hover {{
-                background: {self._theme.button_hover_bg};
-                color: {self._theme.danger};
+                background: rgba(239, 68, 68, 0.3);
+                color: #EF4444;
             }}
         """
         )
@@ -321,8 +322,8 @@ class AIChatWindow(QWidget):
         self._quote_frame.setStyleSheet(
             f"""
             QFrame {{
-                background: {self._theme.quote_bg};
-                border-left: 3px solid {self._theme.quote_border};
+                background: rgba(245, 158, 11, 0.08);
+                border-left: 3px solid {self.ACCENT_COLOR};
                 margin: 8px;
                 padding: 8px;
                 border-radius: 4px;
@@ -335,7 +336,7 @@ class AIChatWindow(QWidget):
         self._quote_label = QLabel()
         self._quote_label.setWordWrap(True)
         self._quote_label.setStyleSheet(
-            f"color: {self._theme.text_secondary}; font-size: 12px;"
+            f"color: {self.TEXT_SECONDARY}; font-size: 12px; background: transparent;"
         )
         self._quote_label.setMaximumHeight(50)
         quote_layout.addWidget(self._quote_label)
@@ -347,30 +348,36 @@ class AIChatWindow(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setStyleSheet(
-            f"""
-            QScrollArea {{
+            """
+            QScrollArea {
                 border: none;
                 background: transparent;
-            }}
-            QScrollBar:vertical {{
-                background: {self._theme.scrollbar_track};
-                width: 8px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {self._theme.scrollbar_handle};
-                border-radius: 4px;
-            }}
+            }
+            QScrollBar:vertical {
+                background: rgba(255,255,255,0.05);
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255,255,255,0.20);
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
         """
         )
 
         self._messages_container = QWidget()
+        self._messages_container.setStyleSheet("background: transparent;")
         self._messages_layout = QVBoxLayout(self._messages_container)
         self._messages_layout.setContentsMargins(8, 8, 8, 8)
         self._messages_layout.setSpacing(8)
         self._messages_layout.addStretch()
 
         scroll.setWidget(self._messages_container)
+        self._scroll_area = scroll
         container_layout.addWidget(scroll, 1)
 
         # Input area
@@ -378,10 +385,10 @@ class AIChatWindow(QWidget):
         input_frame.setStyleSheet(
             f"""
             QFrame {{
-                background: {self._theme.header_bg};
-                border-top: 1px solid {self._theme.border};
-                border-bottom-left-radius: 8px;
-                border-bottom-right-radius: 8px;
+                background: rgba(0, 0, 0, 0.20);
+                border-top: 1px solid rgba(255,255,255,0.08);
+                border-bottom-left-radius: {self.CORNER_RADIUS}px;
+                border-bottom-right-radius: {self.CORNER_RADIUS}px;
             }}
         """
         )
@@ -395,15 +402,15 @@ class AIChatWindow(QWidget):
         self._input_edit.setStyleSheet(
             f"""
             QTextEdit {{
-                background: {self._theme.input_bg};
-                color: {self._theme.text_primary};
-                border: 1px solid {self._theme.border_strong};
+                background: {self.INPUT_BG};
+                color: {self.TEXT_PRIMARY};
+                border: 1px solid rgba(255,255,255,0.15);
                 border-radius: 4px;
                 padding: 4px 8px;
                 font-size: 13px;
             }}
             QTextEdit:focus {{
-                border-color: {self._theme.accent};
+                border-color: {self.ACCENT_COLOR};
             }}
         """
         )
@@ -414,18 +421,19 @@ class AIChatWindow(QWidget):
         self._send_btn.setStyleSheet(
             f"""
             QPushButton {{
-                background: {self._theme.accent};
-                color: {self._theme.text_inverse};
+                background: {self.ACCENT_COLOR};
+                color: #1C1917;
                 border: none;
                 border-radius: 4px;
                 font-size: 13px;
+                font-weight: bold;
             }}
             QPushButton:hover {{
-                background: {self._theme.accent_hover};
+                background: {self.ACCENT_HOVER};
             }}
             QPushButton:disabled {{
-                background: {self._theme.button_bg};
-                color: {self._theme.text_muted};
+                background: {self.BUTTON_BG};
+                color: {self.TEXT_MUTED};
             }}
         """
         )
@@ -435,6 +443,23 @@ class AIChatWindow(QWidget):
         container_layout.addWidget(input_frame)
 
         # Action buttons bar
+        action_btn_style = f"""
+            QPushButton {{
+                background: {self.BUTTON_BG};
+                color: {self.TEXT_PRIMARY};
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 4px;
+                padding: 0 12px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{
+                background: {self.BUTTON_HOVER};
+            }}
+            QPushButton:disabled {{
+                color: {self.TEXT_MUTED};
+            }}
+        """
+
         actions_frame = QFrame()
         actions_frame.setStyleSheet("background: transparent;")
         actions_layout = QHBoxLayout(actions_frame)
@@ -447,24 +472,7 @@ class AIChatWindow(QWidget):
 
         for btn in [self._copy_btn, self._insert_btn, self._retry_btn]:
             btn.setFixedHeight(28)
-            btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: {self._theme.button_bg};
-                    color: {self._theme.text_primary};
-                    border: 1px solid {self._theme.border_strong};
-                    border-radius: 4px;
-                    padding: 0 12px;
-                    font-size: 12px;
-                }}
-                QPushButton:hover {{
-                    background: {self._theme.button_hover_bg};
-                }}
-                QPushButton:disabled {{
-                    color: {self._theme.text_muted};
-                }}
-            """
-            )
+            btn.setStyleSheet(action_btn_style)
 
         self._copy_btn.clicked.connect(self._on_copy_clicked)
         self._insert_btn.clicked.connect(self._on_insert_clicked)
@@ -530,10 +538,17 @@ class AIChatWindow(QWidget):
         self.raise_()
         self._input_edit.setFocus()
 
-        # If there's an initial question, send it
+        # Hide quote area if no context
+        if not context_text:
+            self._quote_label.hide()
+        else:
+            self._quote_label.show()
+
+        # If there's an initial question, auto-send it
         if initial_question:
             self._input_edit.setPlainText(initial_question)
-            self._on_send_clicked()
+            # Use button click to trigger full send chain (UI + LLM worker)
+            self._send_btn.click()
 
     def _position_near_cursor(self):
         """Position window near cursor."""
@@ -633,17 +648,18 @@ class AIChatWindow(QWidget):
                 f"错误: {error_msg}", is_streaming=False
             )
             self._current_bubble.setStyleSheet(
-                f"""
-                MessageBubble {{
-                    background: {self._theme.danger_soft};
-                    border: 1px solid {self._theme.danger_border};
+                """
+                MessageBubble {
+                    background: rgba(239, 68, 68, 0.16);
+                    border: 1px solid rgba(239, 68, 68, 0.45);
                     border-radius: 12px;
                     margin-right: 40px;
-                }}
-                QLabel {{
-                    color: {self._theme.danger};
+                }
+                QLabel {
+                    color: #EF4444;
                     font-size: 13px;
-                }}
+                    background: transparent;
+                }
             """
             )
         self._is_generating = False

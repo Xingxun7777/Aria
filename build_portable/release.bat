@@ -7,6 +7,11 @@ if /I "%~1"=="full" (
     exit /b %errorlevel%
 )
 
+if /I "%~1"=="prep" (
+    call "%~dp0release-prep.bat"
+    exit /b %errorlevel%
+)
+
 if /I "%~1"=="lite" (
     call "%~dp0release-lite.bat" %~2
     exit /b %errorlevel%
@@ -28,24 +33,28 @@ echo [ERROR] 未知模式: %~1
 echo.
 :usage
 echo 用法:
+echo   build_portable\release.bat prep
 echo   build_portable\release.bat lite
 echo   build_portable\release.bat full
 echo   build_portable\release.bat lite dry-run
 echo   build_portable\release.bat full dry-run
 echo.
 echo 或直接使用:
+echo   build_portable\release-prep.bat
 echo   build_portable\release-lite.bat
 echo   build_portable\release-full.bat
 exit /b 1
 
 :usage_ok
 echo 用法:
+echo   build_portable\release.bat prep
 echo   build_portable\release.bat lite
 echo   build_portable\release.bat full
 echo   build_portable\release.bat lite dry-run
 echo   build_portable\release.bat full dry-run
 echo.
 echo 或直接使用:
+echo   build_portable\release-prep.bat
 echo   build_portable\release-lite.bat
 echo   build_portable\release-full.bat
 exit /b 0

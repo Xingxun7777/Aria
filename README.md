@@ -38,7 +38,7 @@
 - **自动结构化** — 长段口述自动整理为带换行、编号的结构化文本
 - **个性化规则** — 自然语言描述你的润色偏好（如"英文专有名词保留原始大小写"）
 - **屏幕感知** — 自动识别当前应用类型，聊天场景保留口语感，文档场景偏书面化
-- **本地润色** — 高级用户可自行配置 GGUF 模型实现离线润色
+- **本地润色** — 高级用户可配置 GGUF 模型实现离线润色（需额外安装 `llama-cpp-python`）
 
 ### 选区指令
 
@@ -57,6 +57,7 @@
 | 问 AI | 打开 AI 对话窗口 |
 | 帮我打开 | 选中路径/URL，语音打开文件或网页 |
 | 记一下 + 内容 | 记录想法 |
+| 提醒我 + 时间 + 内容 | 设置定时提醒（如"提醒我五分钟后喝水"）|
 
 ### 弹窗交互
 
@@ -80,7 +81,7 @@
 | [唤醒词] 休眠 / 醒来 | 暂停/恢复语音监听 |
 | [唤醒词] 记一下 + 内容 | 记录想法 |
 
-> 唤醒词可在设置中自定义。内置可选：小朋友、小溪、助手、小白等。
+> 唤醒词可在设置中自定义。内置可选：遥遥、瑶瑶、小朋友、小溪、助手、小白。
 
 ### 历史记录
 
@@ -195,7 +196,7 @@ Aria.bat
 | 引擎 | 速度 | 语言 | 特点 |
 |------|------|------|------|
 | **Qwen3-ASR**（默认）| 中等 | 52 语言 | 上下文增强 + 三级防幻觉 + 屏幕 OCR 辅助，VRAM 自动选模型 |
-| **FunASR** | 最快 | 中文 | 离线即用，无需下载模型 |
+| **FunASR** | 最快 | 中文 | 首次使用自动下载模型（~700MB），之后离线可用 |
 
 <details>
 <summary>四层热词纠错详解</summary>
@@ -288,7 +289,7 @@ build_portable\release.bat full
 
 - **Lite 版**：Qwen3-ASR 首次使用需自动下载模型（约 1.2-3.4 GB），下载后离线可用
 - **Full 版**：已内置模型，通常不会触发首次下载
-- 如想完全免下载，也可切换到 FunASR 立即使用
+- 也可切换到 FunASR（首次下载约 700MB，之后离线可用）
 
 </details>
 
@@ -358,4 +359,6 @@ Aria/
 | [PySide6](https://www.qt.io/) | LGPL v3 | Qt6 Python 绑定 |
 | [PyTorch](https://pytorch.org/) | BSD-3-Clause | 深度学习框架 |
 | [pypinyin](https://github.com/mozillazg/python-pinyin) | MIT | 汉字拼音转换 |
+| [RapidOCR](https://github.com/RapidAI/RapidOCR) | Apache 2.0 | PaddleOCR ONNX 推理 |
+| [uiautomation](https://github.com/yinkaisheng/Python-UIAutomation-for-Windows) | Apache 2.0 | Windows UI Automation |
 | [winocr](https://github.com/GitHub30/winocr) | MIT | Windows OCR 绑定 |

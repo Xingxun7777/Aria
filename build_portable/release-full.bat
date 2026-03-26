@@ -14,6 +14,7 @@ set "ARIA_ARCHIVE_NAME=Aria-v%ARIA_VERSION%-full.7z"
 
 echo [INFO] 用途: 网盘/云盘离线傻瓜包（内置 Qwen3-ASR 0.6B + 1.7B）
 echo [INFO] 输出目录: dist_portable\%ARIA_DIST_NAME%\
+echo [INFO] 如需先清空本地记录与配置痕迹，请先运行: build_portable\release-prep.bat
 echo.
 
 if /I "%~1"=="dry-run" goto :dry_run

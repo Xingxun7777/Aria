@@ -49,6 +49,7 @@
 | `threshold` | float | `0.2` | 语音检测灵敏度 (0.1-0.9)，值越低越灵敏 |
 | `energy_threshold` | float | `0.003` | 能量门控阈值 (0.0005-0.02)，低于此值的音频直接丢弃 |
 | `min_silence_ms` | int | `1200` | 静默判定阈值（毫秒），说完一句话后等多久认为说完了 |
+| `screen_ocr_polish` | bool | `false` | OCR 注入润色层：将屏幕文字也注入 AI 润色 prompt（实验性，默认关闭）|
 
 ## 热词系统
 
@@ -62,7 +63,7 @@
 
 ### 热词权重 (`hotword_weights`)
 
-每个热词可独立设置权重，控制在各纠错层的参与程度。**未在此处配置的热词默认权重为 0.5**（参考级）。
+每个热词可独立设置权重，控制在各纠错层的参与程度。**未在此处配置的热词默认权重为 0.3**（提示级）。
 
 ```json
 {
@@ -75,19 +76,21 @@
 
 **权重对照表：**
 
-| 权重 | ASR 分数 | 正则替换 | 拼音匹配 | LLM 润色 |
+| 权重 | ASR 引导 | 正则替换 | 拼音匹配 | LLM 润色 |
 |------|----------|----------|----------|----------|
 | 0 | 跳过 | - | - | - |
-| 0.3 | 30 (提示) | - | - | - |
-| 0.5 | 60 (标准) | Yes | - | 参考 |
-| 0.7 | 60 (标准) | Yes | - | 参考 |
-| 0.9 | 100 (锁定) | Yes | - | 参考 |
-| 1.0 | 100 (锁定) | Yes | Yes | 必须 |
+| 0.1 | 跳过 | Yes | - | 仅严格约束 |
+| 0.3 | 提示 | Yes | - | 低优先参考 |
+| 0.5 | 标准 | Yes | - | 参考 |
+| 0.7 | 标准 | Yes | - | 参考 |
+| 0.9 | 锁定 | Yes | - | 参考 |
+| 1.0 | 锁定 | Yes | Yes | 必须 |
 
 > - 拼音模糊匹配（Layer 2.5）仅在权重 = 1.0 时激活
-> - 权重 < 0.5 的热词不参与 LLM 润色（仅 ASR 层提示）
-> - ASR 分数列仅对 FunASR 生效；Qwen3 使用独立的 context 机制
-> - 两个引擎的 initial_prompt 和 context 阈值均为 0.5（权重 0.3 不进入 ASR 引导）
+> - 正则替换在权重 >= 0.1 时即参与
+> - 权重 0.1 的热词不进入 ASR 引导，仅在 LLM 润色层以严格约束形式参与
+> - 权重 0.3 的热词在 LLM 润色层以低优先级参考形式参与
+> - ASR 引导阈值为 0.5（权重 < 0.5 不进入 initial_prompt / context）
 
 ### 正则替换规则 (`replacements`)
 
@@ -143,11 +146,16 @@
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `enabled` | bool | `false` | 启用 API 润色 |
-| `api_url` | string | `"https://openrouter.ai/api"` | API 端点 |
-| `api_key` | string | — | OpenRouter API Key |
-| `model` | string | `"deepseek/deepseek-chat-v3.1:free"` | 润色模型 |
+| `api_url` | string | `""` | API 端点（用户需填写，如 `https://api.deepseek.com`）|
+| `api_key` | string | `""` | API Key |
+| `model` | string | `""` | 润色模型（如 `deepseek-chat`）|
 | `timeout` | int | `10` | 超时（秒）|
-| `prompt_template` | string | *(内置模板)* | 自定义润色提示词。使用 `{text}` 占位符表示原文 |
+| `prompt_template` | string | *(内置模板)* | 自定义润色提示词（留空使用内置高级模板，含音译对照表）|
+| `api_url_backup` | string | `""` | 备用 API 端点（为空则不启用轮询）|
+| `api_key_backup` | string | `""` | 备用 API Key（为空则复用主 Key）|
+| `model_backup` | string | `""` | 备用模型（为空则复用主模型）|
+| `slow_threshold_ms` | float | `3000` | 慢响应判定阈值（毫秒）|
+| `switch_after_slow_count` | int | `2` | 连续慢 N 次后切换到备用 API |
 
 **示例：**
 
@@ -191,3 +199,5 @@
 唤醒词在 `config/wakeword.json` 中配置，键盘命令在 `config/commands.json` 中配置。
 
 这两个文件可直接编辑，保存后自动生效。
+
+发布态默认会把这两个配置重置为“空值 + disabled”，避免携带任何个人唤醒词或个人化命令前缀。

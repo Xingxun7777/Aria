@@ -2261,8 +2261,28 @@ class SettingsWindow(QMainWindow):
                     # Corrupted file — use defaults (will be overwritten below)
                     print(f"[WARN] wakeword.json corrupted, resetting to defaults")
 
-            # Update wakeword
+            # Update wakeword + auto-enable when user sets a wakeword
             wakeword_config["wakeword"] = new_wakeword
+            if new_wakeword:
+                wakeword_config["enabled"] = True
+
+            # Also update commands.json prefix to match new wakeword
+            commands_path = self.config_path.parent / "commands.json"
+            try:
+                if commands_path.exists():
+                    with open(commands_path, "r", encoding="utf-8") as f:
+                        cmd_config = json.load(f)
+                    cmd_config["prefix"] = new_wakeword
+                    if new_wakeword:
+                        cmd_config["enabled"] = True
+                    _tmp_cmd = str(commands_path) + ".tmp"
+                    with open(_tmp_cmd, "w", encoding="utf-8") as f:
+                        json.dump(cmd_config, f, ensure_ascii=False, indent=2)
+                        f.flush()
+                        _os.fsync(f.fileno())
+                    _os.replace(_tmp_cmd, str(commands_path))
+            except Exception as e:
+                print(f"Failed to sync commands.json prefix: {e}")
 
             # Save back (atomic write)
             import os as _os

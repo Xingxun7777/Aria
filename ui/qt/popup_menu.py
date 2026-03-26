@@ -132,7 +132,7 @@ class ModeButton(QPushButton):
                 border-radius: 6px;
                 color: {self._theme.text_primary};
                 font-size: 12px;
-                padding: 4px 10px;
+                padding: 4px 8px;
             }}
             ModeButton:hover {{
                 background-color: {self._theme.button_hover_bg};
@@ -141,7 +141,7 @@ class ModeButton(QPushButton):
             ModeButton:checked {{
                 background-color: {self._theme.accent_soft};
                 border-color: {self._theme.accent_border};
-                color: {self._theme.text_inverse};
+                color: {self._theme.accent_hover};
             }}
         """
 
@@ -187,7 +187,7 @@ class PopupMenu(QWidget):
             Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(210)
+        self.setFixedWidth(250)
 
     def _init_ui(self):
         """Build the UI."""

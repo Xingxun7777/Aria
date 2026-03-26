@@ -60,8 +60,7 @@ def _try_ui_automation(hwnd) -> Optional[str]:
         ctypes.windll.user32.GetClassNameW(hwnd, class_buf, 256)
         class_name = class_buf.value.lower()
 
-        if class_name not in _UIA_BROWSER_CLASSES:
-            return None  # Not a browser, skip UIA
+        is_browser = class_name in _UIA_BROWSER_CLASSES
 
         import uiautomation as auto
 
@@ -90,7 +89,30 @@ def _try_ui_automation(hwnd) -> Optional[str]:
             except Exception:
                 pass
 
-        walk(ctrl)
+        if is_browser:
+            # Browser: try Document control first, fall back to full tree
+            doc = None
+            try:
+                doc = ctrl.DocumentControl(searchDepth=8)
+            except Exception:
+                pass
+
+            if doc:
+                _ocr_log(f"UIA: Trying Browser Document...")
+                walk(doc)
+
+            # If Document gave too few results, fall back to full tree walk
+            if len(texts) < 5:
+                _ocr_log(
+                    f"UIA: Document had {len(texts)} texts, falling back to full tree"
+                )
+                texts.clear()
+                count[0] = 0
+                walk(ctrl)
+        else:
+            # Non-browser apps (WeChat, QQ, Notepad, Word, etc.)
+            _ocr_log(f"UIA: Non-browser app, class='{class_name}'")
+            walk(ctrl)
 
         if len(texts) < 3:
             return None  # Too few results, UIA not working well

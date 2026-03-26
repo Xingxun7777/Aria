@@ -74,7 +74,7 @@ try:
     from pypinyin import pinyin as _pinyin, Style as _PinyinStyle
 
     @_lru_cache(maxsize=512)
-    def __get_pinyin_cached(s: str) -> tuple:
+    def _get_pinyin_cached(s: str) -> tuple:
         return tuple(
             p[0] for p in _pinyin(s, style=_PinyinStyle.NORMAL, errors="ignore")
         )
@@ -83,7 +83,7 @@ try:
 except ImportError:
     _PYPINYIN_AVAILABLE = False
 
-    def __get_pinyin_cached(s: str) -> tuple:
+    def _get_pinyin_cached(s: str) -> tuple:
         return ()
 
 
@@ -319,6 +319,10 @@ class AriaApp:
         self._last_interim_text: str = ""
         self._interim_generation: int = 0  # Generation token to prevent stale updates
         self._asr_lock = threading.Lock()  # Prevent concurrent ASR calls
+
+        # Window-change OCR refresh during continuous recording
+        self._ocr_watcher_thread: threading.Thread = None
+        self._ocr_last_hwnd: int = 0
 
     def _beep(self, frequency: int, duration: int) -> None:
         """Play beep if sound is enabled (non-blocking)."""
@@ -691,7 +695,7 @@ class AriaApp:
         # Pre-compute screen word pinyin, sort longest first
         screen_py = {}
         for w in screen_words:
-            py = __get_pinyin_cached(w)
+            py = _get_pinyin_cached(w)
             if py:
                 screen_py[w] = py
 
@@ -910,8 +914,8 @@ class AriaApp:
         vad_cfg = asr_cfg.get("vad", {})
         vad_threshold = max(0.1, min(0.9, vad_cfg.get("threshold", 0.2)))
         vad_min_speech = max(50, min(1000, vad_cfg.get("min_speech_ms", 150)))
-        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 1200)))
-        vad_max_speech = max(3000, min(30000, vad_cfg.get("max_speech_ms", 8000)))
+        vad_min_silence = max(100, min(5000, vad_cfg.get("min_silence_ms", 1500)))
+        vad_max_speech = max(3000, min(60000, vad_cfg.get("max_speech_ms", 10000)))
 
         # Pre-ASR energy gate (configurable from settings)
         self._energy_threshold = max(
@@ -1073,6 +1077,30 @@ class AriaApp:
             self.asr_engine.set_context(context_string or "")
             print(f"[HOTWORD] Qwen3 context: {len(context_string)} chars")
 
+        # GPU Warmup — two passes to fully prime both encoder and decoder
+        # Pass 1: silence → primes CUDA kernels + audio encoder
+        # Pass 2: low noise → forces decoder to generate tokens (primes text generation path)
+        # See docs/DEBUG_LESSONS.md: warmup before context causes "Prompt Shock"
+        try:
+            import numpy as _np
+            import time as _warmup_time
+
+            _pipeline_log("WARMUP", "Starting GPU warmup (2 passes)...")
+            _warmup_start = _warmup_time.time()
+            with self._asr_lock:
+                # Pass 1: silence (prime encoder + CUDA kernels)
+                silence = _np.zeros(16000, dtype=_np.float32)
+                _ = self.asr_engine.transcribe(silence)
+                # Pass 2: low-level noise (force decoder to produce tokens)
+                noise = _np.random.randn(16000).astype(_np.float32) * 0.01
+                _ = self.asr_engine.transcribe(noise)
+            _warmup_ms = (_warmup_time.time() - _warmup_start) * 1000
+            _pipeline_log("WARMUP", f"GPU warmup complete ({_warmup_ms:.0f}ms)")
+            print(f"[WARMUP] GPU warmup complete ({_warmup_ms:.0f}ms)")
+        except Exception as e:
+            _pipeline_log("WARMUP", f"GPU warmup FAILED: {e}")
+            print(f"[WARMUP] GPU warmup failed (non-fatal): {e}")
+
         self.hotword_processor = HotWordProcessor(
             self.hotword_manager.get_replacements()
         )
@@ -1222,6 +1250,67 @@ class AriaApp:
         self.selection_detector = SelectionDetector(self.output_injector)
         self.selection_processor = SelectionProcessor(self.polisher)
         print("[SELECTION] Selection mode initialized")
+
+    def _start_ocr_watcher(self) -> None:
+        """Start window-change OCR watcher during continuous recording.
+
+        Monitors foreground window handle every 0.5s. Only triggers OCR when
+        the window actually changes (event-driven, not polling OCR itself).
+        500ms debounce prevents thrashing during fast Alt+Tab.
+        """
+        if not self._screen_ocr_enabled:
+            return
+        self._stop_ocr_watcher()
+
+        import ctypes
+
+        def _watch():
+            self._ocr_last_hwnd = 0
+            _debounce_hwnd = 0
+            _debounce_time = 0.0
+            import time as _t
+
+            while self.state == AppState.RECORDING and not self._stop_event.is_set():
+                try:
+                    current = ctypes.windll.user32.GetForegroundWindow()
+                    if current and current != self._ocr_last_hwnd:
+                        # Window changed — debounce 500ms
+                        if current != _debounce_hwnd:
+                            _debounce_hwnd = current
+                            _debounce_time = _t.time()
+                        elif _t.time() - _debounce_time >= 0.5:
+                            # Stable for 500ms, trigger OCR
+                            if self._screen_ocr is None:
+                                try:
+                                    from .core.context.screen_ocr import ScreenOCR
+
+                                    self._screen_ocr = ScreenOCR(max_text_len=1000)
+                                except Exception:
+                                    self._screen_ocr_enabled = False
+                                    return
+                            if self._screen_ocr:
+                                if not self._screen_ocr._running:
+                                    self._screen_ocr.trigger()
+                                    self._ocr_last_hwnd = current
+                                    _pipeline_log(
+                                        "OCR",
+                                        f"Window changed, OCR triggered (hwnd={current})",
+                                    )
+                                # else: OCR busy, don't mark as handled — retry next cycle
+                except Exception as _e:
+                    _pipeline_log("OCR", f"Watcher error: {_e}")
+                self._stop_event.wait(0.5)
+
+        self._ocr_watcher_thread = threading.Thread(
+            target=_watch, daemon=True, name="ocr-watcher"
+        )
+        self._ocr_watcher_thread.start()
+
+    def _stop_ocr_watcher(self) -> None:
+        """Stop window-change OCR watcher."""
+        self._ocr_watcher_thread = (
+            None  # Thread checks self.state, will exit on its own
+        )
 
     def _on_speech_start(self) -> None:
         """Called when speech is detected."""
@@ -2299,6 +2388,10 @@ class AriaApp:
 
         self.state = AppState.RECORDING
         self._emit_state("RECORDING")
+
+        # Start window-change OCR watcher AFTER state is RECORDING
+        # (watcher thread checks self.state == RECORDING to stay alive)
+        self._start_ocr_watcher()
         _pipeline_log(
             "RECORD", f"Session #{self._session_count}, starting audio capture..."
         )
@@ -2316,6 +2409,9 @@ class AriaApp:
 
         # Stop streaming ASR timer first
         self._stop_interim_timer()
+
+        # Stop window-change OCR watcher
+        self._stop_ocr_watcher()
 
         # Beep: low pitch = stop recording (short, subtle)
         self._beep(400, 50)
@@ -2758,6 +2854,14 @@ class AriaApp:
                     self.wakeword_detector.reload()
                     print(
                         f"[HOT-RELOAD] Updated wakeword: '{self.wakeword_detector.wakeword}'"
+                    )
+
+                # Update command detector (prefix may have changed with wakeword)
+                if self.command_detector:
+                    self.command_detector.reload()
+                    print(
+                        f"[HOT-RELOAD] Updated commands: prefix='{self.command_detector.prefix}', "
+                        f"{len(self.command_detector.commands)} commands"
                     )
 
                 # Update VAD settings + energy gate

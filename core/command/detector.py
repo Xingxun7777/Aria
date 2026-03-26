@@ -56,8 +56,8 @@ class CommandDetector:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
 
-            self.enabled = config.get("enabled", False)
-            self.prefix = config.get("prefix", "小助手")
+            self.prefix = config.get("prefix", "") or "小助手"
+            self.enabled = True  # Always enabled — uses same wakeword as prefix
             self.commands = config.get("commands", {})
 
             logger.info(
@@ -92,11 +92,10 @@ class CommandDetector:
         # Extract command part (after prefix)
         cmd_text = text[len(self.prefix) :].strip()
 
-        # Remove common separators after prefix
-        for sep in ["，", ",", " ", "。", ".", "：", ":"]:
-            if cmd_text.startswith(sep):
-                cmd_text = cmd_text[1:].strip()
-                break
+        # Strip ALL punctuation (ASR adds commas, periods, etc.)
+        import re
+
+        cmd_text = re.sub(r"[\s，,。.、：:；;！!？?\-—]", "", cmd_text)
 
         # Exact match only (security: no fuzzy matching)
         if cmd_text in self.commands:

@@ -45,7 +45,7 @@ class LLMWorker(QRunnable):
         QThreadPool.globalInstance().start(worker)
     """
 
-    SYSTEM_PROMPT = """你是一个智能助手，帮助用户理解和处理他们选中的文本。
+    SYSTEM_PROMPT_WITH_CONTEXT = """你是一个智能助手，帮助用户理解和处理他们选中的文本。
 
 用户选中了一段文本并向你提问。请基于选中的文本内容来回答用户的问题。
 
@@ -54,6 +54,13 @@ class LLMWorker(QRunnable):
 2. 基于选中文本给出相关回答
 3. 回答简洁清晰，避免冗长
 4. 如果需要代码或格式，使用 Markdown 格式"""
+
+    SYSTEM_PROMPT_NO_CONTEXT = """你是一个智能助手，用户通过语音向你提问。
+
+回答要求：
+1. 准确理解用户的问题
+2. 回答简洁清晰，避免冗长
+3. 如果需要代码或格式，使用 Markdown 格式"""
 
     def __init__(
         self,
@@ -94,11 +101,14 @@ class LLMWorker(QRunnable):
         self.setAutoDelete(True)
 
     def _build_messages(self) -> List[Dict[str, str]]:
-        """Build messages with system prompt and context."""
-        # System message with context
-        system_content = (
-            self.SYSTEM_PROMPT + f"\n\n选中的文本：\n```\n{self.context_text}\n```"
-        )
+        """Build messages with system prompt and optional context."""
+        if self.context_text:
+            system_content = (
+                self.SYSTEM_PROMPT_WITH_CONTEXT
+                + f"\n\n选中的文本：\n```\n{self.context_text}\n```"
+            )
+        else:
+            system_content = self.SYSTEM_PROMPT_NO_CONTEXT
 
         full_messages = [{"role": "system", "content": system_content}]
         full_messages.extend(self.messages)
