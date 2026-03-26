@@ -2479,14 +2479,34 @@ class SettingsWindow(QMainWindow):
         """
         import sys
 
-        project_dir = Path(__file__).parent.parent.parent.resolve()
+        # Find the Aria root directory by searching upward.
+        # Portable: search for Aria.vbs (only exists at true root, not in source copy)
+        # Dev: search for launcher.py at a level that also has ui/ (not inside _internal)
+        start = Path(__file__).resolve()
+        root = None
+        # Pass 1: look for Aria.vbs (portable-only marker, unambiguous)
+        for parent in start.parents:
+            if (parent / "Aria.vbs").exists():
+                root = parent
+                break
+        # Pass 2: dev mode — look for launcher.py + app.py at same level
+        if root is None:
+            for parent in start.parents:
+                if (
+                    (parent / "launcher.py").exists()
+                    and (parent / "app.py").exists()
+                    and (parent / "ui").is_dir()
+                ):
+                    root = parent
+                    break
+        if root is None:
+            root = Path(__file__).parent.parent.parent.resolve()
 
-        # Portable build: has AriaRuntime.exe in _internal/
-        aria_runtime = project_dir / "_internal" / "AriaRuntime.exe"
-        aria_vbs = project_dir / "Aria.vbs"
+        # Portable build: has Aria.vbs + _internal/AriaRuntime.exe
+        aria_runtime = root / "_internal" / "AriaRuntime.exe"
+        aria_vbs = root / "Aria.vbs"
 
         if aria_runtime.exists() and aria_vbs.exists():
-            # Portable mode: use wscript.exe (absolute) + Aria.vbs
             import os
 
             system_root = os.environ.get("SystemRoot", r"C:\Windows")
@@ -2494,24 +2514,23 @@ class SettingsWindow(QMainWindow):
             return {
                 "target_path": str(wscript),
                 "arguments": f'"{aria_vbs}"',
-                "working_dir": str(project_dir),
+                "working_dir": str(root),
                 "mode": "portable",
             }
 
         # Dev mode: use pythonw.exe (windowless Python)
-        pythonw = project_dir / ".venv" / "Scripts" / "pythonw.exe"
+        pythonw = root / ".venv" / "Scripts" / "pythonw.exe"
         if not pythonw.exists():
-            # Fallback: sibling of current Python executable
             exe_pythonw = Path(sys.executable).with_name("pythonw.exe")
             if exe_pythonw.exists():
                 pythonw = exe_pythonw
 
-        launcher_py = project_dir / "launcher.py"
+        launcher_py = root / "launcher.py"
 
         return {
             "target_path": str(pythonw) if pythonw.exists() else "",
             "arguments": f'"{launcher_py}"',
-            "working_dir": str(project_dir),
+            "working_dir": str(root),
             "mode": "dev",
         }
 
