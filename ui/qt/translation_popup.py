@@ -412,11 +412,14 @@ class TranslationPopup(QWidget):
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             _tlog(f"_apply_win32_styles: style={style}")
 
+            # Note: WS_EX_NOACTIVATE intentionally NOT set — it prevents
+            # button clicks from working. WA_ShowWithoutActivating + Qt.NoFocus
+            # buttons handle the "don't steal focus on show" requirement.
             _tlog("_apply_win32_styles: calling SetWindowLongW")
             user32.SetWindowLongW(
                 hwnd,
                 GWL_EXSTYLE,
-                style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                style | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             )
             _tlog("_apply_win32_styles: SetWindowLongW done")
 
