@@ -45,11 +45,11 @@
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `noise_filter` | bool | `true` | 噪声过滤：丢弃"嗯"、"啊"、"呃"等环境噪声产生的无意义文字 |
-| `screen_ocr` | bool | `true` | 屏幕识别辅助：说话时 OCR 识别屏幕文字作为 ASR 上下文 |
+| `screen_ocr` | bool | `true` | 屏幕感知：自动读取窗口标题和页面内容，提升专业术语识别准确率 |
 | `threshold` | float | `0.2` | 语音检测灵敏度 (0.1-0.9)，值越低越灵敏 |
 | `energy_threshold` | float | `0.003` | 能量门控阈值 (0.0005-0.02)，低于此值的音频直接丢弃 |
 | `min_silence_ms` | int | `1200` | 静默判定阈值（毫秒），说完一句话后等多久认为说完了 |
-| `screen_ocr_polish` | bool | `false` | OCR 注入润色层：将屏幕文字也注入 AI 润色 prompt（实验性，默认关闭）|
+| `screen_ocr_polish` | bool | `false` | 屏幕感知增强：将屏幕内容同时传给 AI 润色层（实验性，默认关闭）|
 
 ## 热词系统
 

@@ -1598,30 +1598,22 @@ class SettingsWindow(QMainWindow):
         )
         vad_layout.addRow(self.chk_noise_filter)
 
-        self.chk_screen_ocr = QCheckBox("屏幕识别 → ASR")
+        self.chk_screen_ocr = QCheckBox("屏幕感知")
         self.chk_screen_ocr.setChecked(True)
         self.chk_screen_ocr.setToolTip(
-            "说话时自动识别屏幕文字，注入 ASR 识别上下文\n"
-            "帮助更准确地识别屏幕上出现的专业术语和名词\n"
-            "例如：屏幕显示「骨骼参数」时，语音就不会被识别为「谷歌参数」"
+            "自动感知当前窗口内容，提升专业术语识别准确率\n"
+            "• 读取窗口标题和页面关键词作为识别上下文\n"
+            "• 例如：浏览「丰川祥子」页面时，语音就不会被识别为「风川祥子」"
         )
         vad_layout.addRow(self.chk_screen_ocr)
 
-        self.chk_screen_ocr_polish = QCheckBox("屏幕识别 → 润色 (实验性)")
+        self.chk_screen_ocr_polish = QCheckBox("屏幕感知增强 (实验性)")
         self.chk_screen_ocr_polish.setChecked(False)
         self.chk_screen_ocr_polish.setToolTip(
-            "将屏幕文字同时传给润色层 LLM\n"
-            "可帮助纠正英文术语的中文音译（如「布兰德」→「Blender」）\n"
-            "但可能偶尔导致 LLM 输出屏幕内容，默认关闭"
+            "将屏幕内容同时传给 AI 润色层\n"
+            "可进一步纠正专业术语，但偶尔可能输出多余内容\n"
+            "已有安全保护，异常时自动回退原文"
         )
-        polish_warn = QLabel(
-            "注意：此功能为实验性，可能导致润色输出异常内容。"
-            "已有安全保护，异常时会自动回退原文。"
-        )
-        polish_warn.setStyleSheet("color: #CC8800; font-size: 11px; margin-left: 24px;")
-        polish_warn.setWordWrap(True)
-        vad_layout.addRow(self.chk_screen_ocr_polish)
-        vad_layout.addRow(polish_warn)
 
         self.vad_threshold = QDoubleSpinBox()
         self.vad_threshold.setRange(0.1, 0.9)
