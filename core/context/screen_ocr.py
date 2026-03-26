@@ -1,22 +1,26 @@
 """
-Screen OCR Module
-=================
-Captures and OCR-reads text from the active window.
+Screen OCR Module v2.0
+======================
 Provides screen text as ASR context for improved recognition accuracy.
 
-Backend priority (per window type):
-1. UI Automation — browsers/GUI apps: 100% accuracy, ~50-500ms
-2. RapidOCR (PaddleOCR ONNX) — terminals/other: high accuracy, ~2-3s
-3. WinRT OCR (winocr) — fallback: fast but lower accuracy
+Three-layer architecture:
+  Layer 0: Window title (0ms, instant, all apps)
+  Layer 1: UI Automation (200ms, non-browser native apps)
+  Layer 2: RapidOCR screenshot (~2-3s, background, cached)
 
-Triggered on VAD speech_start, runs async in background thread.
+Window change detection via SetWinEventHook (event-driven, not polling).
+Cache invalidated by hwnd + title hash change.
 """
 
+import ctypes
 import datetime
+import hashlib
 import os
+import queue
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,32 +39,87 @@ def _ocr_log(msg: str) -> None:
 
 
 # ============================================================================
-# Backend 1: UI Automation (browsers/GUI apps — perfect accuracy)
+# Layer 0: Window Title (instant, all apps)
+# ============================================================================
+
+# Browser suffixes to strip from window titles
+_BROWSER_SUFFIXES = [
+    " - Google Chrome",
+    " - Microsoft Edge",
+    " - Mozilla Firefox",
+    " - Opera",
+    " - Brave",
+    " — Mozilla Firefox",
+    " - Vivaldi",
+]
+
+
+def _extract_title_keywords(hwnd) -> str:
+    """Extract keywords from window title. Returns cleaned text.
+
+    Browser titles = active tab title = page topic.
+    Examples:
+        "丰川祥子-哔哩哔哩_bilibili - Google Chrome" → "丰川祥子 哔哩哔哩 bilibili"
+        "app.py - voicetype - Visual Studio Code" → "app.py voicetype Visual Studio Code"
+    """
+    try:
+        buf = ctypes.create_unicode_buffer(512)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, 512)
+        title = buf.value.strip()
+        if not title or len(title) < 2:
+            return ""
+
+        # Strip browser name suffix
+        for suffix in _BROWSER_SUFFIXES:
+            if title.endswith(suffix):
+                title = title[: -len(suffix)]
+                break
+
+        # Normalize separators to spaces
+        title = re.sub(r"[-_|·—:：/\\]", " ", title)
+        # Remove noise (very short segments, pure numbers, common UI words)
+        noise = {
+            "新标签页",
+            "首页",
+            "设置",
+            "New Tab",
+            "Home",
+            "Settings",
+            "最大化",
+            "最小化",
+        }
+        words = [
+            w.strip()
+            for w in title.split()
+            if len(w.strip()) >= 2 and w.strip() not in noise
+        ]
+
+        return " ".join(words)
+    except Exception:
+        return ""
+
+
+# ============================================================================
+# Layer 1: UI Automation (non-browser native apps)
 # ============================================================================
 
 _UIA_BROWSER_CLASSES = {
-    "chrome_widgetwin_1",  # Chrome / Edge
-    "mozillawindowclass",  # Firefox
-    "operawindowclass",  # Opera
+    "chrome_widgetwin_1",
+    "mozillawindowclass",
+    "operawindowclass",
 }
 
 
 def _try_ui_automation(hwnd) -> Optional[str]:
-    """Try extracting text via Windows UI Automation (accessibility tree).
-
-    Works best for browsers where DOM text is exposed through accessibility.
-    Returns None if UI Automation is not suitable for this window.
-    """
+    """Extract text via UIA accessibility tree. For non-browser apps."""
     try:
-        import ctypes
-        from ctypes import wintypes
+        cls_buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(hwnd, cls_buf, 256)
+        class_name = cls_buf.value.lower()
 
-        # Check if this is a browser window
-        class_buf = ctypes.create_unicode_buffer(256)
-        ctypes.windll.user32.GetClassNameW(hwnd, class_buf, 256)
-        class_name = class_buf.value.lower()
-
-        is_browser = class_name in _UIA_BROWSER_CLASSES
+        # Skip browsers — UIA only gets UI chrome, not page content
+        if class_name in _UIA_BROWSER_CLASSES:
+            return None
 
         import uiautomation as auto
 
@@ -72,7 +131,7 @@ def _try_ui_automation(hwnd) -> Optional[str]:
         count = [0]
 
         def walk(element, depth=0):
-            if depth > 12 or count[0] > 800:
+            if depth > 8 or count[0] > 500:
                 return
             count[0] += 1
             try:
@@ -84,179 +143,124 @@ def _try_ui_automation(hwnd) -> Optional[str]:
             try:
                 children = element.GetChildren()
                 if children:
-                    for child in children[:80]:
+                    for child in children[:50]:
                         walk(child, depth + 1)
             except Exception:
                 pass
 
-        if is_browser:
-            # Browser: try Document control first, fall back to full tree
-            doc = None
-            try:
-                doc = ctrl.DocumentControl(searchDepth=8)
-            except Exception:
-                pass
-
-            if doc:
-                _ocr_log(f"UIA: Trying Browser Document...")
-                walk(doc)
-
-            # If Document gave too few results, fall back to full tree walk
-            if len(texts) < 5:
-                _ocr_log(
-                    f"UIA: Document had {len(texts)} texts, falling back to full tree"
-                )
-                texts.clear()
-                count[0] = 0
-                walk(ctrl)
-        else:
-            # Non-browser apps (WeChat, QQ, Notepad, Word, etc.)
-            _ocr_log(f"UIA: Non-browser app, class='{class_name}'")
-            walk(ctrl)
+        walk(ctrl)
 
         if len(texts) < 3:
-            return None  # Too few results, UIA not working well
+            return None
 
         result = " ".join(texts)
         _ocr_log(f"UIA: {len(texts)} elements, {len(result)} chars")
         return result
 
     except ImportError:
-        return None  # uiautomation not installed
+        return None
     except Exception as e:
         _ocr_log(f"UIA error: {e}")
         return None
 
 
 # ============================================================================
-# Backend 2: RapidOCR (PaddleOCR ONNX — high accuracy)
+# Layer 2: Screenshot OCR (background, cached)
 # ============================================================================
 
 _rapidocr_engine = None
-_rapidocr_available: Optional[bool] = None
+_winocr_available = None
 
 
 def _init_rapidocr() -> bool:
-    global _rapidocr_engine, _rapidocr_available
-    if _rapidocr_available is not None:
-        return _rapidocr_available
+    global _rapidocr_engine
+    if _rapidocr_engine is not None:
+        return True
     try:
-        ort_capi = os.path.join(
+        ort_dir = os.path.join(
             sys.prefix, "Lib", "site-packages", "onnxruntime", "capi"
         )
-        if os.path.isdir(ort_capi):
-            os.add_dll_directory(ort_capi)
-
+        if os.path.isdir(ort_dir):
+            os.add_dll_directory(ort_dir)
         from rapidocr_onnxruntime import RapidOCR
 
         _rapidocr_engine = RapidOCR()
-        _rapidocr_available = True
-        _ocr_log("RapidOCR initialized")
         return True
     except Exception as e:
         _ocr_log(f"RapidOCR init failed: {e}")
-        _rapidocr_available = False
         return False
 
 
-def _run_rapidocr(img) -> str:
-    import numpy as np
-
-    # Full resolution — don't scale down, small text matters
-    img_np = np.array(img)
-    result, _ = _rapidocr_engine(img_np, use_cls=False)
-
-    if not result:
-        return ""
-
-    texts = [r[1] for r in result]
-    return " ".join(texts)
-
-
-# ============================================================================
-# Backend 3: WinRT OCR (fallback)
-# ============================================================================
-
-_winocr = None
-_winocr_available: Optional[bool] = None
-
-
 def _init_winocr() -> bool:
-    global _winocr, _winocr_available
+    global _winocr_available
     if _winocr_available is not None:
         return _winocr_available
     try:
         import winocr
 
-        _winocr = winocr
         _winocr_available = True
-        _ocr_log("WinRT OCR initialized (fallback)")
         return True
-    except ImportError as e:
-        _ocr_log(f"WinRT OCR init failed: {e}")
+    except ImportError:
         _winocr_available = False
         return False
 
 
-def _run_winocr(img) -> str:
-    import asyncio
-
+def _run_rapidocr(img) -> Optional[str]:
     try:
-        result = asyncio.run(
-            asyncio.wait_for(
-                _winocr.recognize_pil(img, lang="zh-Hans"),
-                timeout=5.0,
-            )
-        )
-        return result.text if hasattr(result, "text") else ""
+        import numpy as np
+
+        img_np = np.array(img)
+        result, _ = _rapidocr_engine(img_np)
+        if not result:
+            return None
+        return " ".join([r[1] for r in result])
     except Exception as e:
-        _ocr_log(f"WinRT OCR error: {e}")
-        return ""
+        _ocr_log(f"RapidOCR error: {e}")
+        return None
 
 
-# ============================================================================
-# ScreenOCR class
-# ============================================================================
-
-_ImageGrab = None
-_ctypes_mod = None
-
-
-def _ensure_capture_imports() -> bool:
-    global _ImageGrab, _ctypes_mod
-    if _ImageGrab is not None:
-        return True
+def _run_winocr(img) -> Optional[str]:
     try:
-        from PIL import ImageGrab
-        import ctypes
+        import winocr
+        import asyncio
 
-        _ImageGrab = ImageGrab
-        _ctypes_mod = ctypes
-        return True
-    except ImportError as e:
-        _ocr_log(f"Capture imports failed: {e}")
-        return False
+        loop = asyncio.new_event_loop()
+        result = loop.run_until_complete(winocr.recognize_pil(img, "zh-Hans-CN"))
+        loop.close()
+        return result.text if result and result.text else None
+    except Exception as e:
+        _ocr_log(f"WinOCR error: {e}")
+        return None
+
+
+# ============================================================================
+# Main ScreenOCR class
+# ============================================================================
 
 
 class ScreenOCR:
     """
-    Captures text from the active window.
+    Three-layer screen text extraction for ASR context biasing.
 
-    Auto-selects the best backend per window type:
-    - Browsers → UI Automation (100% accurate, reads DOM text)
-    - Terminals/Other → RapidOCR or WinRT OCR
+    Layer 0: Window title (instant) → always available
+    Layer 1: UIA (fast, non-browser apps) → supplementary
+    Layer 2: RapidOCR (slow, background) → enriches subsequent sentences
 
-    Usage:
-        ocr = ScreenOCR()
-        ocr.trigger()          # Start in background (non-blocking)
-        text = ocr.get_text()  # Get latest result
+    Window changes detected via get_title_context() polling or external event.
     """
 
     def __init__(self, max_text_len: int = 1000):
         self._max_text_len = max_text_len
-        self._latest_text: str = ""
-        self._latest_hwnd: int = 0  # Window handle of captured content
-        self._latest_time: float = 0.0  # time.time() of capture
+        # Layer 0: title context (instant)
+        self._title_text: str = ""
+        self._title_hwnd: int = 0
+        self._title_hash: str = ""
+        # Layer 2: OCR context (slow, background)
+        self._ocr_text: str = ""
+        self._ocr_cache_key: str = ""  # hwnd + title_hash
+        self._ocr_time: float = 0.0
+        self._ocr_ttl: float = 10.0  # seconds
+        # Shared
         self._lock = threading.Lock()
         self._running = False
         self._available: Optional[bool] = None
@@ -265,7 +269,11 @@ class ScreenOCR:
     @property
     def available(self) -> bool:
         if self._available is None:
-            if not _ensure_capture_imports():
+            try:
+                from PIL import ImageGrab
+
+                _ = ImageGrab
+            except ImportError:
                 self._available = False
                 return False
 
@@ -276,61 +284,111 @@ class ScreenOCR:
             else:
                 self._ocr_backend = "none"
 
-            # Available if we have any OCR backend OR uiautomation package
-            try:
-                import uiautomation
-
-                _has_uia = True
-            except ImportError:
-                _has_uia = False
-            self._available = self._ocr_backend != "none" or _has_uia
+            self._available = True  # At minimum, Layer 0 (title) always works
             _ocr_log(f"OCR backend: {self._ocr_backend}")
         return self._available
 
+    def update_title(self, hwnd: int = 0) -> str:
+        """Layer 0: Update and return window title keywords (instant, 0ms).
+
+        Call this on every speech_start or window change event.
+        Returns extracted keywords from the window title.
+        """
+        if not hwnd:
+            try:
+                hwnd = ctypes.windll.user32.GetForegroundWindow()
+            except Exception:
+                return ""
+
+        title_text = _extract_title_keywords(hwnd)
+        title_hash = hashlib.md5(title_text.encode()).hexdigest()[:8]
+
+        with self._lock:
+            title_changed = title_hash != self._title_hash
+            self._title_text = title_text
+            self._title_hwnd = hwnd
+            self._title_hash = title_hash
+
+        if title_changed and title_text:
+            _ocr_log(f"Title: '{title_text[:60]}' (hash={title_hash})")
+
+        return title_text
+
     def trigger(self) -> None:
+        """Layer 1+2: Trigger UIA + OCR in background (non-blocking)."""
         if not self.available:
             return
         if self._running:
             return
-        thread = threading.Thread(target=self._run_ocr, daemon=True)
+
+        # Also update title immediately (Layer 0)
+        self.update_title()
+
+        thread = threading.Thread(target=self._run_background, daemon=True)
         thread.start()
 
     def get_text(self, current_hwnd: int = 0) -> str:
-        """Get latest OCR result. Returns empty if stale (wrong window or too old).
-
-        Args:
-            current_hwnd: Current foreground window handle. If provided and
-                          differs from captured window, returns empty to prevent
-                          stale context from biasing ASR.
-        """
-        import time
-
+        """Get combined context (title + OCR). Returns empty if stale."""
         with self._lock:
-            # Reject stale results: >10s old or different window
-            age = time.time() - self._latest_time if self._latest_time else 999
-            if age > 10:
-                return ""
-            if current_hwnd and self._latest_hwnd and current_hwnd != self._latest_hwnd:
-                return ""
-            return self._latest_text
+            parts = []
 
-    def _run_ocr(self) -> None:
-        import time as _time
+            # Layer 0: title is always fresh (updated on every call)
+            if self._title_text:
+                parts.append(self._title_text)
 
+            # Layer 2: OCR result (check staleness)
+            if self._ocr_text:
+                age = time.time() - self._ocr_time if self._ocr_time else 999
+                if age <= self._ocr_ttl:
+                    # Check cache validity: same hwnd+title
+                    current_key = f"{self._title_hwnd}_{self._title_hash}"
+                    if self._ocr_cache_key == current_key:
+                        parts.append(self._ocr_text)
+
+            return " ".join(parts) if parts else ""
+
+    def _run_background(self) -> None:
+        """Run Layer 1 (UIA) + Layer 2 (OCR) in background."""
         self._running = True
         try:
             hwnd = self._get_foreground_hwnd()
             if not hwnd:
                 return
 
-            # Strategy 1: Try UI Automation for browsers (fast + accurate)
+            # Check if OCR cache is still valid
+            title_text = _extract_title_keywords(hwnd)
+            title_hash = hashlib.md5(title_text.encode()).hexdigest()[:8]
+            cache_key = f"{hwnd}_{title_hash}"
+
+            with self._lock:
+                if self._ocr_cache_key == cache_key:
+                    age = time.time() - self._ocr_time
+                    if age < self._ocr_ttl:
+                        _ocr_log(f"Cache hit (age={age:.1f}s)")
+                        return  # Cache still fresh
+
+            # Layer 1: Try UIA for non-browser apps
             text = _try_ui_automation(hwnd)
-            if text:
-                backend_used = "uia"
-            else:
-                # Strategy 2: Screenshot + OCR for non-browser apps
-                img = self._capture_window(hwnd)
-                if img is None:
+            backend_used = "uia"
+
+            if not text:
+                # Layer 2: Screenshot OCR
+                from PIL import ImageGrab
+
+                try:
+                    from ctypes import wintypes
+
+                    rect = wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    w = rect.right - rect.left
+                    h = rect.bottom - rect.top
+                    if w < 50 or h < 50:
+                        return
+                    img = ImageGrab.grab(
+                        bbox=(rect.left, rect.top, rect.right, rect.bottom)
+                    )
+                except Exception as e:
+                    _ocr_log(f"Capture failed: {e}")
                     return
 
                 _ocr_log(
@@ -347,41 +405,25 @@ class ScreenOCR:
                     return
 
             if text:
-                text = self._clean_ocr_text(text, backend_used)
+                text = self._clean_text(text, backend_used)
                 with self._lock:
-                    self._latest_text = text
-                    self._latest_hwnd = hwnd
-                    self._latest_time = _time.time()
+                    self._ocr_text = text
+                    self._ocr_cache_key = cache_key
+                    self._ocr_time = time.time()
                 _ocr_log(f"Result ({backend_used}): {len(text)} chars")
+
         except Exception as e:
-            _ocr_log(f"OCR error: {e}")
+            _ocr_log(f"Background OCR error: {e}")
         finally:
             self._running = False
 
     def _get_foreground_hwnd(self):
         try:
-            return _ctypes_mod.windll.user32.GetForegroundWindow()
+            return ctypes.windll.user32.GetForegroundWindow()
         except Exception:
             return None
 
-    def _capture_window(self, hwnd):
-        try:
-            from ctypes import wintypes
-
-            rect = wintypes.RECT()
-            _ctypes_mod.windll.user32.GetWindowRect(hwnd, _ctypes_mod.byref(rect))
-
-            w = rect.right - rect.left
-            h = rect.bottom - rect.top
-            if w < 50 or h < 50:
-                return None
-
-            return _ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
-        except Exception as e:
-            _ocr_log(f"Capture failed: {e}")
-            return None
-
-    def _clean_ocr_text(self, text: str, backend: str) -> str:
+    def _clean_text(self, text: str, backend: str) -> str:
         if backend == "winocr":
             cjk = r"[\u4e00-\u9fff\u3400-\u4dbf]"
             text = re.sub(f"({cjk})\\s+({cjk})", r"\1\2", text)

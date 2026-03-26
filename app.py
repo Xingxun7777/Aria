@@ -1279,24 +1279,19 @@ class AriaApp:
                             _debounce_hwnd = current
                             _debounce_time = _t.time()
                         elif _t.time() - _debounce_time >= 0.5:
-                            # Stable for 500ms, trigger OCR
-                            if self._screen_ocr is None:
-                                try:
-                                    from .core.context.screen_ocr import ScreenOCR
-
-                                    self._screen_ocr = ScreenOCR(max_text_len=1000)
-                                except Exception:
-                                    self._screen_ocr_enabled = False
-                                    return
+                            # Stable for 500ms — update title + trigger OCR
+                            self._ensure_screen_ocr()
                             if self._screen_ocr:
+                                # Layer 0: instant title update
+                                self._screen_ocr.update_title(current)
+                                # Layer 1+2: background OCR (skips if busy)
                                 if not self._screen_ocr._running:
                                     self._screen_ocr.trigger()
-                                    self._ocr_last_hwnd = current
                                     _pipeline_log(
                                         "OCR",
                                         f"Window changed, OCR triggered (hwnd={current})",
                                     )
-                                # else: OCR busy, don't mark as handled — retry next cycle
+                                self._ocr_last_hwnd = current
                 except Exception as _e:
                     _pipeline_log("OCR", f"Watcher error: {_e}")
                 self._stop_event.wait(0.5)
@@ -1312,23 +1307,29 @@ class AriaApp:
             None  # Thread checks self.state, will exit on its own
         )
 
+    def _ensure_screen_ocr(self) -> None:
+        """Lazy-init ScreenOCR if not yet created."""
+        if self._screen_ocr is None:
+            try:
+                from .core.context.screen_ocr import ScreenOCR
+
+                self._screen_ocr = ScreenOCR(max_text_len=1000)
+            except Exception:
+                self._screen_ocr_enabled = False
+
     def _on_speech_start(self) -> None:
         """Called when speech is detected."""
         logger.debug("Speech detected")
         print("\n[MIC] Speaking...")
         self._emit_voice_activity(True)
 
-        # Trigger screen OCR in background (result ready by the time ASR runs)
+        # Layer 0: Update title keywords instantly (0ms)
+        # Layer 1+2: Trigger UIA/OCR in background
         if self._screen_ocr_enabled:
-            if self._screen_ocr is None:
-                try:
-                    from .core.context.screen_ocr import ScreenOCR
-
-                    self._screen_ocr = ScreenOCR(max_text_len=1000)
-                except Exception:
-                    self._screen_ocr_enabled = False
+            self._ensure_screen_ocr()
             if self._screen_ocr:
-                self._screen_ocr.trigger()
+                self._screen_ocr.update_title()  # instant
+                self._screen_ocr.trigger()  # background
 
         # Start streaming ASR (interim results while speaking)
         self._last_interim_text = ""
@@ -1623,11 +1624,9 @@ class AriaApp:
                 asr_start = time_module.time()
                 # Update screen keywords (injected at hotword level for strong bias)
                 if self._screen_ocr and hasattr(self.asr_engine, "set_screen_keywords"):
-                    # Pass current foreground hwnd to detect stale context
-                    import ctypes as _ctypes_asr
-
-                    current_hwnd = _ctypes_asr.windll.user32.GetForegroundWindow()
-                    ocr_text = self._screen_ocr.get_text(current_hwnd=current_hwnd)
+                    # Layer 0: refresh title (0ms), then get combined context
+                    self._screen_ocr.update_title()
+                    ocr_text = self._screen_ocr.get_text()
                     _pipeline_log(
                         "ASR",
                         f"OCR get_text: {len(ocr_text)} chars"
