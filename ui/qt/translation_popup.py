@@ -96,13 +96,9 @@ class TranslationPopup(QWidget):
         self.SOURCE_COLOR = styles.qcolor(self._theme.text_secondary)
         self.LOADING_COLOR = QColor(245, 158, 11)  # Amber #F59E0B
 
-        # Window flags for non-activating popup
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.Tool
-            | Qt.WindowStaysOnTopHint
-            | Qt.WindowDoesNotAcceptFocus
-        )
+        # Window flags: show on top without stealing focus on appear,
+        # but allow focus when user clicks (for copy/insert buttons to work)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
 
