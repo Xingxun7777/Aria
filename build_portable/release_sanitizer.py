@@ -179,8 +179,8 @@ def _sanitize_wakeword_config(config_dir: Path, logger: Logger) -> None:
         },
     )
 
-    config["enabled"] = True
-    config["wakeword"] = "小助手"
+    config["enabled"] = False
+    config["wakeword"] = ""
     config["available_wakewords"] = GENERIC_WAKEWORDS.copy()
     config["cooldown_ms"] = int(config.get("cooldown_ms", 500) or 500)
     config.setdefault("commands", {})
@@ -201,8 +201,8 @@ def _sanitize_commands_config(config_dir: Path, logger: Logger) -> None:
         },
     )
 
-    config["enabled"] = True
-    config["prefix"] = "小助手"
+    config["enabled"] = False
+    config["prefix"] = ""
     config["cooldown_ms"] = int(config.get("cooldown_ms", 500) or 500)
     config.setdefault("commands", {})
 
