@@ -496,12 +496,34 @@ class FunASREngine(ASREngine):
         )
 
     def unload(self) -> None:
-        """Unload the model to free memory."""
+        """Unload the model to free memory (with proper VRAM cleanup)."""
         with self._lock:
             if self._model is not None:
-                del self._model
-                self._model = None
-                logger.info("FunASR model unloaded")
+                import gc
+
+                try:
+                    import torch
+
+                    try:
+                        self._model.to("cpu")
+                    except Exception:
+                        pass
+
+                    del self._model
+                    self._model = None
+
+                    for _ in range(3):
+                        gc.collect()
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+
+                    logger.info("FunASR model unloaded (VRAM freed)")
+                except Exception as e:
+                    self._model = None
+                    gc.collect()
+                    logger.warning(f"FunASR unload partial: {e}")
 
     @staticmethod
     def is_available() -> bool:

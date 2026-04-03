@@ -95,6 +95,7 @@ class WakewordExecutor:
         self._action_map: Dict[str, Callable[[Any], bool]] = {
             "set_auto_send": self._set_auto_send,
             "set_sleeping": self._set_sleeping,
+            "set_deep_sleep": self._set_deep_sleep,
             "selection_process": self._selection_process,
             "translate_popup": self._translate_popup,
             "summarize_popup": self._summarize_popup,
@@ -188,6 +189,17 @@ class WakewordExecutor:
             if self.bridge and hasattr(self.bridge, "emit_setting_changed"):
                 self.bridge.emit_setting_changed("auto_send", enabled)
 
+            return True
+        return False
+
+    def _set_deep_sleep(self, deep: bool) -> bool:
+        """Enter deep sleep mode (full engine unload)."""
+        _debug(
+            f"_set_deep_sleep({deep}) called, has set_deep_sleep={hasattr(self.app, 'set_deep_sleep')}"
+        )
+        if hasattr(self.app, "set_deep_sleep"):
+            self.app.set_deep_sleep(deep)
+            _debug(f"_set_deep_sleep({deep}) completed")
             return True
         return False
 

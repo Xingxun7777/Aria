@@ -892,13 +892,116 @@ class Qwen3ASREngine(ASREngine):
 
     @override
     def unload(self) -> None:
-        """Unload the model to free memory."""
+        """Unload the model to free memory (with proper VRAM cleanup)."""
         with self._lock:
             if self._model is not None:
-                del self._model
-                self._model = None
+                import gc
 
-                logger.info("Qwen3 ASR model unloaded")
+                try:
+                    import torch
+                    from pathlib import Path
+                    import datetime
+
+                    log_path = (
+                        Path(__file__).parent.parent.parent
+                        / "DebugLog"
+                        / "pipeline_debug.log"
+                    )
+
+                    def _ulog(msg):
+                        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        line = f"[{ts}] [UNLOAD] {msg}"
+                        print(line)
+                        try:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(line + "\n")
+                        except Exception:
+                            pass
+
+                    def _vram_mb():
+                        if torch.cuda.is_available():
+                            return torch.cuda.memory_allocated() / 1024**2
+                        return 0
+
+                    v0 = _vram_mb()
+                    _ulog(f"Start: {v0:.0f} MB allocated (PyTorch)")
+
+                    # Qwen3ASRModel is a wrapper, not nn.Module.
+                    # Internal: .model = nn.Module (GPU), .processor = tokenizer
+                    inner_model = getattr(self._model, "model", None)
+                    _ulog(
+                        f"inner_model={type(inner_model).__name__}, "
+                        f"is_nn_Module={isinstance(inner_model, torch.nn.Module) if inner_model else False}"
+                    )
+
+                    # Step 1: Move inner nn.Module to CPU
+                    if inner_model is not None and hasattr(inner_model, "to"):
+                        try:
+                            inner_model.cpu()
+                            v1 = _vram_mb()
+                            _ulog(f"After .cpu(): {v1:.0f} MB (freed {v0 - v1:.0f} MB)")
+                        except Exception as e:
+                            _ulog(f".cpu() FAILED: {e}")
+                        # Break wrapper → inner references
+                        try:
+                            self._model.model = None
+                            self._model.processor = None
+                            self._model.forced_aligner = None
+                        except Exception:
+                            pass
+                        del inner_model
+                    else:
+                        attrs = [a for a in dir(self._model) if not a.startswith("_")]
+                        _ulog(f"WARNING: inner model not found! Attrs: {attrs}")
+
+                    # Step 2: Delete wrapper
+                    del self._model
+                    self._model = None
+
+                    # Step 3: GC
+                    for i in range(3):
+                        collected = gc.collect()
+                        if i == 0:
+                            _ulog(f"gc pass 1: collected {collected} objects")
+
+                    v2 = _vram_mb()
+                    _ulog(f"After gc+del: {v2:.0f} MB")
+
+                    # Step 4: Aggressively release CUDA memory
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                        torch.cuda.empty_cache()
+
+                        # Free hidden cuBLAS/cuDNN workspace memory
+                        # (empty_cache doesn't touch these, can be 100-500MB)
+                        try:
+                            torch._C._cuda_clearCublasWorkspaces()
+                        except AttributeError:
+                            pass
+
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+
+                    # Log final state
+                    try:
+                        free_mem, total = torch.cuda.mem_get_info(0)
+                        used_nvidia = (total - free_mem) / 1024**2
+                        alloc = torch.cuda.memory_allocated() / 1024**2
+                        reserved = torch.cuda.memory_reserved() / 1024**2
+                        _ulog(
+                            f"DONE: PyTorch alloc={alloc:.0f} MB, "
+                            f"reserved={reserved:.0f} MB, "
+                            f"nvidia-smi={used_nvidia:.0f} MB, "
+                            f"freed={v0 - alloc:.0f} MB tensors"
+                        )
+                    except Exception:
+                        pass
+                except Exception as e:
+                    # Fallback: basic cleanup
+                    self._model = None
+                    gc.collect()
+                    logger.warning(f"Qwen3 unload partial: {e}")
 
     @staticmethod
     def is_available() -> bool:

@@ -163,7 +163,7 @@ class PopupMenu(QWidget):
     settingsRequested = Signal()
     historyRequested = Signal()
     lockToggled = Signal(bool)
-    sleepToggled = Signal(bool)
+    deepSleepToggled = Signal(bool)
     streamingToggled = Signal(bool)
     translateModeChanged = Signal(str)  # "popup" or "clipboard"
     closed = Signal()
@@ -174,7 +174,8 @@ class PopupMenu(QWidget):
         self._enabled = True
         self._current_mode = "quality"
         self._is_locked = False
-        self._is_sleeping = False
+        self._is_deep_sleeping = False
+        self._is_loading = False
         self._engine_info = "FunASR"
         self._translate_mode = "popup"
         self._init_window()
@@ -288,8 +289,15 @@ class PopupMenu(QWidget):
         self._add_toggle_row(cl, "实时字幕", self._on_streaming_toggled, "streaming")
         cl.addSpacing(4)
         self._add_toggle_row(cl, "锁定位置", self._on_lock_toggled, "lock")
-        cl.addSpacing(4)
-        self._add_toggle_row(cl, "休眠模式", self._on_sleep_toggled, "sleep")
+        cl.addSpacing(8)
+
+        # ── Deep Sleep Button ──
+        self.deep_sleep_btn = QPushButton("深度休眠")
+        self.deep_sleep_btn.setCursor(Qt.PointingHandCursor)
+        self.deep_sleep_btn.setFixedHeight(30)
+        self._update_deep_sleep_btn_style()
+        self.deep_sleep_btn.clicked.connect(self._on_deep_sleep_clicked)
+        cl.addWidget(self.deep_sleep_btn)
 
         layout.addWidget(self.container)
 
@@ -387,9 +395,11 @@ class PopupMenu(QWidget):
         self._is_locked = locked
         self.lockToggled.emit(locked)
 
-    def _on_sleep_toggled(self, sleeping):
-        self._is_sleeping = sleeping
-        self.sleepToggled.emit(sleeping)
+    def _on_deep_sleep_clicked(self):
+        # Don't toggle state here — wait for backend confirmation via setDeepSleeping()
+        # This prevents desync if backend fails to enter/exit deep sleep
+        want_deep = not self._is_deep_sleeping
+        self.deepSleepToggled.emit(want_deep)
 
     def _on_streaming_toggled(self, enabled):
         self.streamingToggled.emit(enabled)
@@ -411,13 +421,69 @@ class PopupMenu(QWidget):
         self._is_locked = locked
         self.lock_toggle.setChecked(locked, emit=False)
 
-    def setSleeping(self, sleeping):
-        self._is_sleeping = sleeping
-        self.sleep_toggle.setChecked(sleeping, emit=False)
+    def setDeepSleeping(self, active):
+        self._is_deep_sleeping = active
+        self._is_loading = False
+        self._update_deep_sleep_btn_style()
 
-    # Alias for compatibility
-    def set_sleeping_state(self, is_sleeping):
-        self.setSleeping(is_sleeping)
+    def setLoading(self, loading):
+        self._is_loading = loading
+        self._update_deep_sleep_btn_style()
+
+    def _update_deep_sleep_btn_style(self):
+        t = self._theme
+        if self._is_loading:
+            self.deep_sleep_btn.setText("加载中...")
+            self.deep_sleep_btn.setEnabled(False)
+            self.deep_sleep_btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: {t.button_bg};
+                    border: 1px solid {t.border};
+                    border-radius: 6px;
+                    color: {t.text_secondary};
+                    font-size: 12px;
+                }}
+                """
+            )
+        elif self._is_deep_sleeping:
+            self.deep_sleep_btn.setText("唤醒引擎")
+            self.deep_sleep_btn.setEnabled(True)
+            self.deep_sleep_btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: rgba(220, 80, 60, 0.15);
+                    border: 1px solid rgba(220, 80, 60, 0.4);
+                    border-radius: 6px;
+                    color: #e05545;
+                    font-size: 12px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(220, 80, 60, 0.25);
+                    border-color: rgba(220, 80, 60, 0.6);
+                }}
+                """
+            )
+        else:
+            self.deep_sleep_btn.setText("深度休眠")
+            self.deep_sleep_btn.setEnabled(True)
+            self.deep_sleep_btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: {t.button_bg};
+                    border: 1px solid {t.border};
+                    border-radius: 6px;
+                    color: {t.text_secondary};
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {t.button_hover_bg};
+                    border-color: {t.border_strong};
+                    color: {t.text_primary};
+                }}
+                """
+            )
 
     def setStreaming(self, enabled):
         self.streaming_toggle.setChecked(enabled, emit=False)

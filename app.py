@@ -189,14 +189,22 @@ class AppState(Enum):
     SELECTION_PROCESSING = auto()  # Processing selected text with LLM
 
 
+class SleepMode(Enum):
+    """Sleep mode tiers."""
+
+    AWAKE = auto()  # Normal operation
+    LIGHT = auto()  # Voice-triggered: model loaded, audio active, input ignored
+    DEEP = auto()  # Manual: model unloaded, audio stopped, GPU idle
+
+
 @dataclass
 class StreamingConfig:
     """流式识别配置"""
 
     enabled: bool = True  # 是否启用流式显示
-    chunk_interval_ms: int = 1500  # 每1.5秒触发中间识别（降低延迟）
-    min_chunk_samples: int = 16000  # 最少1秒音频才处理 (16000 samples = 1s @ 16kHz)
-    min_speech_ms: int = 1000  # 最少说话1秒才开始流式识别（更快响应）
+    chunk_interval_ms: int = 1000  # 每1秒触发中间识别（平衡响应性和GPU压力）
+    min_chunk_samples: int = 12000  # 最少0.75秒音频才处理 (12000 samples @ 16kHz)
+    min_speech_ms: int = 800  # 最少说话0.8秒才开始流式识别
 
 
 class AriaApp:
@@ -302,8 +310,10 @@ class AriaApp:
         self._screen_ocr_enabled = True
         self._screen_ocr_polish_enabled = False  # OCR → polish layer (off by default)
 
-        # Sleeping mode: ignore all input except wakeword commands
-        self._is_sleeping = False
+        # Sleep mode: AWAKE (normal), LIGHT (voice-triggered), DEEP (model unloaded)
+        self._sleep_mode = SleepMode.AWAKE
+        self._deep_sleep_lock = threading.Lock()  # Prevent concurrent reload
+        self._reload_thread: threading.Thread | None = None
 
         # Disabled mode: hotkey toggles back to enabled (for elevation dialog)
         self._is_disabled = False
@@ -319,6 +329,10 @@ class AriaApp:
         self._last_interim_text: str = ""
         self._interim_generation: int = 0  # Generation token to prevent stale updates
         self._asr_lock = threading.Lock()  # Prevent concurrent ASR calls
+
+        # Audio stream health monitoring
+        self._last_audio_callback_time: float = 0.0
+        self._audio_stale_threshold_s: float = 5.0  # No audio for 5s = stream dead
 
         # Window-change OCR refresh during continuous recording
         self._ocr_watcher_thread: threading.Thread = None
@@ -347,7 +361,7 @@ class AriaApp:
 
     def set_sleeping(self, sleeping: bool, *, force_emit: bool = False) -> None:
         """
-        Set sleeping mode.
+        Set light sleeping mode (voice-triggered).
 
         When sleeping:
         - VAD and ASR continue running (wakeword must still work)
@@ -355,13 +369,18 @@ class AriaApp:
         - UI shows sleeping indicator
 
         Args:
-            sleeping: True to enter sleeping mode, False to wake up
+            sleeping: True to enter light sleep, False to wake up
             force_emit: If True, emit UI signals even if state didn't change
                        (useful for wakeword to re-sync UI if it got out of sync)
         """
         with self._lock:
-            changed = self._is_sleeping != sleeping
-            self._is_sleeping = sleeping
+            # Ignore if in deep sleep (audio is off, wakeword can't work)
+            if self._sleep_mode == SleepMode.DEEP:
+                print("[SLEEPING] Ignored: currently in deep sleep mode")
+                return
+            target = SleepMode.LIGHT if sleeping else SleepMode.AWAKE
+            changed = self._sleep_mode != target
+            self._sleep_mode = target
             bridge = self._bridge  # Save reference to avoid race condition
 
         # Debug logging helper
@@ -416,6 +435,159 @@ class AriaApp:
             )
         except Exception as e:
             _log(f"Warning: Failed to emit stateChanged: {e}")
+
+    def set_deep_sleep(self, deep: bool) -> None:
+        """
+        Enter or exit deep sleep (full engine unload to free GPU VRAM).
+
+        Deep sleep:
+        - ASR model is unloaded from GPU
+        - Audio capture is blocked (hotkey triggers auto-wake)
+        - Only manual button or hotkey can wake up
+
+        Args:
+            deep: True to enter deep sleep, False to wake up
+        """
+        if deep:
+            self._enter_deep_sleep()
+        else:
+            self._exit_deep_sleep()
+
+    def _enter_deep_sleep(self) -> None:
+        """Enter deep sleep: stop recording, drain queue, unload model."""
+        # Atomic: check + stop active operations + set DEEP flag in single lock
+        with self._lock:
+            if self._sleep_mode == SleepMode.DEEP:
+                print("[DEEP_SLEEP] Already in deep sleep, ignoring")
+                return
+            print("[DEEP_SLEEP] Entering deep sleep...")
+            if self.state == AppState.RECORDING:
+                self._stop_recording()
+            elif self.state in (
+                AppState.SELECTION_LISTENING,
+                AppState.SELECTION_PROCESSING,
+            ):
+                self._cancel_selection_mode()
+            self._sleep_mode = SleepMode.DEEP
+
+        # Wait for any active transcription to complete, then unload
+        with self._asr_lock:
+            # Drain pending audio from queue
+            while not self._asr_queue.empty():
+                try:
+                    self._asr_queue.get_nowait()
+                    self._asr_queue.task_done()
+                except queue.Empty:
+                    break
+
+            # Unload ASR model (frees VRAM)
+            if self.asr_engine and hasattr(self.asr_engine, "unload"):
+                try:
+                    self.asr_engine.unload()
+                    print("[DEEP_SLEEP] ASR engine unloaded (VRAM freed)")
+                except Exception as e:
+                    print(f"[DEEP_SLEEP] Engine unload failed: {e}")
+
+        # Notify UI
+        bridge = self._bridge
+        print(f"[DEEP_SLEEP] Notifying UI... bridge={bridge is not None}")
+        if bridge:
+            bridge.emit_state("DEEP_SLEEPING")
+            bridge.emit_setting_changed("deep_sleeping", True)
+        print(
+            f"[DEEP_SLEEP] Deep sleep active — GPU idle, model={self.asr_engine._model is None}"
+        )
+
+    def _exit_deep_sleep(self) -> None:
+        """Exit deep sleep: reload model in background thread."""
+        with self._deep_sleep_lock:
+            with self._lock:
+                if self._sleep_mode != SleepMode.DEEP:
+                    print("[DEEP_SLEEP] Not in deep sleep, ignoring wake request")
+                    return
+            if self._reload_thread and self._reload_thread.is_alive():
+                print("[DEEP_SLEEP] Already reloading, ignoring duplicate request")
+                return
+
+            print("[DEEP_SLEEP] Waking up — reloading engine...")
+
+            # Notify UI: loading state
+            bridge = self._bridge
+            if bridge:
+                bridge.emit_state("LOADING")
+
+            self._reload_thread = threading.Thread(
+                target=self._reload_engine, daemon=True
+            )
+            self._reload_thread.start()
+
+    def _reload_engine(self) -> None:
+        """Reload ASR engine from deep sleep (runs on background thread)."""
+        try:
+            import numpy as _np
+            import time as _time
+            import traceback
+
+            reload_start = _time.time()
+
+            # Step 1: Reload model
+            print("[DEEP_SLEEP] Step 1/4: Loading ASR engine...")
+            self.asr_engine.load()
+            print(
+                f"[DEEP_SLEEP] Step 1/4: OK — model={self.asr_engine._model is not None}"
+            )
+
+            # Step 2: GPU warmup
+            print("[DEEP_SLEEP] Step 2/4: GPU warmup...")
+            with self._asr_lock:
+                silence = _np.zeros(16000, dtype=_np.float32)
+                _ = self.asr_engine.transcribe(silence)
+                noise = _np.random.randn(16000).astype(_np.float32) * 0.01
+                _ = self.asr_engine.transcribe(noise)
+            print("[DEEP_SLEEP] Step 2/4: OK — warmup complete")
+
+            reload_ms = (_time.time() - reload_start) * 1000
+            print(f"[DEEP_SLEEP] Step 3/4: Engine ready ({reload_ms:.0f}ms)")
+
+            # Step 3: Restore awake state
+            with self._lock:
+                self._sleep_mode = SleepMode.AWAKE
+            print("[DEEP_SLEEP] Step 3/4: OK — sleep_mode=AWAKE")
+
+            # Step 4: Ensure app is fully enabled + notify UI
+            with self._lock:
+                self._is_disabled = False
+            bridge = self._bridge
+            print(
+                f"[DEEP_SLEEP] Step 4/4: Emitting IDLE... bridge={bridge is not None}"
+            )
+            if bridge:
+                bridge.emit_state("IDLE")
+                bridge.emit_setting_changed("deep_sleeping", False)
+                bridge.emit_setting_changed("enabled", True)
+            print("[DEEP_SLEEP] Step 4/4: OK — wake complete, app enabled")
+
+            # Auto-start recording: user woke the engine = they want to use voice
+            # F11 is a toggle (ON/OFF), not push-to-talk. Wake = resume listening.
+            try:
+                self._hotkey_action_queue.put_nowait("toggle")
+                print("[DEEP_SLEEP] Auto-starting recording (F11 ON)")
+            except queue.Full:
+                pass
+
+        except Exception as e:
+            import traceback
+
+            print(f"[DEEP_SLEEP] Engine reload FAILED: {e}")
+            traceback.print_exc()
+            # Stay in deep sleep on failure
+            with self._lock:
+                self._sleep_mode = SleepMode.DEEP
+            bridge = self._bridge
+            if bridge:
+                bridge.emit_state("DEEP_SLEEPING")
+                bridge.emit_setting_changed("deep_sleeping", True)
+                bridge.emit_error(f"引擎重载失败: {e}")
 
     def set_bridge(self, bridge) -> None:
         """
@@ -1472,8 +1644,29 @@ class AriaApp:
                 ):
                     return
 
-                # Quick transcription (no hotword processing for interim)
-                result = self.asr_engine.transcribe(audio)
+                # Quick transcription with timeout (no hotword processing for interim)
+                # CRITICAL: Must have timeout to prevent deadlock.
+                # Without it, a GPU hang holds _asr_lock forever,
+                # blocking all final transcriptions.
+                import concurrent.futures
+
+                INTERIM_TIMEOUT_S = 10
+                _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
+                    _future = _executor.submit(self.asr_engine.transcribe, audio)
+                    result = _future.result(timeout=INTERIM_TIMEOUT_S)
+                except concurrent.futures.TimeoutError:
+                    print(
+                        f"[STREAM] TIMEOUT: interim transcription exceeded {INTERIM_TIMEOUT_S}s, skipping"
+                    )
+                    _pipeline_log(
+                        "STREAM",
+                        f"Interim timeout after {INTERIM_TIMEOUT_S}s",
+                    )
+                    result = None
+                finally:
+                    _executor.shutdown(wait=False, cancel_futures=True)
+
                 text = result.text.strip() if result and result.text else ""
 
                 # Final check before emitting
@@ -1614,6 +1807,15 @@ class AriaApp:
                 self._worker_busy = False
                 self._asr_queue.task_done()
                 continue
+
+            # === Deep Sleep Guard (BEFORE transcribe) ===
+            # Model may have been unloaded — skip to avoid crash
+            with self._lock:
+                if self._sleep_mode == SleepMode.DEEP:
+                    print("[ASR] Deep sleep: skipping transcription")
+                    self._worker_busy = False
+                    self._asr_queue.task_done()
+                    continue
 
             try:
                 # Transcribe (Layer 1: initial_prompt already set)
@@ -1903,11 +2105,11 @@ class AriaApp:
                         )
                         continue  # Skip all processing layers
 
-                # === Sleeping Mode Check ===
-                # If sleeping, ignore all input (wakeword already handled above)
+                # === Light Sleeping Mode Check ===
+                # If light sleeping, ignore all input (wakeword already handled above)
                 with self._lock:
-                    is_sleeping = self._is_sleeping
-                if is_sleeping:
+                    is_light_sleeping = self._sleep_mode == SleepMode.LIGHT
+                if is_light_sleeping:
                     print(f"[SLEEPING] Ignoring input: '{text[:50]}...'")
                     continue  # Skip all processing layers
 
@@ -2270,6 +2472,7 @@ class AriaApp:
 
     def _on_audio_level(self, level: float) -> None:
         """Called with audio level updates."""
+        self._last_audio_callback_time = time.time()
         self._emit_level(level)
 
     def _on_hotkey(self) -> None:
@@ -2337,13 +2540,21 @@ class AriaApp:
                 pass
             return
 
-        # Allow hotkey in sleeping mode - wakeword detection happens BEFORE
-        # sleeping check in _asr_worker(), so "小助手醒来" will still work
+        # Handle sleep modes
         with self._lock:
-            is_sleeping = self._is_sleeping
-        if is_sleeping:
-            print("[HOTKEY] Pressed in sleeping mode - wakeword detection enabled")
-            _pipeline_log("HOTKEY", "In sleeping mode, wakeword detection enabled")
+            sleep_mode = self._sleep_mode
+        if sleep_mode == SleepMode.DEEP:
+            # Auto-wake from deep sleep, then start recording
+            print("[HOTKEY] Pressed in deep sleep - auto-waking engine...")
+            _pipeline_log("HOTKEY", "Deep sleep: auto-waking engine")
+            self.set_deep_sleep(
+                False
+            )  # Non-blocking: spawns _reload_thread (auto-starts recording)
+            return
+        if sleep_mode == SleepMode.LIGHT:
+            # Light sleep: allow recording for wakeword detection
+            print("[HOTKEY] Pressed in light sleep - wakeword detection enabled")
+            _pipeline_log("HOTKEY", "In light sleep, wakeword detection enabled")
 
         worker_alive = self._asr_thread.is_alive() if self._asr_thread else False
         print(
@@ -2400,7 +2611,48 @@ class AriaApp:
             self.state = AppState.IDLE
             self._emit_state("IDLE")
             return
+        self._last_audio_callback_time = time.time()
+        self._start_audio_watchdog()
         _pipeline_log("RECORD", "Audio capture started")
+
+    def _start_audio_watchdog(self) -> None:
+        """Start watchdog that detects audio stream death during recording."""
+        self._audio_watchdog_thread = threading.Thread(
+            target=self._audio_watchdog_loop, daemon=True, name="audio-watchdog"
+        )
+        self._audio_watchdog_thread.start()
+
+    def _audio_watchdog_loop(self) -> None:
+        """Periodically check if audio stream is still alive."""
+        while self.state == AppState.RECORDING and not self._stop_event.is_set():
+            self._stop_event.wait(3.0)  # Check every 3 seconds
+            if self.state != AppState.RECORDING:
+                break
+            if self._last_audio_callback_time <= 0:
+                continue
+            stale_s = time.time() - self._last_audio_callback_time
+            if stale_s > self._audio_stale_threshold_s:
+                print(
+                    f"[WATCHDOG] Audio stream dead ({stale_s:.1f}s silent), restarting..."
+                )
+                _pipeline_log(
+                    "WATCHDOG",
+                    f"Audio stream stale ({stale_s:.1f}s), restarting capture",
+                )
+                try:
+                    self.audio_capture.stop()
+                    if self.audio_capture._vad:
+                        self.audio_capture._vad.reset()
+                    if self.audio_capture.start():
+                        self._last_audio_callback_time = time.time()
+                        print("[WATCHDOG] Audio capture restarted OK")
+                        _pipeline_log("WATCHDOG", "Audio capture restarted OK")
+                    else:
+                        print("[WATCHDOG] Audio restart FAILED")
+                        _pipeline_log("WATCHDOG", "Audio restart failed")
+                except Exception as e:
+                    print(f"[WATCHDOG] Audio restart error: {e}")
+                    _pipeline_log("WATCHDOG", f"Audio restart error: {e}")
 
     def _stop_recording(self) -> None:
         """Stop recording."""
@@ -2724,6 +2976,15 @@ class AriaApp:
 
         # Stop ASR worker
         self._stop_asr_worker()
+
+        # Wait for engine reload thread if running (prevent GPU leak)
+        if self._reload_thread and self._reload_thread.is_alive():
+            print("[CLEANUP] Waiting for engine reload to finish...")
+            self._reload_thread.join(timeout=5.0)
+            if self._reload_thread.is_alive():
+                print(
+                    "[CLEANUP] Reload thread did not stop in 5s (daemon, will be killed)"
+                )
 
         # Stop hotkey listener
         self.hotkey_manager.stop()

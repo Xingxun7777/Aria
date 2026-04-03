@@ -162,6 +162,11 @@ def main():
     action_auto_send.setChecked(False)
     tray_menu.addAction(action_auto_send)
 
+    action_deep_sleep = QAction("深度休眠", None)
+    action_deep_sleep.setCheckable(True)
+    action_deep_sleep.setChecked(False)
+    tray_menu.addAction(action_deep_sleep)
+
     tray_menu.addSeparator()
 
     action_settings = QAction("高级设置", None)
@@ -317,11 +322,12 @@ def main():
             # sound_enabled=False means mute=True
             action_mute.setChecked(not value if setting == "sound_enabled" else value)
         elif setting == "sleeping":
-            # Update popup menu's exit sleeping button visibility
-            ball.set_sleeping_state(value)
-            # Also update ball visual state as fallback
-            # (in case stateChanged signal was missed/reordered)
+            # Light sleep state change (from voice command)
             ball.on_state_changed("SLEEPING" if value else "IDLE")
+        elif setting == "deep_sleeping":
+            # Deep sleep state change (sync popup menu button + tray menu)
+            ball.set_deep_sleeping_state(value)
+            action_deep_sleep.setChecked(value)
         elif setting == "enabled":
             # Update popup menu toggle when hotkey re-enables from disabled state
             ball.set_enabled_state(value)
@@ -389,7 +395,7 @@ def main():
                         _log("[STARTUP] backend.set_sleeping(False) called")
                     # 3. Sync UI state
                     bridge.emit_state("IDLE")
-                    ball.set_sleeping_state(False)
+                    ball.set_deep_sleeping_state(False)
                     _log("[STARTUP] UI state synced to IDLE")
                     # 4. Sync UI toggle state (don't trigger signal, just update visual)
                     #    NOTE: Do NOT toggle False→True as it calls stop() which
@@ -1098,13 +1104,21 @@ def main():
 
     ball.modeChanged.connect(on_mode_changed)
 
-    # Handle sleep toggle from popup menu
-    def on_sleep_toggled(sleeping):
-        _log(f"[Aria] Sleep toggled via UI: {sleeping}")
-        if hasattr(backend, "set_sleeping"):
-            backend.set_sleeping(sleeping)
+    # Handle deep sleep toggle from popup menu
+    def on_deep_sleep_toggled(deep):
+        _log(f"[Aria] Deep sleep toggled via UI: {deep}")
+        if hasattr(backend, "set_deep_sleep"):
+            backend.set_deep_sleep(deep)
 
-    ball.sleepToggled.connect(on_sleep_toggled)
+    ball.deepSleepToggled.connect(on_deep_sleep_toggled)
+
+    # Tray menu deep sleep toggle
+    def on_tray_deep_sleep_toggled(checked):
+        _log(f"[Aria] Deep sleep toggled via tray: {checked}")
+        if hasattr(backend, "set_deep_sleep"):
+            backend.set_deep_sleep(checked)
+
+    action_deep_sleep.triggered.connect(on_tray_deep_sleep_toggled)
 
     # Handle translate output mode change from popup menu
     def on_translate_mode_changed(mode):

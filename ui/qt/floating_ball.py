@@ -11,6 +11,7 @@ from PySide6.QtCore import (
     Signal,
     QPoint,
     QPointF,
+    QRectF,
     QTimer,
     Slot,
     QPropertyAnimation,
@@ -203,7 +204,7 @@ class FloatingBall(QWidget):
     lockToggled = Signal(bool)  # Middle-click: lock state changed
     enableToggled = Signal(bool)  # From popup menu: enable/disable
     modeChanged = Signal(str)  # From popup menu: polish mode changed
-    sleepToggled = Signal(bool)  # From popup menu: sleep/wake toggle
+    deepSleepToggled = Signal(bool)  # From popup menu: deep sleep toggle
     translateModeChanged = Signal(str)  # From popup menu: "popup" or "clipboard"
 
     # Ball states
@@ -215,7 +216,9 @@ class FloatingBall(QWidget):
         "selection_listening"  # Purple: waiting for voice command
     )
     STATE_SELECTION_PROCESSING = "selection_processing"  # Blue: processing with LLM
-    STATE_SLEEPING = "sleeping"  # Sleeping: dim, ignore all input
+    STATE_SLEEPING = "sleeping"  # Light sleep: dim, ignore all input
+    STATE_DEEP_SLEEPING = "deep_sleeping"  # Deep sleep: engine off, very dim
+    STATE_LOADING = "loading"  # Engine reloading: amber pulse
 
     def __init__(self, size: int = 48):
         super().__init__()
@@ -603,7 +606,7 @@ class FloatingBall(QWidget):
         self._popup_menu.historyRequested.connect(self._on_menu_history)
         self._popup_menu.lockToggled.connect(self._on_menu_lock_toggled)
         self._popup_menu.streamingToggled.connect(self._on_menu_streaming_toggled)
-        self._popup_menu.sleepToggled.connect(self._on_menu_sleep_toggled)
+        self._popup_menu.deepSleepToggled.connect(self._on_menu_deep_sleep_toggled)
         self._popup_menu.translateModeChanged.connect(
             self._on_menu_translate_mode_changed
         )
@@ -628,9 +631,9 @@ class FloatingBall(QWidget):
         """Handle streaming display toggle from popup menu."""
         self.set_streaming_display(enabled)
 
-    def _on_menu_sleep_toggled(self, sleeping):
-        """Handle sleep toggle from popup menu."""
-        self.sleepToggled.emit(sleeping)
+    def _on_menu_deep_sleep_toggled(self, deep):
+        """Handle deep sleep toggle from popup menu."""
+        self.deepSleepToggled.emit(deep)
 
     def _on_menu_translate_mode_changed(self, mode):
         """Handle translate mode change from popup menu."""
@@ -670,9 +673,13 @@ class FloatingBall(QWidget):
             # Sync current state before showing
             self._popup_menu.setLocked(self._is_locked)
             self._popup_menu.setStreaming(self._streaming_display_enabled)
-            # Sync sleeping state based on current ball state
-            is_sleeping = self._state == self.STATE_SLEEPING
-            self._popup_menu.setSleeping(is_sleeping)
+            # Sync deep sleep / loading state based on current ball state
+            if self._state == self.STATE_LOADING:
+                self._popup_menu.setDeepSleeping(True)
+                self._popup_menu.setLoading(True)
+            else:
+                is_deep = self._state == self.STATE_DEEP_SLEEPING
+                self._popup_menu.setDeepSleeping(is_deep)
             # Sync engine info
             self._popup_menu.setEngineInfo(self._engine_info)
             # Note: enable state is NOT synced here — it's managed by
@@ -732,11 +739,23 @@ class FloatingBall(QWidget):
         self._last_logged_state = self._state
 
         # Glass-morphism ball body
-        is_sleeping_visual = self._state == self.STATE_SLEEPING
-        if is_sleeping_visual:
-            # Sleeping: very dim, muted appearance
+        is_sleeping_visual = self._state in (
+            self.STATE_SLEEPING,
+            self.STATE_DEEP_SLEEPING,
+        )
+        is_loading_visual = self._state == self.STATE_LOADING
+        if self._state == self.STATE_DEEP_SLEEPING:
+            # Deep sleeping: extremely dim
+            base_alpha = 20
+            highlight_alpha = 4
+        elif is_sleeping_visual:
+            # Light sleeping: very dim, muted appearance
             base_alpha = 40
             highlight_alpha = 8
+        elif is_loading_visual:
+            # Loading: moderate dim with pulse
+            base_alpha = 60
+            highlight_alpha = 12
         elif self._is_locked:
             # Locked: almost invisible, minimal alpha to keep hit test working
             base_alpha = 8
@@ -808,8 +827,20 @@ class FloatingBall(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._state == self.STATE_SLEEPING:
-            # Sleeping: very dim border
+            # Light sleeping: very dim blue-ish border
             painter.setPen(QPen(QColor(150, 150, 200, 30), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, radius - 1, radius - 1)
+        elif self._state == self.STATE_DEEP_SLEEPING:
+            # Deep sleeping: dim gray border (engine off)
+            painter.setPen(QPen(QColor(100, 100, 100, 25), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(center, radius - 1, radius - 1)
+        elif self._state == self.STATE_LOADING:
+            # Loading: pulsing amber border
+            pulse = math.sin(self._pulse_phase * math.pi * 2)
+            alpha = int(100 + 80 * pulse)
+            painter.setPen(QPen(QColor(255, 180, 50, alpha), 2.5))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, radius - 1, radius - 1)
         elif self._is_locked:
@@ -891,8 +922,6 @@ class FloatingBall(QWidget):
 
     def _draw_rainbow_border(self, painter: QPainter, center: QPoint, radius: int):
         """Draw rainbow border - 3-segment style, faster+brighter when speaking."""
-        import math
-
         angle = self._rainbow_angle
         gradient = QConicalGradient(QPointF(center), angle)
 
@@ -1026,7 +1055,6 @@ class FloatingBall(QWidget):
 
     def _draw_indicator(self, painter: QPainter, center: QPoint, radius: int):
         """Draw status indicator with audio-reactive wavy ring effect."""
-        import math
         from PySide6.QtGui import QPainterPath
 
         # Use _icon_scale for smooth transitions (not state directly)
@@ -1155,11 +1183,25 @@ class FloatingBall(QWidget):
             )
 
         elif self._state == self.STATE_SLEEPING:
-            # Sleeping: small dim ring (similar to auto-send but dimmer)
+            # Light sleeping: small dim ring
             ring_radius = 4
             painter.setPen(QPen(QColor(150, 150, 200, 50), 2))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(center, ring_radius, ring_radius)
+
+        elif self._state == self.STATE_DEEP_SLEEPING:
+            # Deep sleeping: small gray dot (engine off indicator)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(100, 100, 100, 40))
+            painter.drawEllipse(center, 3, 3)
+
+        elif self._state == self.STATE_LOADING:
+            # Loading: rotating amber arc
+            arc_rect = QRectF(center.x() - 6, center.y() - 6, 12, 12)
+            arc_angle = int(self._rainbow_angle * 16)
+            painter.setPen(QPen(QColor(255, 180, 50, 180), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawArc(arc_rect, arc_angle, 270 * 16)
 
         elif self._is_locked:
             # Locked: very subtle lock icon (nearly invisible)
@@ -1187,6 +1229,9 @@ class FloatingBall(QWidget):
         elif self._state == self.STATE_RECORDING:
             # Gentle rotation when waiting (~45 deg/sec at 30fps = 1.5 deg/frame)
             self._rainbow_angle = (self._rainbow_angle + 1.5) % 360.0
+        elif self._state == self.STATE_LOADING:
+            # Moderate rotation for loading indicator (~60 deg/sec = 2 deg/frame)
+            self._rainbow_angle = (self._rainbow_angle + 2.0) % 360.0
 
         # Track if any animation is active
         animations_active = False
@@ -1355,8 +1400,12 @@ class FloatingBall(QWidget):
                 self._window_scale_target = self._SCALE_ACTIVE
                 self._icon_scale_target = 1.0
             elif self._state == self.STATE_SLEEPING:
-                # Respect SLEEPING state's smaller scale (bug fix)
+                # Respect SLEEPING state's smaller scale
                 self._window_scale_target = self._SCALE_IDLE * 0.9
+            elif self._state == self.STATE_DEEP_SLEEPING:
+                self._window_scale_target = self._SCALE_IDLE * 0.82
+            elif self._state == self.STATE_LOADING:
+                self._window_scale_target = self._SCALE_IDLE * 0.95
                 self._icon_scale_target = 0.0
             else:
                 self._window_scale_target = self._SCALE_IDLE
@@ -1465,7 +1514,11 @@ class FloatingBall(QWidget):
         )
 
         if state == "IDLE":
-            was_sleeping = old_state == self.STATE_SLEEPING
+            was_sleeping = old_state in (
+                self.STATE_SLEEPING,
+                self.STATE_DEEP_SLEEPING,
+                self.STATE_LOADING,
+            )
             # Also check if we were in a dim/sleeping-like visual state
             # (scale target is smaller than idle, indicating sleeping appearance)
             was_visually_sleeping = self._window_scale_target < self._SCALE_IDLE
@@ -1484,19 +1537,26 @@ class FloatingBall(QWidget):
                 self._is_processing = False  # Ensure clean state
                 self._icon_scale_target = 0.0
                 self._window_scale_target = self._SCALE_IDLE
+                # Force scale to a visible minimum immediately (don't wait for animation)
+                if self._window_scale < 0.5:
+                    self._window_scale = 0.7  # Jump to visible range, animate the rest
                 self._log(f"WAKE UP! Restoring scale to {self._SCALE_IDLE}")
                 print(
-                    f"[FloatingBall] WAKE UP! old={old_state}, new={self._state}, was_visually_sleeping={was_visually_sleeping}, forcing repaint"
+                    f"[FloatingBall] WAKE UP! old={old_state}, new={self._state}, "
+                    f"scale={self._window_scale:.3f}→{self._window_scale_target}, "
+                    f"was_visually_sleeping={was_visually_sleeping}"
                 )
-                self._log(f"IDLE (from SLEEPING): FORCE restore to {self._SCALE_IDLE}")
 
                 # Trigger wake-up animation: bounce only (flash disabled per user feedback)
                 self._bounce_active = True
                 self._bounce_phase = 0.0
-                print(f"[WAKE] Bounce activated! state={self._state}")
 
                 # Ensure smooth animation by setting timer to high FPS
                 self._pulse_timer.setInterval(33)  # 30 FPS for smooth wake animation
+
+                # Force window visibility (in case it got lost during deep sleep)
+                self.show()
+                self.raise_()
 
                 # Force immediate repaint
                 self.update()
@@ -1556,10 +1616,30 @@ class FloatingBall(QWidget):
             self._state = self.STATE_SLEEPING
             self._is_speaking = False
             self._is_processing = False
-            # Sleeping: shrink slightly, dim appearance
+            # Light sleeping: shrink slightly, dim appearance
             self._window_scale_target = self._SCALE_IDLE * 0.9
             self._icon_scale_target = 0.0
             self._log(f"SLEEPING: dim mode, scale={self._SCALE_IDLE * 0.9}")
+        elif state == "DEEP_SLEEPING":
+            self._state = self.STATE_DEEP_SLEEPING
+            self._is_speaking = False
+            self._is_processing = False
+            # Deep sleeping: very dim, smaller than light sleep
+            self._window_scale_target = self._SCALE_IDLE * 0.82
+            self._icon_scale_target = 0.0
+            self._log(f"DEEP_SLEEPING: engine off, scale={self._SCALE_IDLE * 0.82}")
+        elif state == "LOADING":
+            self._state = self.STATE_LOADING
+            self._is_speaking = False
+            self._is_processing = True  # Reuse for pulsing animation
+            # Loading: grow slightly, amber pulse
+            self._window_scale_target = self._SCALE_IDLE * 0.95
+            self._icon_scale_target = 0.0
+            self._pulse_timer.setInterval(33)  # 30 FPS for smooth animation
+            # Sync popup menu button to "加载中..."
+            if self._popup_menu:
+                self._popup_menu.setLoading(True)
+            self._log(f"LOADING: engine reloading, scale={self._SCALE_IDLE * 0.95}")
 
         if old_state != self._state:
             self.update()
@@ -1598,6 +1678,12 @@ class FloatingBall(QWidget):
     @Slot(str, bool)
     def on_text_updated(self, text: str, is_final: bool):
         """Handle text updates - show streaming results in floating label with fade animation."""
+        if self._state in (
+            self.STATE_SLEEPING,
+            self.STATE_DEEP_SLEEPING,
+            self.STATE_LOADING,
+        ):
+            return
         if is_final:
             # Final result - fade out streaming label
             self._streaming_hide_timer.stop()
@@ -1656,10 +1742,16 @@ class FloatingBall(QWidget):
         self._is_speaking = False
         self._icon_scale_target = 0.0
 
-        # Respect SLEEPING state's smaller scale (bug fix: don't override sleeping shrink)
+        # Respect sleeping states' smaller scale (bug fix: don't override sleeping shrink)
         if self._state == self.STATE_SLEEPING:
-            self._window_scale_target = self._SCALE_IDLE * 0.9  # Keep at 0.765
+            self._window_scale_target = self._SCALE_IDLE * 0.9
             self._log(f">>> SHRINK to {self._SCALE_IDLE * 0.9} (sleeping)")
+        elif self._state == self.STATE_DEEP_SLEEPING:
+            self._window_scale_target = self._SCALE_IDLE * 0.82
+            self._log(f">>> SHRINK to {self._SCALE_IDLE * 0.82} (deep sleeping)")
+        elif self._state == self.STATE_LOADING:
+            self._window_scale_target = self._SCALE_IDLE * 0.95
+            self._log(f">>> SHRINK to {self._SCALE_IDLE * 0.95} (loading)")
         else:
             self._window_scale_target = self._SCALE_IDLE
             self._log(f">>> SHRINK to {self._SCALE_IDLE}")
@@ -1791,11 +1883,21 @@ class FloatingBall(QWidget):
             self._is_speaking = False
             self._icon_scale_target = 0.0
 
-            # Respect SLEEPING state's smaller scale (bug fix: don't override sleeping shrink)
+            # Respect sleeping states' smaller scale
             if self._state == self.STATE_SLEEPING:
                 self._window_scale_target = self._SCALE_IDLE * 0.9
                 self._log(
                     f">>> SHRINK (fallback) to {self._SCALE_IDLE * 0.9} (sleeping)"
+                )
+            elif self._state == self.STATE_DEEP_SLEEPING:
+                self._window_scale_target = self._SCALE_IDLE * 0.82
+                self._log(
+                    f">>> SHRINK (fallback) to {self._SCALE_IDLE * 0.82} (deep sleeping)"
+                )
+            elif self._state == self.STATE_LOADING:
+                self._window_scale_target = self._SCALE_IDLE * 0.95
+                self._log(
+                    f">>> SHRINK (fallback) to {self._SCALE_IDLE * 0.95} (loading)"
                 )
             else:
                 self._window_scale_target = self._SCALE_IDLE
@@ -1841,15 +1943,15 @@ class FloatingBall(QWidget):
         if self._popup_menu:
             self._popup_menu.setAppEnabled(enabled)
 
-    def set_sleeping_state(self, is_sleeping: bool) -> None:
+    def set_deep_sleeping_state(self, is_deep_sleeping: bool) -> None:
         """
-        Set sleeping state for popup menu (shows/hides exit sleeping button).
+        Set deep sleeping state for popup menu button sync.
 
         Args:
-            is_sleeping: True if currently in sleeping mode
+            is_deep_sleeping: True if currently in deep sleep mode
         """
         if self._popup_menu:
-            self._popup_menu.set_sleeping_state(is_sleeping)
+            self._popup_menu.setDeepSleeping(is_deep_sleeping)
 
     def set_auto_send(self, enabled: bool) -> None:
         """
