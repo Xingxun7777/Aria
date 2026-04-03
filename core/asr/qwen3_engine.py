@@ -841,7 +841,7 @@ class Qwen3ASREngine(ASREngine):
         overlap_ratio = len(overlap) / len(text_tokens)
 
         # Case 2: High token overlap (>= 90%) with 5+ tokens
-        # Catches mutated leakage like "编辑AI工具，编辑TTS，FunASR，Claude..."
+        # Catches mutated leakage like "编辑AI工具，编辑TTS，FunASR，PyTorch..."
         if len(text_tokens) >= 5 and overlap_ratio >= 0.9:
             _qwen3_log(
                 f"[LEAKAGE] High token overlap: {len(overlap)}/{len(text_tokens)} "

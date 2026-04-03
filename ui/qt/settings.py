@@ -857,7 +857,7 @@ class SettingsWindow(QMainWindow):
         text, ok = QInputDialog.getText(
             self,
             "添加专业词汇",
-            "输入词汇（支持中英文混合）:\n\n示例：Claude、GitHub、第一性原理",
+            "输入词汇（支持中英文混合）:\n\n示例：DeepSeek、GitHub、第一性原理",
         )
         if ok and text.strip():
             word = text.strip()
@@ -939,7 +939,7 @@ class SettingsWindow(QMainWindow):
         self.radio_fast.setToolTip(
             "使用本地 GGUF 模型离线润色，需在高级设置中配置模型路径"
         )
-        self.radio_quality = QRadioButton("高质量模式 (Gemini API, ~1.7s)")
+        self.radio_quality = QRadioButton("高质量模式 (API 润色, ~1.7s)")
         self.radio_quality.setToolTip(
             "通过云端 API 调用大语言模型润色，效果最好但需要网络"
         )

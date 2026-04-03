@@ -57,7 +57,7 @@
 
 ```json
 {
-  "hotwords": ["Claude", "PyTorch", "星巡"]
+  "hotwords": ["DeepSeek", "PyTorch", "Qwen3"]
 }
 ```
 
@@ -68,7 +68,7 @@
 ```json
 {
   "hotword_weights": {
-    "Claude": 0.9,
+    "DeepSeek": 0.9,
     "PyTorch": 0.7
   }
 }

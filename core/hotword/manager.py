@@ -637,7 +637,7 @@ class HotWordManager:
         Set polish mode and update active polisher.
 
         Args:
-            mode: "off" (disabled), "fast" (local Qwen), or "quality" (Gemini API)
+            mode: "off" (disabled), "fast" (local Qwen), or "quality" (API)
         """
         if mode not in ("off", "fast", "quality"):
             logger.warning(f"Unknown polish mode: {mode}, defaulting to 'fast'")
@@ -666,13 +666,13 @@ class HotWordManager:
 
         V4 key insight (2026-04-03, A/B tested with TTS audio):
         Flat word lists do NOT bias Qwen3-ASR for phonetically ambiguous words
-        (e.g., "Claude" always outputs as "Cloud"). Structured natural-language
+        (e.g., "PyTorch" always outputs as "拍拓"). Structured natural-language
         context with an explicit label ("用户常提到的专有名词：...") makes the
         model understand these are proper nouns to preserve as-is.
 
         Test results (5 audio × 4 formats):
-        - Flat list:    Claude→Cloud ❌, ComfyUI→Confluent ❌
-        - Structured:   Claude Code ✅, ComfyUI ✅ (strict improvement)
+        - Flat list:    PyTorch→拍拓 ❌, ComfyUI→Confluent ❌
+        - Structured:   PyTorch ✅, ComfyUI ✅ (strict improvement)
         - Struct+OCR:   identical to Struct (no interference)
         - Normal speech: unaffected by context format
 

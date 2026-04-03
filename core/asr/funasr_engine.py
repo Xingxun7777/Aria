@@ -354,7 +354,7 @@ class FunASREngine(ASREngine):
                     # Paraformer specific - hotword support
                     if self.config.hotwords:
                         # FunASR hotword format: newline-separated "word score" pairs
-                        # e.g., "阿里巴巴 20\nClaude 10"
+                        # e.g., "阿里巴巴 20\nPyTorch 10"
                         gen_kwargs["hotword"] = "\n".join(self.config.hotwords)
 
                 # Run inference - add detailed logging for debugging

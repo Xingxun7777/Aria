@@ -282,7 +282,7 @@ class FloatingBall(QWidget):
         self._bounce_amplitude = 8.0  # Max pixels to move
         self._bounce_duration_frames = 12  # ~400ms at 33ms/frame
 
-        # Press physics animation (Gemini design: "Alive Micro-Interactions")
+        # Press physics animation (design: "Alive Micro-Interactions")
         self._press_scale = 1.0  # 1.0 = normal, 0.9 = pressed
         self._press_scale_target = 1.0
         self._PRESS_SCALE_DOWN = 0.9  # Scale when "pressed"
