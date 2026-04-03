@@ -49,6 +49,7 @@ SOURCE_FILES = [
     "__main__.py",
     "launcher.py",
     "progress_ipc.py",
+    "update_tool.py",
 ]
 
 # Data directories (assets, resources, etc.)
@@ -670,6 +671,28 @@ pause > nul
 """
     (DIST_DIR / "Aria_debug.bat").write_text(debug_content, encoding="utf-8")
     log("  Created Aria_debug.bat (debug mode)")
+
+    # 4. Update script
+    update_content = """@echo off
+chcp 65001 >nul 2>&1
+title Aria 一键升级
+if not exist "_internal\\app\\aria\\app.py" (
+    echo.
+    echo  [错误] 请将此文件放在 Aria 安装根目录下运行。
+    echo.
+    pause
+    exit /b 1
+)
+"_internal\\python.exe" -u "_internal\\app\\aria\\update_tool.py" %*
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo  升级过程中出现错误，请查看上方信息。
+    echo.
+)
+pause
+"""
+    (DIST_DIR / "update.bat").write_text(update_content, encoding="utf-8")
+    log("  Created update.bat (one-click updater)")
 
     log("Launchers created.")
 
