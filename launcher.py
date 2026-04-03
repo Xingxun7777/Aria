@@ -13,6 +13,13 @@ import threading
 # Fix OpenMP conflict between PyTorch libraries (MUST be before any imports)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+# Switch PyTorch CUDA allocator to cudaMallocAsync backend.
+# The default allocator's empty_cache() keeps "reserved" memory blocks (~3GB) that
+# nvidia-smi still shows as occupied. cudaMallocAsync calls cudaMemPoolTrimTo(0)
+# which ACTUALLY returns memory to the OS. Critical for deep sleep VRAM release.
+# MUST be set before any torch/CUDA import.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+
 # === Fix stdout/stderr for pythonw.exe / AriaRuntime.exe ===
 # Under pythonw.exe, sys.stdout and sys.stderr are None.
 # Any print() call would crash with: AttributeError: 'NoneType' has no attribute 'write'
@@ -706,7 +713,9 @@ try:
             if not check_qwen3_installation():
                 log("qwen_asr unavailable, cannot use Qwen3 engine")
                 emit_progress("qwen3_error", "Qwen3-ASR 引擎不可用", 50)
-                raise ImportError("qwen-asr unavailable. Check startup logs for details.")
+                raise ImportError(
+                    "qwen-asr unavailable. Check startup logs for details."
+                )
 
             # HuggingFace endpoint: respect user's env, default to China mirror
             os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
