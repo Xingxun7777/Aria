@@ -4,7 +4,7 @@
 
 **Windows 本地 AI 语音输入工具**
 
-[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.3.2-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#系统要求)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)

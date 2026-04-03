@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "prefix": "遥遥",
+  "prefix": "小助手",
   "cooldown_ms": 500,
   "commands": {
     "发送": {

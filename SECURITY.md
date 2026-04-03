@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | Yes       |
-| < 1.1   | No        |
+| 1.0.x   | Yes       |
+| < 1.0   | No        |
 
 ## Reporting a Vulnerability | 报告漏洞
 
@@ -36,7 +36,7 @@
 
 ### 本地处理
 
-Aria 的所有语音数据在本地处理，不上传任何服务器。ASR 引擎（FunASR、Whisper、Qwen3-ASR）均在本地运行。
+Aria 的所有语音数据在本地处理，不上传任何服务器。ASR 引擎（Qwen3-ASR、FunASR）均在本地运行。
 
 ### API 密钥
 

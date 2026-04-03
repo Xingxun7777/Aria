@@ -1,13 +1,12 @@
 {
   "enabled": true,
-  "wakeword": "遥遥",
+  "wakeword": "小助手",
   "available_wakewords": [
-    "瑶瑶",
-    "遥遥",
-    "小朋友",
-    "小溪",
+    "小助手",
     "助手",
-    "小白"
+    "小白",
+    "小朋友",
+    "小溪"
   ],
   "cooldown_ms": 500,
   "commands": {
