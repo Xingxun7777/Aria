@@ -54,6 +54,7 @@ build_portable/*.spec
 *.tmp
 *.tmp.*
 *.bak
+*.bak*
 *.backup.*
 
 # === Debug Audio ===
