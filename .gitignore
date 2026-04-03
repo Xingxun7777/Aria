@@ -54,10 +54,19 @@ build_portable/*.spec
 *.tmp
 *.tmp.*
 *.bak
+*.backup.*
 
 # === Debug Audio ===
 debug_audio_*.wav
 *.wav.tmp
+
+# === Marketing / Internal Docs ===
+发布视频文案/
+Aria-v*功能列表*
+
+# === Test Artifacts ===
+_test_*
+test_paths.txt
 
 # === Claude Code Local Settings ===
 .claude/

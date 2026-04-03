@@ -56,7 +56,7 @@
 - 幻觉检测触发，回退到不完整的 interim 结果 → 截断
 - 后续句子正常，只有第一句有问题
 
-**Root Cause** (来自 Gemini 三方会谈分析):
+**Root Cause** (分析):
 - GPU warmup 在 `initial_prompt` 设置**之前**运行
 - 第一次真正识别是模型首次看到 hotword prompt
 - 同时处理 prompt KV cache + 音频编码 → 注意力机制"循环" → 重复输出
@@ -337,7 +337,7 @@ if self._is_hallucination(text):
 - 日志显示超长音频段：258048 samples（16秒！正常应该 2-5 秒）
 - ASR 处理时间极长（46秒处理 16秒音频）
 
-**Root Cause** (来自三方会谈分析):
+**Root Cause** (分析):
 1. **VAD 阈值过低 (0.2)**：
    - Silero-VAD 返回 0-1 的语音概率
    - 0.2 阈值太敏感，环境噪声/呼吸都会被识别为语音
@@ -430,32 +430,29 @@ transcribe_kwargs = {
 
 ---
 
-## Issue: Claude Code 编辑 hotwords.json 时崩溃
+## Issue: 编辑 hotwords.json 时 UTF-8 边界错误
 
 **Date**: 2025-12-28
 
 **Symptom**:
-- 使用 Claude Code 的 Edit 工具编辑 `config/hotwords.json` 时，整个 Claude Code 崩溃
-- Rust panic 错误：`byte index X is not a char boundary; it is inside '点' (bytes X..Y)`
-- 只有编辑这个包含大量中文的 JSON 文件时发生
+- 编辑 `config/hotwords.json` 时触发 Rust panic
+- 错误：`byte index X is not a char boundary; it is inside '点' (bytes X..Y)`
+- 只有编辑包含大量中文的 JSON 文件时发生
 
 **Root Cause**:
-- Claude Code 的 Rust 实现在处理多字节 UTF-8 字符（中文）时有 bug
-- Edit 工具在计算字符串边界时，使用字节索引而非字符索引
+- 某些编辑工具的 Rust 实现在处理多字节 UTF-8 字符（中文）时有 bug
+- 计算字符串边界时使用字节索引而非字符索引
 - 中文字符占 3 字节（UTF-8），索引计算错误会落在字符中间
-- 这是 Claude Code 本身的 bug，无法在用户代码中修复
 
 **Workaround**:
-**永远不要用 Edit 工具编辑 hotwords.json！使用 Python 代替：**
+**编辑 hotwords.json 时使用 Python：**
 
 ```python
-# 安全的 hotwords.json 编辑方法
 import json
 
 with open('config/hotwords.json', 'r', encoding='utf-8') as f:
     config = json.load(f)
 
-# 修改配置...
 config['some_key'] = 'new_value'
 
 with open('config/hotwords.json', 'w', encoding='utf-8') as f:
@@ -463,10 +460,8 @@ with open('config/hotwords.json', 'w', encoding='utf-8') as f:
 ```
 
 **Key Learning**:
-- Claude Code Edit 工具对包含大量中文的 JSON 文件不安全
-- 遇到中文密集的配置文件，优先使用 Python/Bash 间接编辑
-- 这个问题已报告给 Anthropic，等待官方修复
-- 在 CLAUDE.md 中添加规则提醒未来会话避免此操作
+- 中文密集的配置文件，优先使用 Python/Bash 间接编辑
+- 不要用可能有 UTF-8 边界 bug 的文本编辑工具直接操作
 
 ---
 
@@ -527,15 +522,15 @@ if is_hallucination(full_text):
 ## Issue: 启动时出现双 Python 进程（Aria Dev + base Python）
 
 **Date**: 2025-12-31  
-**Author**: Codex (GPT-5)
+**Author**: Xingxun
 
 **Symptom**:
 - 启动后任务管理器显示两个进程（AriaDevRuntime.exe + Python）
-- Python 进程路径指向 `G:\AIBOX\Python310\tools\pythonw.exe`
+- Python 进程路径指向 `<base_python>\pythonw.exe`
 - 两个进程同时启动，父进程退出后子进程同步结束
 
 **Root Cause**:
-- venv 的 `pyvenv.cfg` 指向 NuGet/嵌入式 Python（`home = G:\AIBOX\Python310\tools`）
+- venv 的 `pyvenv.cfg` 指向 NuGet/嵌入式 Python（`home = <base_python>`）
 - 该启动器实现会在启动时再拉起 base Python
 - venv 的 `python.exe/pythonw.exe` 是启动器而非解释器本体，导致双进程
 
@@ -545,8 +540,8 @@ if is_hallucination(full_text):
 3. 重新生成 `AriaDevRuntime.exe` 与桌面快捷方式
 
 ```powershell
-Copy-Item G:\AIBOX\Python310\tools\python.exe  G:\AIBOX\voicetype-v1.1-dev\.venv\Scripts\python.exe
-Copy-Item G:\AIBOX\Python310\tools\pythonw.exe G:\AIBOX\voicetype-v1.1-dev\.venv\Scripts\pythonw.exe
+Copy-Item <base_python>\python.exe  <project>\.venv\Scripts\python.exe
+Copy-Item <base_python>\pythonw.exe <project>\.venv\Scripts\pythonw.exe
 ```
 
 **Key Learning**:
@@ -559,7 +554,7 @@ Copy-Item G:\AIBOX\Python310\tools\pythonw.exe G:\AIBOX\voicetype-v1.1-dev\.venv
 ## Issue: LLM 润色层过度替换（热词过拟合）
 
 **Date**: 2026-01-02
-**Author**: Claude + Codex + Gemini (三方会谈)
+**Author**: Xingxun
 
 **Symptom**:
 - ASR 识别正确，但 LLM 润色后变成完全无关的热词
@@ -571,7 +566,7 @@ Copy-Item G:\AIBOX\Python310\tools\pythonw.exe G:\AIBOX\voicetype-v1.1-dev\.venv
 - 英文被强制替换为中文热词
 - 语义完全不同的词被替换
 
-**Root Cause** (三方会谈共识):
+**Root Cause** (分析共识):
 1. **Prompt 权限过度**：原 prompt 包含"专业术语谐音必须修复"，给 LLM 过度权限
 2. **热词权重形同虚设**：所有词默认权重 1.0，没有真正的分层
 3. **热词传给 LLM 导致过拟合**：LLM 视热词表为"必须使用的词"，激进替换
