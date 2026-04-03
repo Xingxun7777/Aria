@@ -1,7 +1,6 @@
-# Changelog
+# 更新日志
 
-All notable changes to Aria will be documented in this file.
-Format based on [Keep a Changelog](https://keepachangelog.com/).
+Aria 的所有重要变更都记录在此文件中。
 
 ## [1.0.3.2] - 2026-04-04
 
