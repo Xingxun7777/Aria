@@ -60,5 +60,6 @@
   },
   "translation": {
     "output_mode": "popup"
-  }
+  },
+  "typewriter_mode": true
 }

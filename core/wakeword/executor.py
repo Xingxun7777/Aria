@@ -519,7 +519,7 @@ class WakewordExecutor:
                 return result
 
         # Strategy 2: Extract embedded path substrings from each line
-        # (handles "some text C:\Users\foo more text" or "cd G:\AIBOX")
+        # (handles "some text C:\Users\foo more text" or "cd D:\Projects")
         path_patterns = [
             r"https?://\S+",  # URL
             r"\\\\[^\s:*?\"<>|,;]+",  # UNC \\server\share
@@ -556,7 +556,7 @@ class WakewordExecutor:
             "",
             text,
         )
-        # Strip shell command suffixes: "G:\AIBOX> ls" → "G:\AIBOX"
+        # Strip shell command suffixes: "D:\Projects> ls" → "D:\Projects"
         # > $ # are not valid in Windows paths, safe to strip
         text = re.sub(r"\s*[>$#]\s+\S.*$", "", text)
 
@@ -579,7 +579,7 @@ class WakewordExecutor:
         if wsl_m:
             text = f"{wsl_m.group(1).upper()}:\\{wsl_m.group(2).replace('/', chr(92))}"
 
-        # Git Bash / MSYS path: /g/AIBOX/... → G:\AIBOX\...
+        # Git Bash / MSYS path: /g/AIBOX/... → D:\Projects\...
         elif re.match(r"^/[a-zA-Z]/", text):
             text = f"{text[1].upper()}:{text[2:]}"
 
@@ -599,7 +599,7 @@ class WakewordExecutor:
         if re.match(r"^[A-Za-z]:[^/\\]", text):
             text = text[0:2] + "\\" + text[2:]
 
-        # Fix missing drive: "Users\84238\..." → "C:\Users\84238\..."
+        # Fix missing drive: "Users\JohnDoe\..." → "C:\Users\JohnDoe\..."
         # Also handles common Windows root dirs (Program Files, Windows, etc.)
         _WINDOWS_ROOT_DIRS = (
             "Users",

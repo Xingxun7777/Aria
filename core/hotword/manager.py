@@ -662,19 +662,25 @@ class HotWordManager:
 
     def to_qwen3_context(self) -> str:
         """
-        Build Qwen3-ASR context (V3: evidence-based format).
+        Build Qwen3-ASR context (V4: structured natural-language format).
 
-        Based on Qwen3-ASR documentation:
-        - Context is used to "nudge" recognition, NOT as instructions
-        - Model doesn't understand "必须正确识别" - it just sees text
-        - Repetition works (transformer attention mechanism)
-        - Example sentences are most effective for biasing
+        V4 key insight (2026-04-03, A/B tested with TTS audio):
+        Flat word lists do NOT bias Qwen3-ASR for phonetically ambiguous words
+        (e.g., "Claude" always outputs as "Cloud"). Structured natural-language
+        context with an explicit label ("用户常提到的专有名词：...") makes the
+        model understand these are proper nouns to preserve as-is.
 
-        V3.3 Strategy (weight-aware, tri-party consensus):
-        1. Critical words (weight >= 1.0): repeat 3x (maximum bias)
-        2. Reference words (weight >= 0.5): list once (light bias)
-        3. Hint words (weight = 0.3): EXCLUDED from context (handled by L2 regex + L4 polish)
-        4. NO instructional text (Qwen3 doesn't follow instructions)
+        Test results (5 audio × 4 formats):
+        - Flat list:    Claude→Cloud ❌, ComfyUI→Confluent ❌
+        - Structured:   Claude Code ✅, ComfyUI ✅ (strict improvement)
+        - Struct+OCR:   identical to Struct (no interference)
+        - Normal speech: unaffected by context format
+
+        V4 Strategy:
+        1. Critical words (weight >= 1.0): listed first (attention priority)
+        2. Reference words (weight >= 0.5): listed after critical
+        3. All wrapped in structured label for LLM comprehension
+        4. Domain context as separate paragraph
 
         Returns:
             Formatted context string for Qwen3-ASR
@@ -682,36 +688,25 @@ class HotWordManager:
         weights = self._load_weights()
         parts = []
 
-        # Part 1: Critical terms - REPEAT for attention boost
-        # Transformer attention mechanism responds to repetition
+        # Collect hotwords by tier (critical first for attention priority)
         critical = [
             word for word in self.config.prompt_words if weights.get(word, 0.3) >= 1.0
         ]
-        if critical:
-            # Repeat each critical word 3 times for maximum bias
-            critical_repeated = " ".join([w for w in critical for _ in range(3)])
-            parts.append(critical_repeated)
-
-        # Part 2: Reference terms - list once (weight >= 0.5)
-        # Qwen3 context is binary (word present = bias), so 0.3 hint tier
-        # is excluded from ASR context to prevent false positives.
-        # 0.3 words are handled by post-processing layers: L2 regex + L4 polish (v3.3).
         reference = [
             word
             for word in self.config.prompt_words
             if 0.5 <= weights.get(word, 0.3) < 1.0
         ]
-        if reference:
-            parts.append(" ".join(reference))
 
-        # Part 3: Example sentences - MOST EFFECTIVE for biasing
-        # Real usage context helps model understand when to use these words
-        examples = self._get_example_sentences()
-        if examples:
-            # Join with periods for sentence boundaries
-            parts.append("。".join(examples) + "。")
+        # Build structured hotword section
+        # The label "用户常提到的专有名词" tells the LLM-based ASR that these
+        # are proper nouns to output verbatim, not random tokens to ignore.
+        all_hotwords = critical + reference
+        if all_hotwords:
+            hotword_str = ", ".join(all_hotwords)
+            parts.append(f"用户常提到的专有名词：{hotword_str}")
 
-        # Part 4: Domain context as natural text (not as instruction)
+        # Domain context as separate paragraph (natural text, not label)
         if self.config.domain_context:
             parts.append(self.config.domain_context)
 
@@ -727,8 +722,8 @@ class HotWordManager:
             est_tokens = self._estimate_tokens(context)
 
         logger.debug(
-            f"Qwen3 context V3: critical={len(critical)} (x3 repeat), "
-            f"reference={len(reference)}, examples={len(examples)}, "
+            f"Qwen3 context V4: critical={len(critical)}, "
+            f"reference={len(reference)}, "
             f"chars={len(context)}, est_tokens={est_tokens}"
         )
 
@@ -780,12 +775,8 @@ class HotWordManager:
         """
         Truncate context to fit within token limit.
 
-        Preserves structure priority:
-        1. Domain description (always keep)
-        2. Critical terms (high priority)
-        3. Reference terms (medium priority)
-        4. Examples (low priority, truncate first)
-        5. Hint terms (lowest priority)
+        V4 format has simple structure: hotword line + domain context.
+        Preserves lines in order, dropping from the end when over budget.
 
         Args:
             context: Full context string
@@ -797,18 +788,11 @@ class HotWordManager:
         lines = context.split("\n")
         result_lines = []
 
-        # Priority order: 场景 > 必须 > 可能 > 示例 > 其他
-        priority_prefixes = ["场景", "必须", "可能", "示例", "其他"]
-
-        for prefix in priority_prefixes:
-            for line in lines:
-                if line.startswith(prefix):
-                    result_lines.append(line)
-                    current = "\n".join(result_lines)
-                    if self._estimate_tokens(current) > max_tokens:
-                        # Remove the line that pushed us over
-                        result_lines.pop()
-                        return "\n".join(result_lines)
+        for line in lines:
+            result_lines.append(line)
+            if self._estimate_tokens("\n".join(result_lines)) > max_tokens:
+                result_lines.pop()
+                break
 
         return "\n".join(result_lines)
 

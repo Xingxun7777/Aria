@@ -64,6 +64,10 @@ EXCLUDE_PATTERNS = [
     "*.pyo",
     ".git",
     "*.bak",  # Backup files (may contain secrets)
+    "*.bak?",  # Numbered backups (.bak2, .bak3, etc.)
+    "*.bak[0-9]*",  # Extended numbered backups
+    "*.backup.*",  # Timestamped backups (hotwords.backup.*.json contain API keys)
+    "*.tmp",  # Temp files (may contain unsanitized data)
     "DebugLog",  # Debug logs with user audio/transcripts
     "*_error.log",  # Error logs with local paths
     "*.log",  # All log files

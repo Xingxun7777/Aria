@@ -16,6 +16,7 @@ Models:
 """
 
 import datetime
+import os
 import re
 import threading
 import time
@@ -416,12 +417,20 @@ class Qwen3ASREngine(ASREngine):
                     f"max_inference_batch_size={self.config.max_inference_batch_size}"
                 )
 
+                # Local path → skip network calls to avoid hangs in China
+                is_local = os.path.isabs(try_model) or os.path.isdir(try_model)
+                extra_kwargs = {}
+                if is_local:
+                    extra_kwargs["local_files_only"] = True
+                    _qwen3_log(f"[LOAD] Local model detected, skipping network check")
+
                 self._model = Qwen3ASRModel.from_pretrained(
                     try_model,
                     device_map=try_device,
                     torch_dtype=try_dtype,
                     max_new_tokens=self.config.max_new_tokens,
                     max_inference_batch_size=self.config.max_inference_batch_size,
+                    **extra_kwargs,
                 )
 
                 # Success!
@@ -578,24 +587,26 @@ class Qwen3ASREngine(ASREngine):
                 audio_tuple = (audio_float, 16000)
 
                 # Build hotword context (also used for leakage detection)
+                # V4: context uses structured natural-language format from manager
                 hotword_context = self._context_string
                 if not hotword_context and self.config.hotwords:
                     hotword_context = " ".join(self.config.hotwords).strip()
 
-                # Screen keywords go RIGHT AFTER hotwords in system prompt
-                # for strong biasing (same level as hotwords, not diluted)
+                # Screen keywords as structured sub-section (V4)
+                # Label helps model understand these are current UI terms
                 screen_kw = self._screen_keywords
                 if screen_kw:
+                    screen_section = f"当前屏幕关键词：{screen_kw}"
                     hotword_context = (
-                        hotword_context + " " + screen_kw
+                        hotword_context + "\n" + screen_section
                         if hotword_context
-                        else screen_kw
+                        else screen_section
                     )
 
-                # Recent ASR context appended last (weaker position, for continuity)
+                # Recent ASR context appended last (natural text, no label needed)
                 recent_ctx = self._recent_context
                 if hotword_context and recent_ctx:
-                    full_context = hotword_context + " " + recent_ctx
+                    full_context = hotword_context + "\n" + recent_ctx
                 else:
                     full_context = hotword_context or recent_ctx
 

@@ -128,9 +128,12 @@ def _try_ui_automation(hwnd) -> Optional[str]:
             return None
 
         texts = set()
+        edit_text = ""  # Text content from edit/document controls
         count = [0]
+        MAX_EDIT_CHARS = 500  # Cap edit text to avoid pulling entire documents
 
         def walk(element, depth=0):
+            nonlocal edit_text
             if depth > 8 or count[0] > 500:
                 return
             count[0] += 1
@@ -140,6 +143,19 @@ def _try_ui_automation(hwnd) -> Optional[str]:
                     texts.add(name)
             except Exception:
                 pass
+            # Read text content from Edit/Document controls (Notepad, Word, etc.)
+            # element.Name only returns the control label, not what the user typed.
+            if not edit_text:
+                try:
+                    ctrl_type = element.ControlTypeName
+                    if ctrl_type in ("EditControl", "DocumentControl"):
+                        vp = element.GetValuePattern()
+                        if vp:
+                            val = vp.Value or ""
+                            if len(val) >= 4:
+                                edit_text = val[:MAX_EDIT_CHARS]
+                except Exception:
+                    pass
             try:
                 children = element.GetChildren()
                 if children:
@@ -150,10 +166,17 @@ def _try_ui_automation(hwnd) -> Optional[str]:
 
         walk(ctrl)
 
-        if len(texts) < 3:
+        # Combine UI element names + edit content
+        parts = []
+        if edit_text:
+            parts.append(edit_text)
+        if len(texts) >= 3:
+            parts.append(" ".join(texts))
+
+        if not parts:
             return None
 
-        result = " ".join(texts)
+        result = " ".join(parts)
         _ocr_log(f"UIA: {len(texts)} elements, {len(result)} chars")
         return result
 

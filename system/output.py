@@ -489,7 +489,7 @@ class OutputConfig:
     restore_delay_ms: int = 100  # Delay before restoring clipboard
 
     # Layer 2: Typewriter mode settings
-    typewriter_mode: bool = False  # Use character-by-character input instead of paste
+    typewriter_mode: bool = True  # Use character-by-character input (SendInput UNICODE)
     typewriter_delay_ms: int = 15  # Delay between characters (fixed, not random)
 
     # Layer 0: Permission handling
@@ -1005,30 +1005,53 @@ class OutputInjector:
 
             codepoint = ord(char)
 
-            # Handle BMP characters directly, non-BMP via surrogate pairs
+            # Use SendInput + KEYEVENTF_UNICODE for reliable CJK input.
+            # PostMessageW WM_CHAR doesn't work for Chinese characters in many
+            # modern apps (shows □ white boxes). SendInput with Unicode scan codes
+            # is the standard Windows method for programmatic Unicode input.
             if codepoint > 0xFFFF:
+                # Non-BMP: surrogate pair (emoji, etc.)
                 high = 0xD800 + ((codepoint - 0x10000) >> 10)
                 low = 0xDC00 + ((codepoint - 0x10000) & 0x3FF)
-                codepoints = [high, low]
+                scan_codes = [high, low]
             else:
-                codepoints = [codepoint]
+                scan_codes = [codepoint]
 
-            for cp in codepoints:
-                result = user32.PostMessageW(target_hwnd, WM_CHAR, cp, 0)
-                if not result:
-                    err = ctypes.get_last_error()
-                    logger.error(
-                        f"PostMessageW WM_CHAR failed for '{char}' (U+{ord(char):04X}) "
-                        f"after {chars_sent} chars, error={err}, aborting"
-                    )
-                    return False
+            inputs = (INPUT * (len(scan_codes) * 2))()
+            idx = 0
+            for sc in scan_codes:
+                # Key down
+                inputs[idx].type = INPUT_KEYBOARD
+                inputs[idx].union.ki.wVk = 0
+                inputs[idx].union.ki.wScan = sc
+                inputs[idx].union.ki.dwFlags = KEYEVENTF_UNICODE
+                inputs[idx].union.ki.time = 0
+                inputs[idx].union.ki.dwExtraInfo = 0
+                idx += 1
+                # Key up
+                inputs[idx].type = INPUT_KEYBOARD
+                inputs[idx].union.ki.wVk = 0
+                inputs[idx].union.ki.wScan = sc
+                inputs[idx].union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                inputs[idx].union.ki.time = 0
+                inputs[idx].union.ki.dwExtraInfo = 0
+                idx += 1
+
+            result = user32.SendInput(idx, inputs, ctypes.sizeof(INPUT))
+            if result != idx:
+                err = ctypes.get_last_error()
+                logger.error(
+                    f"SendInput UNICODE failed for '{char}' (U+{codepoint:04X}) "
+                    f"after {chars_sent} chars, sent={result}/{idx}, error={err}"
+                )
+                return False
 
             chars_sent += 1
             if delay_s > 0:
                 time.sleep(delay_s)
 
         logger.info(
-            f"Typewriter mode: successfully sent {chars_sent} chars via WM_CHAR"
+            f"Typewriter mode: successfully sent {chars_sent} chars via SendInput UNICODE"
         )
         return True
 

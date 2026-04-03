@@ -12,19 +12,18 @@ from typing import Optional
 
 def get_base_path() -> Path:
     """
-    Get the base path for the application.
+    Get the base path for the application (the aria package root).
 
     Returns:
         Path: Base directory path
-            - For frozen (PyInstaller): directory containing the executable
-            - For script: aria package directory
+            - Both frozen and script: aria package directory
+              (resolved via __file__, 3 levels up from core/utils/paths.py)
     """
-    if getattr(sys, "frozen", False):
-        # Running as compiled executable
-        return Path(sys.executable).parent
-    else:
-        # Running as script - return the aria package directory
-        return Path(__file__).parent.parent.parent
+    # Always use __file__ to locate the aria package root.
+    # In packaged builds, .py source files live at _internal/app/aria/,
+    # so __file__ reliably points to the right place regardless of
+    # where sys.executable sits.
+    return Path(__file__).parent.parent.parent
 
 
 def get_config_path(filename: str = "hotwords.json") -> Path:

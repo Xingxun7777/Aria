@@ -88,7 +88,9 @@ class TranslationPopup(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._theme = styles.get_theme_palette()
+        self._theme = styles.get_theme_palette(
+            "dark"
+        )  # Always dark: popup bg is hardcoded dark
         # Semi-transparent background (more glassmorphism feel)
         self.BG_COLOR = QColor(32, 28, 26, 220)  # Warm dark brown-black, ~86% opacity
         self.BORDER_COLOR = QColor(200, 130, 50, 50)  # Warm amber border

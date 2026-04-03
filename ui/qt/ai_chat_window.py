@@ -186,7 +186,9 @@ class AIChatWindow(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._theme = styles.get_theme_palette()
+        self._theme = styles.get_theme_palette(
+            "dark"
+        )  # Always dark: popup bg is hardcoded dark
 
         # Warm amber palette (matches TranslationPopup)
         self.BG_COLOR = QColor(32, 28, 26, 240)  # Warm dark brown-black

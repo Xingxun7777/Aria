@@ -150,7 +150,7 @@ QWEN3_MODEL_SIZES = {
 
 def check_qwen3_model_exists(model_name: str) -> bool:
     """
-    检查 Qwen3 模型是否已下载到本地缓存。
+    检查 Qwen3 模型是否已存在（bundled 或 HF 缓存）。
 
     Args:
         model_name: 模型名称，如 "Qwen/Qwen3-ASR-1.7B"
@@ -161,18 +161,26 @@ def check_qwen3_model_exists(model_name: str) -> bool:
     import os
     from pathlib import Path
 
-    # HuggingFace 默认缓存路径
+    # 1. Check bundled model (portable/full distribution)
+    if "/" in model_name:
+        try:
+            from aria.core.utils.paths import get_models_path
+
+            local_name = model_name.split("/")[-1]
+            bundled_path = get_models_path(local_name)
+            if bundled_path.is_dir() and any(bundled_path.glob("*.safetensors")):
+                return True
+        except Exception:
+            pass
+
+    # 2. Check HuggingFace cache
     cache_dir = (
         Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
     )
-
-    # 模型目录名称模式: models--{org}--{model}
-    # e.g., "Qwen/Qwen3-ASR-1.7B" -> "models--Qwen--Qwen3-ASR-1.7B"
     model_dir_name = f"models--{model_name.replace('/', '--')}"
     model_path = cache_dir / model_dir_name
 
     if model_path.exists():
-        # 检查是否有 snapshots 目录（表示模型已完整下载）
         snapshots = model_path / "snapshots"
         if snapshots.exists() and any(snapshots.iterdir()):
             return True
@@ -2200,6 +2208,25 @@ class SettingsWindow(QMainWindow):
             or old_qwen3.get("torch_dtype") != new_qwen3_dtype
         ):
             restart_needed = True
+
+        # Model size change within Qwen3: check if the new model exists
+        if (
+            new_engine == "qwen3"
+            and old_qwen3.get("model_name") != new_qwen3_model
+            and new_qwen3_model != "auto"
+            and not check_qwen3_model_exists(new_qwen3_model)
+        ):
+            short_name = "1.7B" if "1.7B" in new_qwen3_model else "0.6B"
+            model_size = QWEN3_MODEL_SIZES.get(new_qwen3_model, "3.4GB")
+            QMessageBox.information(
+                self,
+                "模型需要下载",
+                f"切换到 Qwen3-ASR {short_name} 需要下载模型:\n\n"
+                f"大小: 约 {model_size}\n"
+                f"预计时间: 2-5 分钟\n\n"
+                f"下次启动时将自动下载。\n"
+                "(已自动配置国内镜像加速)",
+            )
 
         self.config["qwen3"]["model_name"] = new_qwen3_model
         self.config["qwen3"]["device"] = new_qwen3_device

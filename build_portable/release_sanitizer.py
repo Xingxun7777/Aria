@@ -93,6 +93,15 @@ def _remove_backups_and_caches(search_roots: Iterable[Path]) -> tuple[int, int]:
         for bak_file in root.rglob("*.bak"):
             if bak_file.is_file() and _remove_file(bak_file):
                 bak_removed += 1
+        for bak_file in root.rglob("*.bak?"):
+            if bak_file.is_file() and _remove_file(bak_file):
+                bak_removed += 1
+        for bak_file in root.rglob("*.json.tmp"):
+            if bak_file.is_file() and _remove_file(bak_file):
+                bak_removed += 1
+        for bak_file in root.rglob("*.backup.*"):
+            if bak_file.is_file() and _remove_file(bak_file):
+                bak_removed += 1
         for pycache in root.rglob("__pycache__"):
             if pycache.is_dir() and pycache not in seen_pycache:
                 _rmtree_force(pycache)
@@ -347,5 +356,28 @@ def verify_release_tree(app_root: Path) -> list[str]:
 
     if list(app_root.glob("*.log")):
         issues.append("root still has *.log files")
+
+    # Scan ALL json files under config/ for leaked API keys (catches backup files)
+    config_dir = app_root / "config"
+    if config_dir.exists():
+        for json_file in config_dir.rglob("*.json"):
+            # Skip the already-checked hotwords.json
+            if json_file.name == "hotwords.json":
+                continue
+            try:
+                text = json_file.read_text(encoding="utf-8")
+                if re.search(r"sk-[A-Za-z0-9_-]{8,}", text):
+                    issues.append(
+                        f"config/{json_file.relative_to(config_dir)} contains API key pattern"
+                    )
+            except OSError:
+                pass
+
+    # Check for any residual backup files (*.bak, *.bak?, *.json.tmp, *.backup.*)
+    for pattern in ("*.bak", "*.bak?", "*.json.tmp", "*.backup.*"):
+        leaked = list(app_root.rglob(pattern))
+        if leaked:
+            names = ", ".join(str(f.relative_to(app_root)) for f in leaked[:5])
+            issues.append(f"residual backup files ({pattern}): {names}")
 
     return issues

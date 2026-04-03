@@ -34,10 +34,13 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 BUILD_DIR = PROJECT_ROOT / "build_portable"
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 SEVEN_ZIP = Path("G:/7-Zip/7z.exe")
-DIST_NAME = "Aria_release_lite"
-DIST_DIR = PROJECT_ROOT / "dist_portable" / DIST_NAME
 
-# GitHub
+DIST_NAME_LITE = "Aria_release_lite"
+DIST_NAME_FULL = "Aria_release_full"
+DIST_DIR_LITE = PROJECT_ROOT / "dist_portable" / DIST_NAME_LITE
+DIST_DIR_FULL = PROJECT_ROOT / "dist_portable" / DIST_NAME_FULL
+
+# GitHub (only lite is uploaded — full is too large)
 GH_REPO = "Xingxun7777/Aria"
 
 
@@ -161,16 +164,17 @@ def check_git_clean() -> None:
 # =============================================================================
 
 
-def run_build() -> None:
+def run_build(dist_name: str, full: bool = False) -> None:
     """Run build.py to create dist (sanitization happens inside build.py on dist copy)."""
-    log("Running build.py (lite mode)...")
-    run(
-        [str(VENV_PYTHON), str(BUILD_DIR / "build.py"), "--dist-name", DIST_NAME],
-        cwd=str(PROJECT_ROOT),
-    )
+    mode = "full" if full else "lite"
+    log(f"Running build.py ({mode} mode)...")
+    cmd = [str(VENV_PYTHON), str(BUILD_DIR / "build.py"), "--dist-name", dist_name]
+    if full:
+        cmd.append("--full")
+    run(cmd, cwd=str(PROJECT_ROOT))
 
 
-def run_build_launcher_exe() -> None:
+def run_build_launcher_exe(dist_name: str) -> None:
     """Compile Aria.exe launcher via PyInstaller."""
     log("Building launcher EXE...")
     run(
@@ -178,43 +182,55 @@ def run_build_launcher_exe() -> None:
             str(VENV_PYTHON),
             str(BUILD_DIR / "build_launcher_exe.py"),
             "--dist-name",
-            DIST_NAME,
+            dist_name,
         ],
         cwd=str(PROJECT_ROOT),
     )
 
 
-def verify_no_api_keys() -> None:
-    """Final safety check: scan dist hotwords.json for leaked API keys."""
-    log("Verifying no API keys in dist...")
+def verify_no_api_keys(dist_dir: Path) -> None:
+    """Final safety check: scan ALL config json files in dist for leaked API keys."""
+    log(f"Verifying no API keys in {dist_dir.name}...")
 
-    hotwords_file = DIST_DIR / "_internal" / "app" / "aria" / "config" / "hotwords.json"
+    config_dir = dist_dir / "_internal" / "app" / "aria" / "config"
+    hotwords_file = config_dir / "hotwords.json"
     if not hotwords_file.exists():
         raise RuntimeError(f"hotwords.json not found in dist: {hotwords_file}")
 
-    content = hotwords_file.read_text(encoding="utf-8")
-
-    # Check for common API key patterns
+    # Check for common API key patterns across ALL json files in config/
     patterns = [
         (r"sk-[A-Za-z0-9_-]{8,}", "OpenAI/OpenRouter API key"),
         (r"sk-or-v1-[A-Za-z0-9]{48,}", "OpenRouter API key"),
         (r"AIza[A-Za-z0-9_-]{35}", "Google API key"),
     ]
 
-    for pattern, desc in patterns:
-        if re.search(pattern, content):
-            raise RuntimeError(
-                f"SECURITY: {desc} found in dist hotwords.json!\n"
-                f"File: {hotwords_file}\n"
-                f"Pattern: {pattern}\n"
-                f"Build aborted. This should not happen — check build.py sanitization."
-            )
+    for json_file in config_dir.rglob("*.json"):
+        content = json_file.read_text(encoding="utf-8")
+        rel = json_file.relative_to(config_dir)
+        for pattern, desc in patterns:
+            if re.search(pattern, content):
+                raise RuntimeError(
+                    f"SECURITY: {desc} found in dist config/{rel}!\n"
+                    f"File: {json_file}\n"
+                    f"Pattern: {pattern}\n"
+                    f"Build aborted. This should not happen — check build.py sanitization."
+                )
 
-    # Also verify key fields are empty
-    config = json.loads(content)
+    # Also verify key fields are empty in hotwords.json
+    config = json.loads(hotwords_file.read_text(encoding="utf-8"))
     polish = config.get("polish", {})
     if polish.get("api_key"):
         raise RuntimeError("SECURITY: polish.api_key is not empty in dist!")
+
+    # Check for residual backup files that shouldn't be in dist
+    for pattern in ("*.bak", "*.bak?", "*.json.tmp", "*.backup.*"):
+        leaked = list(config_dir.rglob(pattern))
+        if leaked:
+            names = ", ".join(str(f.name) for f in leaked)
+            raise RuntimeError(
+                f"SECURITY: backup files in dist config/: {names}\n"
+                f"These may contain API keys. Build aborted."
+            )
 
     log("  No API keys found. Safe to distribute.")
 
@@ -224,9 +240,15 @@ def verify_no_api_keys() -> None:
 # =============================================================================
 
 
-def compress_7z(version: str) -> Path:
-    """Compress dist directory into a .7z archive."""
-    archive_name = f"Aria-v{version}-lite.7z"
+def compress_7z(version: str, dist_dir: Path, variant: str) -> Path:
+    """Compress dist directory into a .7z archive.
+
+    Args:
+        version: Version string (e.g. "1.0.3")
+        dist_dir: Path to the dist directory to compress
+        variant: "lite" or "full"
+    """
+    archive_name = f"Aria-v{version}-{variant}.7z"
     archive_path = PROJECT_ROOT / archive_name
 
     if archive_path.exists():
@@ -234,6 +256,8 @@ def compress_7z(version: str) -> Path:
         archive_path.unlink()
 
     log(f"Compressing to {archive_name}...")
+    # Use cwd=dist_dir so archive contains flat structure (Aria.exe at root),
+    # not nested dist_portable/Aria_release_lite/... paths.
     run(
         [
             str(SEVEN_ZIP),
@@ -242,8 +266,9 @@ def compress_7z(version: str) -> Path:
             "-mx=7",  # high compression (GitHub limit is 2 GiB)
             "-mmt=on",  # multi-threaded
             str(archive_path),
-            str(DIST_DIR / "*"),
+            ".",
         ],
+        cwd=str(dist_dir),
     )
 
     size_mb = archive_path.stat().st_size / (1024 * 1024)
@@ -391,12 +416,17 @@ def main() -> int:
     parser.add_argument(
         "--skip-build",
         action="store_true",
-        help="Skip build step (use existing dist directory)",
+        help="Skip build step (use existing dist directories)",
     )
     parser.add_argument(
         "--skip-upload",
         action="store_true",
         help="Build and compress but don't create/upload to GitHub",
+    )
+    parser.add_argument(
+        "--lite-only",
+        action="store_true",
+        help="Only build and upload lite version (skip full)",
     )
     args = parser.parse_args()
 
@@ -404,16 +434,20 @@ def main() -> int:
         version = read_version()
         log(f"Aria Release Pipeline v{version}")
         log(f"Source: {PROJECT_ROOT}")
-        log(f"Dist:   {DIST_DIR}")
+        log(f"Lite:   {DIST_DIR_LITE}")
+        log(f"Full:   {DIST_DIR_FULL}")
 
         if args.dry_run:
             log("[DRY RUN MODE]")
             print()
-            log(f"Would build lite version to: {DIST_DIR}")
+            log(f"Would build lite to: {DIST_DIR_LITE}")
+            if not args.lite_only:
+                log(f"Would build full to: {DIST_DIR_FULL}")
             log(f"Would compress to: Aria-v{version}-lite.7z")
+            if not args.lite_only:
+                log(f"Would compress to: Aria-v{version}-full.7z")
             if not args.skip_upload:
-                log(f"Would create/update GitHub release: v{version}")
-                log(f"Would upload archive to: {GH_REPO}")
+                log(f"Would upload lite archive to GitHub: {GH_REPO}")
             return 0
 
         # Phase 0: Pre-flight
@@ -422,38 +456,59 @@ def main() -> int:
         check_tools()
         check_git_clean()
 
-        # Phase 1: Build
-        archive_path = None
+        # Phase 1a: Build Lite
         if not args.skip_build:
             log_phase(1, "Build Lite")
-            run_build()
-            run_build_launcher_exe()
-            verify_no_api_keys()
+            run_build(DIST_NAME_LITE, full=False)
+            run_build_launcher_exe(DIST_NAME_LITE)
+            verify_no_api_keys(DIST_DIR_LITE)
         else:
-            log_phase(1, "Build (SKIPPED)")
-            if not DIST_DIR.exists():
+            log_phase(1, "Build Lite (SKIPPED)")
+            if not DIST_DIR_LITE.exists():
                 raise RuntimeError(
-                    f"--skip-build specified but dist not found: {DIST_DIR}"
+                    f"--skip-build but lite dist not found: {DIST_DIR_LITE}"
                 )
-            log(f"  Using existing dist: {DIST_DIR}")
-            verify_no_api_keys()
+            log(f"  Using existing: {DIST_DIR_LITE}")
+            verify_no_api_keys(DIST_DIR_LITE)
+
+        # Phase 1b: Build Full
+        if not args.lite_only:
+            if not args.skip_build:
+                log_phase("1b", "Build Full")
+                run_build(DIST_NAME_FULL, full=True)
+                run_build_launcher_exe(DIST_NAME_FULL)
+                verify_no_api_keys(DIST_DIR_FULL)
+            else:
+                log_phase("1b", "Build Full (SKIPPED)")
+                if DIST_DIR_FULL.exists():
+                    log(f"  Using existing: {DIST_DIR_FULL}")
+                    verify_no_api_keys(DIST_DIR_FULL)
+                else:
+                    log(f"  Full dist not found, skipping full build")
 
         # Phase 2: Compress
         log_phase(2, "Compress")
-        archive_path = compress_7z(version)
+        archive_lite = compress_7z(version, DIST_DIR_LITE, "lite")
+        archive_full = None
+        if not args.lite_only and DIST_DIR_FULL.exists():
+            archive_full = compress_7z(version, DIST_DIR_FULL, "full")
 
-        # Phase 3: GitHub Release
+        # Phase 3: GitHub Release (lite only — full is local)
         if not args.skip_upload:
             log_phase(3, "GitHub Release")
             ensure_git_tag(version)
             create_or_update_release(version)
-            upload_asset(version, archive_path)
+            upload_asset(version, archive_lite)
         else:
             log_phase(3, "GitHub Release (SKIPPED)")
             log("  --skip-upload specified, skipping GitHub operations")
 
         # Phase 4: Summary
-        print_summary(version, archive_path)
+        print_summary(version, archive_lite)
+        if archive_full:
+            size_mb = archive_full.stat().st_size / (1024 * 1024)
+            log(f"Full archive: {archive_full.name} ({size_mb:.0f} MB) — local only")
+
         return 0
 
     except subprocess.CalledProcessError as e:
