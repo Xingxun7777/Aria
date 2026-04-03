@@ -179,14 +179,14 @@ def _sanitize_wakeword_config(config_dir: Path, logger: Logger) -> None:
         },
     )
 
-    config["enabled"] = False
-    config["wakeword"] = ""
+    config["enabled"] = True
+    config["wakeword"] = "小助手"
     config["available_wakewords"] = GENERIC_WAKEWORDS.copy()
     config["cooldown_ms"] = int(config.get("cooldown_ms", 500) or 500)
     config.setdefault("commands", {})
 
     _write_json(wakeword_file, config)
-    logger("  Sanitized: config/wakeword.json (blank + disabled)")
+    logger("  Sanitized: config/wakeword.json (default: 小助手, enabled)")
 
 
 def _sanitize_commands_config(config_dir: Path, logger: Logger) -> None:
@@ -201,8 +201,8 @@ def _sanitize_commands_config(config_dir: Path, logger: Logger) -> None:
         },
     )
 
-    config["enabled"] = False
-    config["prefix"] = ""
+    config["enabled"] = True
+    config["prefix"] = "小助手"
     config["cooldown_ms"] = int(config.get("cooldown_ms", 500) or 500)
     config.setdefault("commands", {})
 
@@ -308,17 +308,17 @@ def verify_release_tree(app_root: Path) -> list[str]:
     if re.search(r"sk-[A-Za-z0-9_-]{8,}", hotwords_text):
         issues.append("config/hotwords.json still matches API key pattern")
 
+    # Wakeword/commands: should be enabled with default "小助手" for new users
+    # Only check for user-private wakewords that leaked through
     wakeword = _read_json(app_root / "config" / "wakeword.json", {})
-    if wakeword.get("enabled"):
-        issues.append("config/wakeword.json is still enabled")
-    if wakeword.get("wakeword"):
-        issues.append("config/wakeword.json still has active wakeword")
+    ww = wakeword.get("wakeword", "")
+    if ww and ww not in GENERIC_WAKEWORDS:
+        issues.append(f"config/wakeword.json has non-default wakeword: '{ww}'")
 
     commands = _read_json(app_root / "config" / "commands.json", {})
-    if commands.get("enabled"):
-        issues.append("config/commands.json is still enabled")
-    if commands.get("prefix"):
-        issues.append("config/commands.json still has prefix")
+    prefix = commands.get("prefix", "")
+    if prefix and prefix not in GENERIC_WAKEWORDS:
+        issues.append(f"config/commands.json has non-default prefix: '{prefix}'")
 
     for rel_dir in ("DebugLog", "data/history", "data/history_txt", "data/insights"):
         path = app_root / rel_dir
