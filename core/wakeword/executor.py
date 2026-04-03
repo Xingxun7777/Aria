@@ -275,7 +275,7 @@ class WakewordExecutor:
     def _set_reminder(self, _value) -> bool:
         """Parse time + content from voice command and create reminder.
 
-        Uses undo model (Gemini review): reminder defaults to confirmed=True.
+        Uses undo model: reminder defaults to confirmed=True.
         UI shows confirmation toast with [撤销] button.
         """
         from datetime import datetime, timedelta

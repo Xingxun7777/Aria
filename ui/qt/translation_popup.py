@@ -4,7 +4,7 @@ Translation Popup Widget
 Non-focus-stealing popup to display translation results.
 Designed for Aria v1.1 action-driven architecture.
 
-UI Spec (from Gemini consultation):
+UI Spec:
 - Size: 360px fixed width, height adaptive (max 300px)
 - Position: Cursor right-bottom (offset 10, 20), auto-avoid screen edges
 - Background: #1E1E1E 95% opacity, rounded 8px

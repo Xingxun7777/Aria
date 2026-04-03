@@ -479,7 +479,7 @@ class FunASREngine(ASREngine):
         """
         Set hotwords with individual scores for FunASR.
 
-        Based on tri-party analysis weight-to-score mapping:
+        Based on analysis weight-to-score mapping:
         - weight 0.3 → score 20 (hint)
         - weight 0.5 → score 50 (standard)
         - weight 1.0 → score 80 (lock)

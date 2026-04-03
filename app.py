@@ -837,7 +837,7 @@ class AriaApp:
     def _screen_pinyin_correct(self, text: str, screen_keywords: str) -> tuple:
         """Unified L2.5 Phonetic Matcher — screen-aware homophone correction.
 
-        Design (三方会谈 consensus 2026-03-23):
+        Design (2026-03-23):
         - Pre-compute pinyin array for entire text (one pass, cached)
         - Sliding window scan for screen keywords (CJK 3+ chars only)
         - Toneless pinyin for broader recall (ASR tones unreliable)

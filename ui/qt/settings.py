@@ -619,7 +619,7 @@ class SettingsWindow(QMainWindow):
         return w
 
     # ==========================================================================
-    # Tab 2: Hotwords (Simplified UX - 三方会谈 redesign)
+    # Tab 2: Hotwords (Simplified UX - redesign)
     # ==========================================================================
     def _create_hotwords_tab(self) -> QWidget:
         w = QWidget()
@@ -876,7 +876,7 @@ class SettingsWindow(QMainWindow):
         text, ok = QInputDialog.getMultiLineText(
             self,
             "批量导入",
-            "每行一个词汇（或用逗号、顿号分隔）:\n\n示例:\nclaude\ngithub\n三方会谈",
+            "每行一个词汇（或用逗号、顿号分隔）:\n\n示例:\nclaude\ngithub\nreview",
         )
         if ok and text.strip():
             # Support multiple separators

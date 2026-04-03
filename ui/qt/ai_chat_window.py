@@ -4,7 +4,7 @@ AI Chat Window
 Floating chat dialog for AI conversations with context.
 Designed for Aria v1.1 action-driven architecture.
 
-UI Spec (from Gemini consultation):
+UI Spec:
 - Size: 400x500px, resizable
 - Quote area: Top section showing selected text summary (max 2 lines)
 - Chat area: Bubble-style messages with Markdown support

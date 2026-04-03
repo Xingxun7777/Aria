@@ -2,7 +2,7 @@
 Aria Portable Build Script v2.0
 ====================================
 Creates a portable distribution using embedded Python.
-Reviewed and fixed by Codex + Gemini 三方会谈.
+Reviewed and hardened for production.
 
 Usage:
     python build_portable/build.py [--full] [--dist-name NAME]

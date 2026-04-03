@@ -1,6 +1,6 @@
 # bridge.py
 # Thread-safe signal bridge between backend and Qt UI
-# Based on F3 spec section 4.1 with Codex-recommended thread safety
+# Based on F3 spec section 4.1 with Thread-safe signal bridge
 # v1.1: Added action-driven architecture support
 
 from pathlib import Path

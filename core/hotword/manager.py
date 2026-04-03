@@ -332,7 +332,7 @@ class HotWordManager:
         """
         Get hotwords for Polish, split into tiers by weight.
 
-        5-tier system (v3.4, tri-party consensus):
+        5-tier system (v3.4, design consensus):
         - critical (weight = 1.0): Mandatory vocabulary, LLM must use these spellings
         - reference (weight = 0.5): Reference words, LLM should prefer if phonetically similar
         - hint (weight = 0.3): Light reference, included in polish for safe correction
@@ -453,7 +453,7 @@ class HotWordManager:
         """
         Get hotwords filtered by layer based on weight.
 
-        Weight-to-layer mapping (v3.4, tri-party consensus):
+        Weight-to-layer mapping (v3.4, design consensus):
         - weight >= 0.3: Layer 1 (ASR) - hint to ASR (FunASR score only)
         - weight >= 0.1: Layer 2 (Regex) - deterministic replacement (safe, no hallucination)
         - weight >= 1.0: Layer 2.5 (Pinyin) - fuzzy matching allowed (aggressive)

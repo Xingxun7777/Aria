@@ -15,7 +15,7 @@ from ..logging import get_system_logger
 logger = get_system_logger()
 
 # Shared default prompt template - single source of truth
-# Based on Codex + Gemini tri-party analysis (v4.0)
+# Hotword weight architecture (v4.0)
 # v4.0: Added phonetic alias table for cross-lingual matching
 # Key insight: LLM needs explicit Chinese-sound → English-term mappings
 DEFAULT_POLISH_PROMPT = """任务：修正语音识别文本的错别字和标点。
@@ -324,7 +324,7 @@ class AIPolisher:
                 rendered = f"润色以下文字（参考词汇：{hotwords_str}）：\n\n{text}"
 
         # v3.5: Post-inject cautious block before the TEMPLATE's final "原文：" anchor.
-        # FIX (tri-party R1): Must find anchor on raw template BEFORE format(), not after.
+        # FIX (review R1): Must find anchor on raw template BEFORE format(), not after.
         # If we searched rendered text, user input containing "原文：" would corrupt injection.
         if self.config.hotwords_cautious:
             cautious_str = ", ".join(self.config.hotwords_cautious[:10])

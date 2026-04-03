@@ -24,7 +24,7 @@ logger = get_system_logger()
 
 # ============================================================================
 # Windows API declarations (MUST be at top - before any functions that use them)
-# use_last_error=True for accurate ctypes.get_last_error() (Codex R2 review)
+# use_last_error=True for accurate ctypes.get_last_error()
 # ============================================================================
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -54,15 +54,15 @@ def is_process_elevated(pid: int) -> bool:
     """
     Check if a process is running with elevated (admin) privileges.
     Uses module-level WinDLL instances with proper argtypes/restype for 64-bit safety.
-    (Gemini R3 review: local ctypes.windll causes 64-bit handle truncation)
+    (local ctypes.windll causes 64-bit handle truncation)
     """
-    ERROR_ACCESS_DENIED = 5  # Codex R3: treat access-denied as elevated
+    ERROR_ACCESS_DENIED = 5  # treat access-denied as elevated
 
     # Use module-level kernel32 (configured with argtypes/restype below)
     # Try to open the process
     hProcess = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not hProcess:
-        # Codex R3: Access-denied means target is elevated/protected, not "not elevated"
+        # Access-denied means target is elevated/protected, not "not elevated"
         last_error = ctypes.get_last_error()
         if last_error == ERROR_ACCESS_DENIED:
             return True  # Treat access-denied as elevated
@@ -72,7 +72,7 @@ def is_process_elevated(pid: int) -> bool:
         # Open the process token
         hToken = wintypes.HANDLE()
         if not advapi32.OpenProcessToken(hProcess, TOKEN_QUERY, ctypes.byref(hToken)):
-            # Codex R3: Access-denied on token also means elevated/protected
+            # Access-denied on token also means elevated/protected
             last_error = ctypes.get_last_error()
             if last_error == ERROR_ACCESS_DENIED:
                 return True
@@ -100,7 +100,7 @@ def is_process_elevated(pid: int) -> bool:
 
 def is_current_process_elevated() -> bool:
     """Check if the current process (Aria) is running elevated."""
-    # Use module-level kernel32 for 64-bit safety (Gemini R3 review)
+    # Use module-level kernel32 for 64-bit safety
     return is_process_elevated(kernel32.GetCurrentProcessId())
 
 
@@ -108,7 +108,7 @@ def get_foreground_window_pid() -> Tuple[int, int]:
     """
     Get the foreground window handle and its process ID.
     Returns (hwnd, pid).
-    Uses module-level user32 for 64-bit safety (Gemini R3 review).
+    Uses module-level user32 for 64-bit safety .
     """
     # Use module-level user32 (configured with argtypes/restype below)
     hwnd = user32.GetForegroundWindow()
@@ -220,9 +220,9 @@ GMEM_MOVEABLE = 0x0002
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
-KEYEVENTF_EXTENDEDKEY = 0x0001  # For extended keys (Claude R3 review)
+KEYEVENTF_EXTENDEDKEY = 0x0001  # For extended keys
 
-# Extended keys that need KEYEVENTF_EXTENDEDKEY flag (Claude R3 review)
+# Extended keys that need KEYEVENTF_EXTENDEDKEY flag
 # These keys have 0xE0 prefix in their scan codes
 EXTENDED_VK_CODES = {
     0x2D,  # VK_INSERT
@@ -375,7 +375,7 @@ user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = wintypes.UINT
 
 # Fix types for 64-bit Windows - handle-returning functions need explicit types
-# Without these, 64-bit handles may be truncated to 32-bit (Codex review finding)
+# Without these, 64-bit handles may be truncated to 32-bit
 kernel32.GlobalAlloc.restype = ctypes.c_void_p
 kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
 kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
@@ -524,7 +524,7 @@ class OutputInjector:
 
         Windows clipboard can fail to open if another application (clipboard
         managers, RDP, etc.) is momentarily accessing it. This adds a retry
-        loop to handle such transient failures. (Gemini R2 review)
+        loop to handle such transient failures.
 
         Args:
             max_retries: Maximum number of retry attempts
@@ -543,10 +543,10 @@ class OutputInjector:
 
     def _get_clipboard_text(self) -> Optional[str]:
         """Get current clipboard text content."""
-        # Track if we acquired the lock (Claude R3 review: ensure release in finally)
+        # Track if we acquired the lock (ensure release in finally)
         lock_acquired = False
         try:
-            # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
+            # Acquire lock if available ( lock was unused)
             if self._clipboard_lock:
                 self._clipboard_lock.acquire()
                 lock_acquired = True
@@ -732,19 +732,19 @@ class OutputInjector:
         Returns:
             Tuple of (success, sequence_number).
             sequence_number is the clipboard sequence right after SetClipboardData,
-            used for race detection (Codex R3 review).
+            used for race detection .
 
-        Memory management notes (from Codex/Gemini review):
+        Memory management notes :
         - GlobalAlloc allocates memory that we own
         - If SetClipboardData succeeds, clipboard takes ownership (don't free)
         - If SetClipboardData fails, we must free the handle ourselves
         - If GlobalLock fails, we must free the handle ourselves
         """
-        # Track if we acquired the lock (Claude R3 review: ensure release in finally)
+        # Track if we acquired the lock (ensure release in finally)
         lock_acquired = False
         handle = None  # Track handle for cleanup on failure
         try:
-            # Acquire lock if available (Gemini/Codex R2 review: lock was unused)
+            # Acquire lock if available ( lock was unused)
             if self._clipboard_lock:
                 self._clipboard_lock.acquire()
                 lock_acquired = True
@@ -786,7 +786,7 @@ class OutputInjector:
                     handle = None
                     return False, None
 
-                # Codex R3: Get sequence number BEFORE CloseClipboard to avoid race
+                # Get sequence number BEFORE CloseClipboard to avoid race
                 # (other app could modify clipboard between Close and GetSequence)
                 seq_number = user32.GetClipboardSequenceNumber()
 
@@ -845,7 +845,7 @@ class OutputInjector:
             logger.warning(
                 f"SendInput returned {result}/4, error={ctypes.get_last_error()}"
             )
-            # Cleanup stuck keys to prevent modifier state carrying over (Codex R3 review)
+            # Cleanup stuck keys to prevent modifier state carrying over
             # Order: [0]=Ctrl down, [1]=V down, [2]=V up, [3]=Ctrl up
             self._cleanup_stuck_keys(result)
             return False
@@ -854,7 +854,7 @@ class OutputInjector:
     def _cleanup_stuck_keys(self, sent_count: int) -> None:
         """
         Send key-up events for any keys that might be stuck after partial SendInput.
-        (Codex R3 review: partial SendInput can leave modifier keys down)
+        (partial SendInput can leave modifier keys down)
 
         Args:
             sent_count: Number of events that were actually sent (0-3 for _send_paste)
@@ -894,7 +894,7 @@ class OutputInjector:
         """Send a single virtual key press (down + up)."""
         inputs = (INPUT * 2)()
 
-        # Determine if this is an extended key (Claude R3 review)
+        # Determine if this is an extended key
         extended_flag = KEYEVENTF_EXTENDEDKEY if vk_code in EXTENDED_VK_CODES else 0
 
         # Key down
@@ -1098,7 +1098,7 @@ class OutputInjector:
             _debug_log("restore_clipboard is DISABLED - skipping backup")
 
         # Set text to clipboard - returns (success, sequence_number)
-        # Codex R3: sequence captured inside _set_clipboard_text to avoid race
+        # sequence captured inside _set_clipboard_text to avoid race
         set_success, seq_after_set = self._set_clipboard_text(text)
         if not set_success:
             return False
@@ -1106,7 +1106,7 @@ class OutputInjector:
         # Small delay to ensure clipboard is ready
         time.sleep(self.config.paste_delay_ms / 1000)
 
-        # Send Ctrl+V - check result (Codex/Gemini R2 review)
+        # Send Ctrl+V - check result
         paste_success = self._send_paste()
         if not paste_success:
             logger.error("Failed to send Ctrl+V paste command")
@@ -1153,7 +1153,7 @@ class OutputInjector:
             return True
 
         # Log text length only at INFO, content at DEBUG to avoid sensitive data exposure
-        # (Codex/Claude R2 review: sensitive data logging concern)
+        # ( sensitive data logging concern)
         logger.info(f"Inserting text ({len(text)} chars)")
         logger.debug(f"Text preview: {text[:50]}{'...' if len(text) > 50 else ''}")
 
@@ -1239,7 +1239,7 @@ class OutputInjector:
 
         vk_key = VK_CODES[key_lower]
 
-        # Check if main key is extended (Claude R3 review)
+        # Check if main key is extended
         key_extended_flag = KEYEVENTF_EXTENDEDKEY if vk_key in EXTENDED_VK_CODES else 0
 
         # Validate and collect modifiers

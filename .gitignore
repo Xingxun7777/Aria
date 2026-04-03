@@ -84,3 +84,4 @@ test_paths.txt
 .tmp_arxiv/
 Aria-v1.0.2-lite/
 Aria-v1.0.2-full/
+*.stackdump
