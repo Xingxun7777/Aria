@@ -644,18 +644,7 @@ start "" "{runtime_exe}" -s -m aria.launcher
     (DIST_DIR / "Aria.cmd").write_text(cmd_content, encoding="utf-8")
     log("  Created Aria.cmd")
 
-    # 2. VBS silent launcher (robust version with absolute paths)
-    vbs_content = f'''Set WshShell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-base = fso.GetParentFolderName(WScript.ScriptFullName)
-WshShell.CurrentDirectory = base
-python = base & "\\{runtime_exe}"
-WshShell.Run """" & python & """ -s -m aria.launcher", 0, False
-'''
-    (DIST_DIR / "Aria.vbs").write_text(vbs_content, encoding="utf-8")
-    log("  Created Aria.vbs (silent launch)")
-
-    # 3. DEBUG launcher (shows console and errors)
+    # 2. DEBUG launcher (shows console and errors)
     debug_content = """@echo off
 cd /d "%~dp0"
 echo ========================================
@@ -695,55 +684,6 @@ pause
     log("  Created update.bat (one-click updater)")
 
     log("Launchers created.")
-
-
-def step_create_shortcut_generator():
-    """Step 7: Create a script to generate desktop shortcut."""
-    log("Step 7: Creating shortcut generator...")
-
-    runtime_exe = f"_internal\\{RUNTIME_EXE_NAME}"
-    if not (DIST_DIR / "_internal" / RUNTIME_EXE_NAME).exists():
-        runtime_exe = "_internal\\pythonw.exe"
-
-    # Copy icon file to dist
-    icon_src = PROJECT_ROOT / "assets" / "aria.ico"
-    if icon_src.exists():
-        icon_dst = DIST_DIR / "aria.ico"
-        shutil.copy2(icon_src, icon_dst)
-        log("  Copied aria.ico")
-    else:
-        log("  Warning: aria.ico not found, shortcut will use default icon")
-
-    # PowerShell script with icon support
-    ps_content = f"""# Run this to create a desktop shortcut
-$WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\\Desktop\\Aria.lnk")
-$RuntimeExe = "$PSScriptRoot\\{runtime_exe}"
-if (Test-Path $RuntimeExe) {{
-    $Shortcut.TargetPath = $RuntimeExe
-}} else {{
-    $Shortcut.TargetPath = "$PSScriptRoot\\_internal\\pythonw.exe"
-}}
-$Shortcut.Arguments = "-s -m aria.launcher"
-$Shortcut.WorkingDirectory = $PSScriptRoot
-$Shortcut.Description = "Aria - Local AI Voice Dictation"
-# Set custom icon
-$IconPath = "$PSScriptRoot\\aria.ico"
-if (Test-Path $IconPath) {{
-    $Shortcut.IconLocation = "$IconPath,0"
-}}
-$Shortcut.Save()
-Write-Host "Desktop shortcut created!"
-"""
-    (DIST_DIR / "CreateShortcut.ps1").write_text(ps_content, encoding="utf-8")
-
-    # CMD wrapper for PowerShell (bypasses execution policy)
-    cmd_wrapper = """@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0CreateShortcut.ps1"
-pause
-"""
-    (DIST_DIR / "CreateShortcut.cmd").write_text(cmd_wrapper, encoding="utf-8")
-    log("  Created CreateShortcut.ps1 and CreateShortcut.cmd")
 
 
 def step_verify_build(full_mode: bool = False):
@@ -928,19 +868,13 @@ def step_summary():
     log("")
     log("Directory structure:")
     log(f"  {DIST_DIR.name}/")
-    log("  +-- Aria.cmd        <- Standard launcher")
-    log("  +-- Aria.vbs        <- Silent launcher (recommended)")
-    log("  +-- Aria_debug.bat  <- Debug mode (shows errors)")
-    log("  +-- CreateShortcut.cmd   <- Create desktop shortcut")
+    log("  +-- Aria.cmd        <- 启动器")
+    log("  +-- Aria_debug.bat  <- 调试模式")
+    log("  +-- update.bat      <- 一键升级")
     log("  +-- _internal/")
     log("      +-- python.exe / pythonw.exe")
     log("      +-- app/aria/   <- Source code")
     log("      +-- Lib/site-packages/ <- Dependencies")
-    log("")
-    log("TESTING:")
-    log("  1. First, run Aria_debug.bat to check for errors")
-    log("  2. If OK, use Aria.vbs for silent launch")
-    log("  3. Upload _internal/pythonw.exe to VirusTotal (should be 0 detections)")
 
 
 # =============================================================================
@@ -1109,7 +1043,6 @@ def main():
             step_bundle_models()  # Bundle ASR models for offline use
         step_copy_site_packages()
         step_create_launcher()
-        step_create_shortcut_generator()
         step_verify_build(full_mode=args.full)
         step_summary()
 
