@@ -323,14 +323,14 @@ def main():
     print(f"         版本: {local_ver} → {new_ver}")
 
     if (aria_root / "app.py").exists() and (aria_root / "launcher.py").exists():
-        print("         核心文件完整 ✓")
+        print("         核心文件完整 [OK]")
     else:
         print("         [警告] 核心文件可能不完整，请检查！")
 
     print()
-    print("  ═══════════════════════════════════")
+    print("  ===================================")
     print(f"  升级完成！请重新启动 Aria。")
-    print("  ═══════════════════════════════════")
+    print("  ===================================")
     print()
     return 0
 
