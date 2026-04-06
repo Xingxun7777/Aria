@@ -32,7 +32,7 @@ class VADConfig:
         64  # Minimum speech duration to trigger (lowered for short utterances)
     )
     min_silence_ms: int = (
-        800  # Minimum silence to end speech segment (increased for natural pauses)
+        1500  # Minimum silence to end speech segment (1.5s tolerates natural pauses)
     )
     max_speech_ms: int = (
         15000  # Maximum speech segment length before forced split (15 seconds)

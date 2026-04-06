@@ -1654,8 +1654,8 @@ class SettingsWindow(QMainWindow):
         vad_layout.addRow("能量阈值:", self.vad_energy_threshold)
 
         self.vad_min_silence = QSpinBox()
-        self.vad_min_silence.setRange(100, 2000)
-        self.vad_min_silence.setValue(1200)
+        self.vad_min_silence.setRange(100, 3000)
+        self.vad_min_silence.setValue(1500)
         self.vad_min_silence.setSuffix(" ms")
         self.vad_min_silence.setToolTip(
             "检测到多长时间的静音后，认为一句话说完了\n"
@@ -1927,7 +1927,7 @@ class SettingsWindow(QMainWindow):
         self.chk_screen_ocr_polish.setChecked(vad.get("screen_ocr_polish", False))
         self.vad_threshold.setValue(vad.get("threshold", 0.2))
         self.vad_energy_threshold.setValue(vad.get("energy_threshold", 0.003))
-        self.vad_min_silence.setValue(vad.get("min_silence_ms", 1200))
+        self.vad_min_silence.setValue(vad.get("min_silence_ms", 1500))
 
         # Local polish
         local_polish = self.config.get("local_polish", {})
