@@ -8,5 +8,5 @@ Core modules:
 - config: Configuration templates and runtime config
 """
 
-__version__ = "1.0.3.10"
+__version__ = "1.0.3.11"
 __author__ = "Xingxun"

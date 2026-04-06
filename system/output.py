@@ -1248,8 +1248,14 @@ class OutputInjector:
                 proc = fg_info.get("process_name", "").lower()
                 if proc in _CLIPBOARD_FORCED_PROCESSES:
                     use_typewriter = False
+                    # Safety: strip newlines for terminals — \n in clipboard paste
+                    # would execute each line as a separate command.
+                    # Polish prompt says "no newlines in terminal" but LLM isn't 100%.
+                    text = (
+                        text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+                    )
                     logger.info(
-                        f"Clipboard forced for {proc} (typewriter incompatible)"
+                        f"Clipboard forced for {proc} (terminal, newlines stripped)"
                     )
             except Exception:
                 pass
