@@ -239,7 +239,6 @@ EXTENDED_VK_CODES = {
 
 # Virtual key codes - Basic
 VK_CONTROL = 0x11
-VK_RETURN = 0x0D
 VK_V = 0x56
 
 # Virtual key codes - Extended for commands
@@ -1014,10 +1013,9 @@ class OutputInjector:
         except Exception:
             pass
 
-        # Normalize newlines to \n for both paths.
-        # - EM_REPLACESEL: \n → \r\n in the char loop
-        # - SendInput: \n → VK_RETURN keypress in the char loop
-        # Terminal protection is handled upstream (_CLIPBOARD_FORCED_PROCESSES).
+        # Normalize newlines to \n.
+        # - EM_REPLACESEL path: \n → \r\n in the char loop (safe for Edit/RichEdit)
+        # - SendInput path: \n skipped (can't be safely sent as keypress)
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
         method = "EM_REPLACESEL" if use_em_replacesel else "SendInput UNICODE"
@@ -1052,29 +1050,13 @@ class OutputInjector:
                     ctypes.cast(text_buf, wintypes.LPARAM),
                 )
             else:
-                # SendInput: for custom controls, remote desktop, etc.
-                # Newline → VK_RETURN keypress (works in all text editors).
+                # SendInput UNICODE: for custom controls, remote desktop, etc.
+                # Skip newlines — they can't be safely sent via SendInput
+                # (VK_RETURN triggers "send" in chat apps, form submit on websites).
+                # Structured text with \n is handled by the clipboard auto-switch
+                # in insert_text() before reaching this method.
                 if char == "\n":
-                    inputs = (INPUT * 2)()
-                    inputs[0].type = INPUT_KEYBOARD
-                    inputs[0].union.ki.wVk = VK_RETURN
-                    inputs[0].union.ki.dwFlags = 0
-                    inputs[0].union.ki.time = 0
-                    inputs[0].union.ki.dwExtraInfo = 0
-                    inputs[1].type = INPUT_KEYBOARD
-                    inputs[1].union.ki.wVk = VK_RETURN
-                    inputs[1].union.ki.dwFlags = KEYEVENTF_KEYUP
-                    inputs[1].union.ki.time = 0
-                    inputs[1].union.ki.dwExtraInfo = 0
-                    result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
-                    if result != 2:
-                        logger.error(
-                            f"SendInput VK_RETURN failed after {chars_sent} chars"
-                        )
-                        return False
                     chars_sent += 1
-                    if delay_s > 0:
-                        time.sleep(delay_s)
                     continue
 
                 codepoint = ord(char)
@@ -1271,6 +1253,30 @@ class OutputInjector:
                     )
             except Exception:
                 pass
+
+        # Auto-switch to clipboard if text has newlines and target is NOT a
+        # known text control (Edit/RichEdit). Clipboard paste (Ctrl+V) inserts
+        # newlines correctly in all apps without triggering "send" actions.
+        if use_typewriter and "\n" in text:
+            try:
+                hwnd = user32.GetForegroundWindow()
+                tid = user32.GetWindowThreadProcessId(hwnd, None)
+                gti = GUITHREADINFO()
+                gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+                focus_hwnd = hwnd
+                if user32.GetGUIThreadInfo(tid, ctypes.byref(gti)) and gti.hwndFocus:
+                    focus_hwnd = gti.hwndFocus
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(focus_hwnd, cls_buf, 256)
+                if cls_buf.value.lower() not in _EM_REPLACESEL_CLASSES:
+                    use_typewriter = False
+                    logger.info(
+                        "Clipboard forced: text has newlines, "
+                        f"target class '{cls_buf.value}' not Edit/RichEdit"
+                    )
+            except Exception:
+                use_typewriter = False
+                logger.info("Clipboard forced: text has newlines (class check failed)")
 
         if use_typewriter:
             # Layer 2: Typewriter mode

@@ -370,13 +370,6 @@ def main():
                 print()
                 return 0
 
-    # 确认
-    print()
-    confirm = input("  是否升级？(Y/N): ").strip()
-    if confirm.upper() != "Y":
-        print("  已取消。")
-        return 0
-
     # 更新
     print()
     print("  [2/3] 更新文件...")
