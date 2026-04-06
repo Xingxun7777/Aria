@@ -1225,12 +1225,11 @@ class OutputInjector:
         # ========================================
         use_typewriter = self.config.typewriter_mode
 
-        # Force clipboard mode for apps where SendInput UNICODE doesn't render
-        # correctly: terminals (silently fail) and RichEdit apps like WordPad
-        # (characters stored correctly but display as white boxes □).
+        # Force clipboard mode for terminals where SendInput silently fails.
+        # Note: WordPad/RichEdit no longer here — handled by EM_REPLACESEL path
+        # in _insert_text_typewriter() which avoids the white-box issue.
         if use_typewriter:
             _CLIPBOARD_FORCED_PROCESSES = {
-                # Terminals: SendInput/WM_CHAR silently fails
                 "windowsterminal.exe",
                 "cmd.exe",
                 "powershell.exe",
@@ -1239,10 +1238,6 @@ class OutputInjector:
                 "wezterm-gui.exe",
                 "alacritty.exe",
                 "hyper.exe",
-                # RichEdit apps: SendInput UNICODE renders as white boxes □
-                # (chars stored correctly — copy/paste works — but display broken)
-                "wordpad.exe",
-                "write.exe",
             }
             try:
                 fg_info = get_foreground_window_info()
