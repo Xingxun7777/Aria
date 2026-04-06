@@ -991,10 +991,6 @@ class OutputInjector:
         if not text:
             return True
 
-        # Strip newlines — in typewriter mode, newlines become Enter keypresses
-        # which triggers "send" in terminals, chat apps, etc. Replace with space.
-        text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-
         # Record initial foreground window for focus loss detection
         initial_hwnd = user32.GetForegroundWindow()
         delay_s = self.config.typewriter_delay_ms / 1000
@@ -1016,6 +1012,15 @@ class OutputInjector:
             use_em_replacesel = target_class in _EM_REPLACESEL_CLASSES
         except Exception:
             pass
+
+        # Newline handling depends on target control type:
+        # - Edit/RichEdit (EM_REPLACESEL): normalize to \n, send as \r\n per char
+        # - SendInput path (chat apps, custom controls): strip newlines
+        #   (Enter = send message in chat apps, dangerous)
+        if use_em_replacesel:
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
+        else:
+            text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
 
         method = "EM_REPLACESEL" if use_em_replacesel else "SendInput UNICODE"
         logger.info(
@@ -1039,7 +1044,9 @@ class OutputInjector:
                 # EM_REPLACESEL: insert at cursor via the control's native text
                 # pipeline. Handles font linking correctly for CJK characters.
                 # wParam=1 enables undo support.
-                text_buf = ctypes.create_unicode_buffer(char)
+                # Newline: send \r\n (Windows line ending for Edit/RichEdit).
+                insert_str = "\r\n" if char == "\n" else char
+                text_buf = ctypes.create_unicode_buffer(insert_str)
                 user32.SendMessageW(
                     target_hwnd,
                     EM_REPLACESEL,
