@@ -98,7 +98,15 @@ def main():
         app = QApplication(sys.argv)
         app.setApplicationName("Aria Splash")
 
-        splash = SplashWindow()
+        # Read version for display
+        _version = ""
+        try:
+            import aria
+
+            _version = getattr(aria, "__version__", "")
+        except Exception:
+            pass
+        splash = SplashWindow(version=_version)
         splash.show()
         log_error("Splash window shown")
 

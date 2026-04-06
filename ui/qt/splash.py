@@ -58,8 +58,9 @@ class Config:
 class SplashWindow(QWidget):
     closed = Signal()
 
-    def __init__(self):
+    def __init__(self, version: str = ""):
         super().__init__()
+        self._version = version
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)  # Better transparency on Windows
@@ -226,13 +227,20 @@ class SplashWindow(QWidget):
             p.setBrush(self._wave_grad)
             p.drawPath(bar_path)
 
-        # Logo
+        # Logo + version
         logo_x = wave_x + 3 * (bar_w + bar_gap) + 6
         font = QFont("Segoe UI", 12, QFont.Bold)
         font.setLetterSpacing(QFont.AbsoluteSpacing, -0.3)
         p.setFont(font)
         p.setPen(Config.TEXT_LIGHT)
         p.drawText(int(logo_x), int(cy + margin_top + 13), "Aria")
+
+        if self._version:
+            ver_font = QFont("Segoe UI", 7)
+            p.setFont(ver_font)
+            p.setPen(Config.TEXT_MUTED)
+            ver_x = logo_x + p.fontMetrics().horizontalAdvance("Aria ") + 20
+            p.drawText(int(ver_x), int(cy + margin_top + 13), f"v{self._version}")
 
         # Status text (centered in content area)
         small_font = QFont("Segoe UI", 8)
