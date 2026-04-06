@@ -230,6 +230,13 @@ def extract_and_update(zip_data: bytes, aria_root: Path, install_root: Path):
             dst.write_bytes(zf.read(updater_zip))
             updated += 1
 
+    # ── 清理 __pycache__ 防止旧 .pyc 覆盖新 .py ──
+    for cache_dir in aria_root.rglob("__pycache__"):
+        try:
+            shutil.rmtree(cache_dir)
+        except Exception:
+            pass
+
     return updated, skipped
 
 
