@@ -2942,7 +2942,15 @@ class AriaApp:
             self._running = True
 
             # Background update check (non-blocking)
-            if self.config.get("general", {}).get("auto_check_update", True):
+            try:
+                import json
+
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                _auto_update = _cfg.get("general", {}).get("auto_check_update", True)
+            except Exception:
+                _auto_update = True
+            if _auto_update:
                 threading.Thread(
                     target=self._check_update_background, daemon=True
                 ).start()
