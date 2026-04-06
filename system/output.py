@@ -239,6 +239,7 @@ EXTENDED_VK_CODES = {
 
 # Virtual key codes - Basic
 VK_CONTROL = 0x11
+VK_RETURN = 0x0D
 VK_V = 0x56
 
 # Virtual key codes - Extended for commands
@@ -1013,14 +1014,11 @@ class OutputInjector:
         except Exception:
             pass
 
-        # Newline handling depends on target control type:
-        # - Edit/RichEdit (EM_REPLACESEL): normalize to \n, send as \r\n per char
-        # - SendInput path (chat apps, custom controls): strip newlines
-        #   (Enter = send message in chat apps, dangerous)
-        if use_em_replacesel:
-            text = text.replace("\r\n", "\n").replace("\r", "\n")
-        else:
-            text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        # Normalize newlines to \n for both paths.
+        # - EM_REPLACESEL: \n → \r\n in the char loop
+        # - SendInput: \n → VK_RETURN keypress in the char loop
+        # Terminal protection is handled upstream (_CLIPBOARD_FORCED_PROCESSES).
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
 
         method = "EM_REPLACESEL" if use_em_replacesel else "SendInput UNICODE"
         logger.info(
@@ -1054,7 +1052,31 @@ class OutputInjector:
                     ctypes.cast(text_buf, wintypes.LPARAM),
                 )
             else:
-                # SendInput UNICODE: for custom controls, remote desktop, etc.
+                # SendInput: for custom controls, remote desktop, etc.
+                # Newline → VK_RETURN keypress (works in all text editors).
+                if char == "\n":
+                    inputs = (INPUT * 2)()
+                    inputs[0].type = INPUT_KEYBOARD
+                    inputs[0].union.ki.wVk = VK_RETURN
+                    inputs[0].union.ki.dwFlags = 0
+                    inputs[0].union.ki.time = 0
+                    inputs[0].union.ki.dwExtraInfo = 0
+                    inputs[1].type = INPUT_KEYBOARD
+                    inputs[1].union.ki.wVk = VK_RETURN
+                    inputs[1].union.ki.dwFlags = KEYEVENTF_KEYUP
+                    inputs[1].union.ki.time = 0
+                    inputs[1].union.ki.dwExtraInfo = 0
+                    result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+                    if result != 2:
+                        logger.error(
+                            f"SendInput VK_RETURN failed after {chars_sent} chars"
+                        )
+                        return False
+                    chars_sent += 1
+                    if delay_s > 0:
+                        time.sleep(delay_s)
+                    continue
+
                 codepoint = ord(char)
                 if codepoint > 0xFFFF:
                     # Non-BMP: surrogate pair (emoji, etc.)

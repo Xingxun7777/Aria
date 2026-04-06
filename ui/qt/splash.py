@@ -234,12 +234,14 @@ class SplashWindow(QWidget):
         p.setFont(font)
         p.setPen(Config.TEXT_LIGHT)
         p.drawText(int(logo_x), int(cy + margin_top + 13), "Aria")
+        # Measure "Aria" width with the LOGO font before switching
+        aria_width = p.fontMetrics().horizontalAdvance("Aria")
 
         if self._version:
             ver_font = QFont("Segoe UI", 7)
             p.setFont(ver_font)
             p.setPen(Config.TEXT_MUTED)
-            ver_x = logo_x + p.fontMetrics().horizontalAdvance("Aria ") + 20
+            ver_x = logo_x + aria_width + 5
             p.drawText(int(ver_x), int(cy + margin_top + 13), f"v{self._version}")
 
         # Status text (centered in content area)
