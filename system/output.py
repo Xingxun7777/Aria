@@ -451,6 +451,19 @@ kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
 # Typewriter mode: PostMessage + GetGUIThreadInfo for cross-thread focus detection
 WM_CHAR = 0x0102
+EM_REPLACESEL = 0x00C2  # Insert text at cursor in Edit/RichEdit controls
+
+# Window class names that support EM_REPLACESEL (standard text controls).
+# For these controls, EM_REPLACESEL goes through the native text rendering
+# pipeline (including font linking for CJK), avoiding the white-box issue
+# that SendInput KEYEVENTF_UNICODE causes in RichEdit controls.
+_EM_REPLACESEL_CLASSES = {
+    "edit",
+    "richedit",
+    "richedit20a",
+    "richedit20w",
+    "richedit50w",
+}
 
 user32.PostMessageW.argtypes = [
     wintypes.HWND,
@@ -459,6 +472,17 @@ user32.PostMessageW.argtypes = [
     wintypes.LPARAM,
 ]
 user32.PostMessageW.restype = wintypes.BOOL
+
+user32.SendMessageW.argtypes = [
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+]
+user32.SendMessageW.restype = wintypes.LPARAM
+
+user32.GetClassNameW.argtypes = [wintypes.HWND, ctypes.c_wchar_p, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
 
 
 class GUITHREADINFO(ctypes.Structure):
@@ -950,23 +974,19 @@ class OutputInjector:
 
     def _insert_text_typewriter(self, text: str) -> bool:
         """
-        Insert text character-by-character using PostMessage WM_CHAR.
+        Insert text character-by-character (typewriter mode).
 
-        Uses PostMessageW to send WM_CHAR directly to the focused control,
-        bypassing SendInput entirely. This works through remote desktop tools
-        (ToDesk, etc.) that filter LLKHF_INJECTED keystrokes from SendInput.
+        Two strategies based on target control type:
+        - Standard text controls (Edit/RichEdit): EM_REPLACESEL message, which
+          goes through the control's native text pipeline including font linking.
+        - Other controls: SendInput + KEYEVENTF_UNICODE (works for custom
+          controls and remote desktop).
+
+        SendInput UNICODE bypasses font linking in RichEdit controls, causing
+        CJK characters to render as white boxes □ (data is correct — copy/paste
+        works — but display is broken). EM_REPLACESEL avoids this.
 
         Cross-thread focus detection via GetGUIThreadInfo (not GetFocus).
-
-        Features:
-        - Works through remote desktop (ToDesk, etc.)
-        - Handles surrogate pairs (emoji) correctly
-        - Detects focus loss and aborts
-        - Control characters sent as WM_CHAR with appropriate codepoint
-
-        Limitations (by design, not bugs):
-        - Does NOT work with DirectInput/RawInput games
-        - Slower than clipboard paste
         """
         if not text:
             return True
@@ -986,8 +1006,20 @@ class OutputInjector:
             logger.error("Typewriter mode: no focused window found")
             return False
 
+        # Detect if target is a standard text control (Edit/RichEdit).
+        # For these, use EM_REPLACESEL to avoid white-box rendering issue.
+        use_em_replacesel = False
+        try:
+            cls_buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(target_hwnd, cls_buf, 256)
+            target_class = cls_buf.value.lower()
+            use_em_replacesel = target_class in _EM_REPLACESEL_CLASSES
+        except Exception:
+            pass
+
+        method = "EM_REPLACESEL" if use_em_replacesel else "SendInput UNICODE"
         logger.info(
-            f"Typewriter mode: sending {len(text)} chars via WM_CHAR "
+            f"Typewriter mode: sending {len(text)} chars via {method} "
             f"to hwnd={target_hwnd:#x} (fg={initial_hwnd:#x})"
         )
 
@@ -1003,55 +1035,63 @@ class OutputInjector:
                     )
                     return False
 
-            codepoint = ord(char)
-
-            # Use SendInput + KEYEVENTF_UNICODE for reliable CJK input.
-            # PostMessageW WM_CHAR doesn't work for Chinese characters in many
-            # modern apps (shows □ white boxes). SendInput with Unicode scan codes
-            # is the standard Windows method for programmatic Unicode input.
-            if codepoint > 0xFFFF:
-                # Non-BMP: surrogate pair (emoji, etc.)
-                high = 0xD800 + ((codepoint - 0x10000) >> 10)
-                low = 0xDC00 + ((codepoint - 0x10000) & 0x3FF)
-                scan_codes = [high, low]
-            else:
-                scan_codes = [codepoint]
-
-            inputs = (INPUT * (len(scan_codes) * 2))()
-            idx = 0
-            for sc in scan_codes:
-                # Key down
-                inputs[idx].type = INPUT_KEYBOARD
-                inputs[idx].union.ki.wVk = 0
-                inputs[idx].union.ki.wScan = sc
-                inputs[idx].union.ki.dwFlags = KEYEVENTF_UNICODE
-                inputs[idx].union.ki.time = 0
-                inputs[idx].union.ki.dwExtraInfo = 0
-                idx += 1
-                # Key up
-                inputs[idx].type = INPUT_KEYBOARD
-                inputs[idx].union.ki.wVk = 0
-                inputs[idx].union.ki.wScan = sc
-                inputs[idx].union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-                inputs[idx].union.ki.time = 0
-                inputs[idx].union.ki.dwExtraInfo = 0
-                idx += 1
-
-            result = user32.SendInput(idx, inputs, ctypes.sizeof(INPUT))
-            if result != idx:
-                err = ctypes.get_last_error()
-                logger.error(
-                    f"SendInput UNICODE failed for '{char}' (U+{codepoint:04X}) "
-                    f"after {chars_sent} chars, sent={result}/{idx}, error={err}"
+            if use_em_replacesel:
+                # EM_REPLACESEL: insert at cursor via the control's native text
+                # pipeline. Handles font linking correctly for CJK characters.
+                # wParam=1 enables undo support.
+                text_buf = ctypes.create_unicode_buffer(char)
+                user32.SendMessageW(
+                    target_hwnd,
+                    EM_REPLACESEL,
+                    wintypes.WPARAM(1),
+                    ctypes.cast(text_buf, wintypes.LPARAM),
                 )
-                return False
+            else:
+                # SendInput UNICODE: for custom controls, remote desktop, etc.
+                codepoint = ord(char)
+                if codepoint > 0xFFFF:
+                    # Non-BMP: surrogate pair (emoji, etc.)
+                    high = 0xD800 + ((codepoint - 0x10000) >> 10)
+                    low = 0xDC00 + ((codepoint - 0x10000) & 0x3FF)
+                    scan_codes = [high, low]
+                else:
+                    scan_codes = [codepoint]
+
+                inputs = (INPUT * (len(scan_codes) * 2))()
+                idx = 0
+                for sc in scan_codes:
+                    # Key down
+                    inputs[idx].type = INPUT_KEYBOARD
+                    inputs[idx].union.ki.wVk = 0
+                    inputs[idx].union.ki.wScan = sc
+                    inputs[idx].union.ki.dwFlags = KEYEVENTF_UNICODE
+                    inputs[idx].union.ki.time = 0
+                    inputs[idx].union.ki.dwExtraInfo = 0
+                    idx += 1
+                    # Key up
+                    inputs[idx].type = INPUT_KEYBOARD
+                    inputs[idx].union.ki.wVk = 0
+                    inputs[idx].union.ki.wScan = sc
+                    inputs[idx].union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                    inputs[idx].union.ki.time = 0
+                    inputs[idx].union.ki.dwExtraInfo = 0
+                    idx += 1
+
+                result = user32.SendInput(idx, inputs, ctypes.sizeof(INPUT))
+                if result != idx:
+                    err = ctypes.get_last_error()
+                    logger.error(
+                        f"SendInput UNICODE failed for '{char}' (U+{codepoint:04X}) "
+                        f"after {chars_sent} chars, sent={result}/{idx}, error={err}"
+                    )
+                    return False
 
             chars_sent += 1
             if delay_s > 0:
                 time.sleep(delay_s)
 
         logger.info(
-            f"Typewriter mode: successfully sent {chars_sent} chars via SendInput UNICODE"
+            f"Typewriter mode: successfully sent {chars_sent} chars via {method}"
         )
         return True
 
@@ -1178,9 +1218,12 @@ class OutputInjector:
         # ========================================
         use_typewriter = self.config.typewriter_mode
 
-        # Force clipboard mode for terminal apps (WM_CHAR silently fails on them)
+        # Force clipboard mode for apps where SendInput UNICODE doesn't render
+        # correctly: terminals (silently fail) and RichEdit apps like WordPad
+        # (characters stored correctly but display as white boxes □).
         if use_typewriter:
-            _TERMINAL_PROCESSES = {
+            _CLIPBOARD_FORCED_PROCESSES = {
+                # Terminals: SendInput/WM_CHAR silently fails
                 "windowsterminal.exe",
                 "cmd.exe",
                 "powershell.exe",
@@ -1189,13 +1232,19 @@ class OutputInjector:
                 "wezterm-gui.exe",
                 "alacritty.exe",
                 "hyper.exe",
+                # RichEdit apps: SendInput UNICODE renders as white boxes □
+                # (chars stored correctly — copy/paste works — but display broken)
+                "wordpad.exe",
+                "write.exe",
             }
             try:
                 fg_info = get_foreground_window_info()
                 proc = fg_info.get("process_name", "").lower()
-                if proc in _TERMINAL_PROCESSES:
+                if proc in _CLIPBOARD_FORCED_PROCESSES:
                     use_typewriter = False
-                    logger.info(f"Terminal detected ({proc}), forcing clipboard mode")
+                    logger.info(
+                        f"Clipboard forced for {proc} (typewriter incompatible)"
+                    )
             except Exception:
                 pass
 

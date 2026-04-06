@@ -334,6 +334,16 @@ def main():
 
     bridge.settingChanged.connect(on_setting_changed)
 
+    def on_update_available(local_ver: str, remote_ver: str):
+        tray.showMessage(
+            "Aria 有新版本可用",
+            f"v{local_ver} → v{remote_ver}\n请运行 update.bat 升级",
+            QSystemTrayIcon.Information,
+            8000,
+        )
+
+    bridge.updateAvailable.connect(on_update_available)
+
     # Sound effects disabled - only hotkey press sounds in app.py
     # (start_recording beep and stop_recording beep)
 

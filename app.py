@@ -2941,6 +2941,12 @@ class AriaApp:
 
             self._running = True
 
+            # Background update check (non-blocking)
+            if self.config.get("general", {}).get("auto_check_update", True):
+                threading.Thread(
+                    target=self._check_update_background, daemon=True
+                ).start()
+
             print()
             print("=" * 60)
             if hotkey_ok:
@@ -3193,6 +3199,33 @@ class AriaApp:
             # Catch all exceptions to prevent config watcher from crashing the app
             logger.error(f"Config reload failed: {e}", exc_info=True)
             print(f"[HOT-RELOAD] Error: {e}")
+
+    def _check_update_background(self) -> None:
+        """Background thread: check GitHub for newer version, notify via bridge."""
+        try:
+            import time as _time
+
+            _time.sleep(3)  # Wait for UI to be ready
+
+            from . import __version__
+            from .update_tool import check_for_update
+
+            result = check_for_update(local_version=__version__)
+            if result["available"]:
+                msg = f"发现新版本 v{result['remote']}（当前 v{result['local']}）\n请运行 update.bat 升级"
+                print(f"[UPDATE] New version available: {result['remote']}")
+                if self._bridge:
+                    self._bridge.emit_update_available(
+                        result["local"], result["remote"]
+                    )
+                else:
+                    self._emit_error(msg)
+            elif result["error"]:
+                print(f"[UPDATE] Check failed: {result['error']}")
+            else:
+                print(f"[UPDATE] Already latest version ({result['local']})")
+        except Exception as e:
+            print(f"[UPDATE] Check error: {e}")
 
     def _config_watcher(self) -> None:
         """Watch config file for changes and auto-reload (polling every 2s)."""

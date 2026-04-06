@@ -77,6 +77,9 @@ class QtBridge(QObject):
     # Slow pipeline stage: "gpu" or "api" (triggers ball glow indicator)
     slowStage = Signal(str)
 
+    # Update available: (local_version, remote_version)
+    updateAvailable = Signal(str, str)
+
     def __init__(self):
         super().__init__()
         # Thread-safe queue for passing UIAction objects
@@ -177,6 +180,16 @@ class QtBridge(QObject):
             self, "_do_emit_slow_stage", Qt.QueuedConnection, Q_ARG(str, stage)
         )
 
+    def emit_update_available(self, local_ver: str, remote_ver: str):
+        """Thread-safe update notification."""
+        QMetaObject.invokeMethod(
+            self,
+            "_do_emit_update_available",
+            Qt.QueuedConnection,
+            Q_ARG(str, local_ver),
+            Q_ARG(str, remote_ver),
+        )
+
     # --- Internal slots (must be called on main thread) ---
 
     @Slot(str)
@@ -214,6 +227,10 @@ class QtBridge(QObject):
         _blog(f"_do_emit_setting_changed: '{setting}' = {value}")
         self.settingChanged.emit(setting, value)
         _blog(f"settingChanged.emit('{setting}', {value}) done")
+
+    @Slot(str, str)
+    def _do_emit_update_available(self, local_ver: str, remote_ver: str):
+        self.updateAvailable.emit(local_ver, remote_ver)
 
     @Slot()
     def _do_emit_action(self):

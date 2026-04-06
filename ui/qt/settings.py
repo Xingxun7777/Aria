@@ -529,6 +529,12 @@ class SettingsWindow(QMainWindow):
         self.chk_start_active.setToolTip("勾选后，程序启动时自动进入录音待机状态")
         layout.addWidget(self.chk_start_active)
 
+        self.chk_auto_update = QCheckBox("启动时自动检查更新")
+        self.chk_auto_update.setToolTip(
+            "每次启动时后台检查 GitHub 是否有新版本，有则提示"
+        )
+        layout.addWidget(self.chk_auto_update)
+
         layout.addSpacing(20)
 
         # Wakeword settings
@@ -1798,6 +1804,9 @@ class SettingsWindow(QMainWindow):
         self.chk_start_active.setChecked(
             general.get("start_active", True)
         )  # Default: active
+        self.chk_auto_update.setChecked(
+            general.get("auto_check_update", True)
+        )  # Default: check updates
 
         # === Hotwords tab ===
         # Note: enable_initial_prompt is always true (no UI control)
@@ -2000,6 +2009,7 @@ class SettingsWindow(QMainWindow):
             restart_needed = True
         self.config["general"]["audio_device"] = new_audio_device
         self.config["general"]["start_active"] = self.chk_start_active.isChecked()
+        self.config["general"]["auto_check_update"] = self.chk_auto_update.isChecked()
 
         # Handle auto startup (create/remove shortcut)
         self._set_auto_startup(self.chk_auto_startup.isChecked())

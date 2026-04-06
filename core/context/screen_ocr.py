@@ -110,8 +110,14 @@ _UIA_BROWSER_CLASSES = {
 }
 
 
-def _try_ui_automation(hwnd) -> Optional[str]:
-    """Extract text via UIA accessibility tree. For non-browser apps."""
+def _try_ui_automation(hwnd) -> tuple:
+    """Extract text via UIA accessibility tree. For non-browser apps.
+
+    Returns:
+        (text, has_document_content): text is the extracted string (or None),
+        has_document_content is True if actual document/edit text was captured
+        (not just toolbar labels).
+    """
     try:
         cls_buf = ctypes.create_unicode_buffer(256)
         ctypes.windll.user32.GetClassNameW(hwnd, cls_buf, 256)
@@ -119,13 +125,13 @@ def _try_ui_automation(hwnd) -> Optional[str]:
 
         # Skip browsers — UIA only gets UI chrome, not page content
         if class_name in _UIA_BROWSER_CLASSES:
-            return None
+            return None, False
 
         import uiautomation as auto
 
         ctrl = auto.ControlFromHandle(hwnd)
         if not ctrl:
-            return None
+            return None, False
 
         texts = set()
         edit_text = ""  # Text content from edit/document controls
@@ -149,11 +155,19 @@ def _try_ui_automation(hwnd) -> Optional[str]:
                 try:
                     ctrl_type = element.ControlTypeName
                     if ctrl_type in ("EditControl", "DocumentControl"):
+                        # Try ValuePattern first (simple text fields: Notepad, etc.)
                         vp = element.GetValuePattern()
                         if vp:
                             val = vp.Value or ""
                             if len(val) >= 4:
                                 edit_text = val[:MAX_EDIT_CHARS]
+                        # Fallback: TextPattern for rich text (Word, WPS, RichEdit)
+                        if not edit_text:
+                            tp = element.GetTextPattern()
+                            if tp:
+                                doc_text = tp.DocumentRange.GetText(MAX_EDIT_CHARS)
+                                if doc_text and len(doc_text) >= 4:
+                                    edit_text = doc_text[:MAX_EDIT_CHARS]
                 except Exception:
                     pass
             try:
@@ -168,23 +182,24 @@ def _try_ui_automation(hwnd) -> Optional[str]:
 
         # Combine UI element names + edit content
         parts = []
+        has_document_content = bool(edit_text)
         if edit_text:
             parts.append(edit_text)
         if len(texts) >= 3:
             parts.append(" ".join(texts))
 
         if not parts:
-            return None
+            return None, False
 
         result = " ".join(parts)
         _ocr_log(f"UIA: {len(texts)} elements, {len(result)} chars")
-        return result
+        return result, has_document_content
 
     except ImportError:
-        return None
+        return None, False
     except Exception as e:
         _ocr_log(f"UIA error: {e}")
-        return None
+        return None, False
 
 
 # ============================================================================
@@ -391,41 +406,28 @@ class ScreenOCR:
                         return  # Cache still fresh
 
             # Layer 1: Try UIA for non-browser apps
-            text = _try_ui_automation(hwnd)
+            uia_text, has_doc_content = _try_ui_automation(hwnd)
+            text = uia_text
             backend_used = "uia"
 
-            if not text:
-                # Layer 2: Screenshot OCR
-                from PIL import ImageGrab
+            # Quality gate: if UIA returned only toolbar/chrome text (no actual
+            # document content), supplement with screenshot OCR. This handles
+            # apps like WPS Office, Adobe, etc. that use custom rendering and
+            # don't expose document text via UIA accessibility APIs.
+            need_screenshot = not uia_text or (uia_text and not has_doc_content)
 
-                try:
-                    from ctypes import wintypes
-
-                    rect = wintypes.RECT()
-                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    w = rect.right - rect.left
-                    h = rect.bottom - rect.top
-                    if w < 50 or h < 50:
-                        return
-                    img = ImageGrab.grab(
-                        bbox=(rect.left, rect.top, rect.right, rect.bottom)
-                    )
-                except Exception as e:
-                    _ocr_log(f"Capture failed: {e}")
-                    return
-
-                _ocr_log(
-                    f"Captured {img.size[0]}x{img.size[1]}, backend={self._ocr_backend}"
-                )
-
-                if self._ocr_backend == "rapidocr":
-                    text = _run_rapidocr(img)
-                    backend_used = "rapidocr"
-                elif self._ocr_backend == "winocr":
-                    text = _run_winocr(img)
-                    backend_used = "winocr"
-                else:
-                    return
+            if need_screenshot:
+                ocr_text = self._run_screenshot_ocr(hwnd)
+                if ocr_text:
+                    # Prefer screenshot OCR if it captured more content
+                    if not text or len(ocr_text) > len(text):
+                        text = ocr_text
+                        backend_used = self._ocr_backend
+                        if uia_text:
+                            _ocr_log(
+                                f"OCR supplement: UIA had {len(uia_text)} chars "
+                                f"(no doc content), OCR got {len(ocr_text)} chars"
+                            )
 
             if text:
                 text = self._clean_text(text, backend_used)
@@ -439,6 +441,33 @@ class ScreenOCR:
             _ocr_log(f"Background OCR error: {e}")
         finally:
             self._running = False
+
+    def _run_screenshot_ocr(self, hwnd) -> Optional[str]:
+        """Layer 2: Capture window screenshot and run OCR."""
+        if self._ocr_backend == "none":
+            return None
+        try:
+            from PIL import ImageGrab
+            from ctypes import wintypes
+
+            rect = wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            w = rect.right - rect.left
+            h = rect.bottom - rect.top
+            if w < 50 or h < 50:
+                return None
+            img = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
+        except Exception as e:
+            _ocr_log(f"Capture failed: {e}")
+            return None
+
+        _ocr_log(f"Captured {img.size[0]}x{img.size[1]}, backend={self._ocr_backend}")
+
+        if self._ocr_backend == "rapidocr":
+            return _run_rapidocr(img)
+        elif self._ocr_backend == "winocr":
+            return _run_winocr(img)
+        return None
 
     def _get_foreground_hwnd(self):
         try:

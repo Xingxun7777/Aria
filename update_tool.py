@@ -233,6 +233,83 @@ def extract_and_update(zip_data: bytes, aria_root: Path, install_root: Path):
     return updated, skipped
 
 
+# ─── 自动检测更新（后台轻量检查）──────────────────────────
+
+GITHUB_RAW_INIT = "https://raw.githubusercontent.com/Xingxun7777/Aria/main/__init__.py"
+GITHUB_RAW_MIRRORS = [
+    "https://ghfast.top/https://raw.githubusercontent.com/Xingxun7777/Aria/main/__init__.py",
+    "https://raw.gitmirror.com/Xingxun7777/Aria/main/__init__.py",
+]
+
+
+def _parse_version(text: str) -> str:
+    for line in text.splitlines():
+        if "__version__" in line and "=" in line:
+            return line.split("=")[1].strip().strip("\"'")
+    return ""
+
+
+def _version_tuple(v: str) -> tuple:
+    """Convert '1.0.3.2' to (1, 0, 3, 2) for comparison."""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
+def check_for_update(local_version: str = "", timeout: int = 8) -> dict:
+    """Check if a newer version is available on GitHub.
+
+    Non-blocking safe: designed to run in a background thread.
+
+    Args:
+        local_version: Current local version string. If empty, reads from __init__.py.
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        dict with keys:
+            "available": bool — True if newer version exists
+            "local": str — local version
+            "remote": str — remote version (empty if check failed)
+            "error": str — error message if check failed
+    """
+    import urllib.request
+    import ssl
+
+    if not local_version:
+        try:
+            init_file = Path(__file__).parent / "__init__.py"
+            local_version = _parse_version(init_file.read_text(encoding="utf-8"))
+        except Exception:
+            local_version = "0"
+
+    result = {"available": False, "local": local_version, "remote": "", "error": ""}
+
+    ctx = ssl.create_default_context()
+    urls = [GITHUB_RAW_INIT] + GITHUB_RAW_MIRRORS
+
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Aria-UpdateCheck/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                remote_text = resp.read().decode("utf-8", errors="replace")
+            remote_ver = _parse_version(remote_text)
+            if not remote_ver:
+                continue
+
+            result["remote"] = remote_ver
+            if _version_tuple(remote_ver) > _version_tuple(local_version):
+                result["available"] = True
+            return result
+        except Exception:
+            continue
+
+    result["error"] = "无法连接更新服务器"
+    return result
+
+
 # ─── 主流程 ──────────────────────────────────────────────
 
 
