@@ -230,12 +230,17 @@ def extract_and_update(zip_data: bytes, aria_root: Path, install_root: Path):
             dst.write_bytes(zf.read(updater_zip))
             updated += 1
 
-    # ── 清理 __pycache__ 防止旧 .pyc 覆盖新 .py ──
+    # ── 清理旧 __pycache__ 并预编译新 .pyc ──
     for cache_dir in aria_root.rglob("__pycache__"):
         try:
             shutil.rmtree(cache_dir)
         except Exception:
             pass
+
+    # Pre-compile all .py → .pyc so first launch doesn't pay compilation cost
+    import compileall
+
+    compileall.compile_dir(str(aria_root), quiet=2, workers=0)
 
     return updated, skipped
 
