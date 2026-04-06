@@ -98,12 +98,17 @@ def main():
         app = QApplication(sys.argv)
         app.setApplicationName("Aria Splash")
 
-        # Read version for display
+        # Read version directly from file (not import — AriaRuntime.exe's
+        # PyInstaller hooks may return the bundled old version instead of
+        # the updated __init__.py on disk).
         _version = ""
         try:
-            import aria
-
-            _version = getattr(aria, "__version__", "")
+            _init_path = os.path.join(_project_dir, "__init__.py")
+            with open(_init_path, "r", encoding="utf-8") as _f:
+                for _line in _f:
+                    if "__version__" in _line and "=" in _line:
+                        _version = _line.split("=")[1].strip().strip("\"'")
+                        break
         except Exception:
             pass
         splash = SplashWindow(version=_version)
