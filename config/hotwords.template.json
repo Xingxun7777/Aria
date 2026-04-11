@@ -1,0 +1,65 @@
+{
+  "asr_engine": "qwen3",
+  "funasr": {
+    "device": "cuda",
+    "enable_vad": false,
+    "enable_punc": false,
+    "model_name": "paraformer-zh"
+  },
+  "qwen3": {
+    "model_name": "auto",
+    "device": "cuda",
+    "language": "Chinese",
+    "torch_dtype": "bfloat16"
+  },
+  "enable_initial_prompt": true,
+  "hotwords": [],
+  "hotword_weights": {},
+  "replacements": {},
+  "domain_context": "",
+  "personalization_rules": "",
+  "reply_style": "",
+  "auto_structure": false,
+  "filter_filler_words": true,
+  "screen_context_enabled": true,
+  "app_categories": {},
+  "polish_mode": "quality",
+  "polish": {
+    "enabled": false,
+    "api_url": "",
+    "api_key": "",
+    "model": "",
+    "timeout": 10,
+    "prompt_template": "你是语音转文字润色助手。请直接输出润色后的文本。\n\n【任务目标】\n1. 智能结构化：根据语义逻辑自动分段。若识别到并列、递进或对比关系，请自动调整为清晰的段落或编号列表。\n2. 基础修正：修正同音错字，补充正确标点，在中英文/数字之间添加空格。\n3. 自然流畅：删除无意义的口语填充词（如\"那个\"、\"就是说\"），但保留语气词（吗、呢、吧）。\n\n【禁止】\n- 不翻译语言（英文保持英文）\n- 不添加 Markdown 符号\n- 不过度改写原意\n\n原文：{text}"
+  },
+  "local_polish": {
+    "enabled": false,
+    "model_path": "",
+    "n_gpu_layers": -1,
+    "n_ctx": 512
+  },
+  "general": {
+    "hotkey": "grave",
+    "audio_device": "",
+    "auto_startup": false,
+    "minimize_to_tray": false,
+    "start_active": true
+  },
+  "vad": {
+    "noise_filter": true,
+    "screen_ocr": true,
+    "screen_ocr_polish": false,
+    "threshold": 0.2,
+    "min_silence_ms": 1200,
+    "energy_threshold": 0.003
+  },
+  "output": {
+    "typewriter_mode": false,
+    "typewriter_delay_ms": 15,
+    "check_elevation": true
+  },
+  "translation": {
+    "output_mode": "popup"
+  },
+  "typewriter_mode": true
+}
