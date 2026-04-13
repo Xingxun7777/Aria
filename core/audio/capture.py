@@ -11,6 +11,7 @@ Based on POC#4 validation + market report recommendations:
 import numpy as np
 import threading
 import queue
+import time
 from dataclasses import dataclass
 from typing import Optional, Callable, List, Generator
 from enum import Enum, auto
@@ -103,6 +104,11 @@ class AudioCapture:
         self._on_speech_end: Optional[Callable[[np.ndarray], None]] = None
         self._on_speech_chunk: Optional[Callable[[np.ndarray, float], None]] = None
         self._on_audio_level: Optional[Callable[[float], None]] = None
+        self._latest_level: float = 0.0
+        self._level_event = threading.Event()
+        self._level_stop_event = threading.Event()
+        self._level_thread: Optional[threading.Thread] = None
+        self._level_dispatch_hz = 30.0
 
         # Statistics
         self._total_samples = 0
@@ -129,6 +135,64 @@ class AudioCapture:
                 on_speech_chunk=on_speech_chunk,
             )
 
+        if self._state == CaptureState.RECORDING:
+            if self._on_audio_level:
+                self._start_level_dispatcher()
+            else:
+                self._stop_level_dispatcher()
+
+    def _start_level_dispatcher(self) -> None:
+        """Dispatch audio level updates off the real-time PortAudio thread."""
+        if not self._on_audio_level:
+            return
+        if self._level_thread and self._level_thread.is_alive():
+            return
+        self._level_stop_event.clear()
+        self._level_event.clear()
+        self._level_thread = threading.Thread(
+            target=self._level_dispatch_loop,
+            daemon=True,
+            name="audio-level-dispatch",
+        )
+        self._level_thread.start()
+
+    def _stop_level_dispatcher(self) -> None:
+        self._level_stop_event.set()
+        self._level_event.set()
+        if self._level_thread and self._level_thread.is_alive():
+            self._level_thread.join(timeout=1.0)
+        self._level_thread = None
+        self._level_event.clear()
+
+    def _level_dispatch_loop(self) -> None:
+        min_interval = 1.0 / self._level_dispatch_hz
+        last_emit = 0.0
+
+        while not self._level_stop_event.is_set():
+            self._level_event.wait(0.5)
+            if self._level_stop_event.is_set():
+                break
+            if not self._level_event.is_set():
+                continue
+
+            self._level_event.clear()
+            callback = self._on_audio_level
+            if not callback:
+                continue
+
+            now = time.perf_counter()
+            if last_emit:
+                remaining = min_interval - (now - last_emit)
+                if remaining > 0 and self._level_stop_event.wait(remaining):
+                    break
+
+            try:
+                callback(float(self._latest_level))
+            except Exception as e:
+                logger.debug(f"Audio level callback failed: {e}")
+
+            last_emit = time.perf_counter()
+
     def _audio_callback(self, indata, frames, time_info, status):
         """Callback from sounddevice stream."""
         if status:
@@ -143,10 +207,11 @@ class AudioCapture:
 
         self._total_samples += len(audio)
 
-        # Report audio level
-        level = np.max(np.abs(audio))
+        # Report audio level outside the PortAudio real-time thread.
+        level = float(np.max(np.abs(audio))) if audio.size else 0.0
         if self._on_audio_level:
-            self._on_audio_level(level)
+            self._latest_level = level
+            self._level_event.set()
 
         # Process through VAD if enabled
         if self._vad:
@@ -196,6 +261,12 @@ class AudioCapture:
                 # Reset stats
                 self._total_samples = 0
                 self._speech_samples = 0
+                self._latest_level = 0.0
+
+                if self._on_audio_level:
+                    self._start_level_dispatcher()
+                else:
+                    self._stop_level_dispatcher()
 
                 # Open stream
                 self._stream = sd.InputStream(
@@ -214,6 +285,7 @@ class AudioCapture:
                 return True
 
             except Exception as e:
+                self._stop_level_dispatcher()
                 logger.error(f"Failed to start capture: {e}")
                 return False
 
@@ -231,6 +303,7 @@ class AudioCapture:
 
         with self._lock:
             if self._state == CaptureState.IDLE:
+                self._stop_level_dispatcher()
                 return None
 
             self._state = CaptureState.STOPPING
@@ -296,6 +369,8 @@ class AudioCapture:
                     self._speech_queue.get_nowait()
                 except queue.Empty:
                     break
+
+            self._stop_level_dispatcher()
 
             self._state = CaptureState.IDLE
 

@@ -138,13 +138,125 @@ def _thread_excepthook(args):
 sys.excepthook = _global_excepthook
 threading.excepthook = _thread_excepthook
 
-# Enable faulthandler for segfaults/aborts (writes to crash log)
-try:
+# Enable faulthandler for segfaults/aborts (writes to crash log).
+# faulthandler does not support size limits or RotatingFileHandler; it keeps a
+# raw file descriptor open. We therefore rotate externally and re-enable it.
+_CRASH_LOG_MAX_BYTES = int(
+    os.environ.get("ARIA_CRASH_LOG_MAX_BYTES", str(2 * 1024 * 1024))
+)
+_CRASH_LOG_BACKUP_COUNT = max(
+    1, int(os.environ.get("ARIA_CRASH_LOG_BACKUP_COUNT", "2"))
+)
+_CRASH_LOG_CHECK_INTERVAL_S = float(
+    os.environ.get("ARIA_CRASH_LOG_CHECK_INTERVAL_S", "30")
+)
+_faulthandler_file = None
+_faulthandler_lock = threading.Lock()
+_crash_log_monitor_started = False
+
+
+def _crash_log_backup_path(index: int) -> Path:
+    return _CRASH_LOG_PATH.with_name(f"{_CRASH_LOG_PATH.name}.{index}")
+
+
+def _close_faulthandler_file_locked() -> None:
+    global _faulthandler_file
+    if _faulthandler_file:
+        try:
+            _faulthandler_file.flush()
+        except Exception:
+            pass
+        try:
+            _faulthandler_file.close()
+        except Exception:
+            pass
+        _faulthandler_file = None
+
+
+def _rotate_crash_log_files_locked() -> None:
+    for index in range(_CRASH_LOG_BACKUP_COUNT, 0, -1):
+        source = _CRASH_LOG_PATH if index == 1 else _crash_log_backup_path(index - 1)
+        target = _crash_log_backup_path(index)
+        try:
+            if target.exists():
+                target.unlink()
+        except OSError:
+            pass
+        try:
+            if source.exists():
+                source.replace(target)
+        except OSError:
+            pass
+
+
+def _enable_faulthandler_locked() -> None:
+    global _faulthandler_file
     _CRASH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _faulthandler_file = open(_CRASH_LOG_PATH, "a", encoding="utf-8")
-    faulthandler.enable(file=_faulthandler_file)
-except Exception:
-    faulthandler.enable()  # Fallback to stderr
+    _faulthandler_file = open(_CRASH_LOG_PATH, "ab", buffering=0)
+    faulthandler.enable(file=_faulthandler_file, all_threads=False)
+
+
+def _rotate_crash_log_locked(force: bool = False) -> bool:
+    try:
+        size = _CRASH_LOG_PATH.stat().st_size if _CRASH_LOG_PATH.exists() else 0
+    except OSError:
+        size = 0
+
+    if not force and size < _CRASH_LOG_MAX_BYTES:
+        return False
+
+    try:
+        if faulthandler.is_enabled():
+            faulthandler.disable()
+    except Exception:
+        pass
+
+    _close_faulthandler_file_locked()
+    _rotate_crash_log_files_locked()
+    _enable_faulthandler_locked()
+    _pipeline_log("CRASH", f"Rotated crash.log at {size} bytes")
+    return True
+
+
+def _configure_faulthandler() -> None:
+    with _faulthandler_lock:
+        try:
+            rotated = _rotate_crash_log_locked()
+            if not rotated:
+                _enable_faulthandler_locked()
+        except Exception:
+            try:
+                _enable_faulthandler_locked()
+            except Exception:
+                faulthandler.enable(all_threads=False)  # Fallback to stderr
+
+
+def _crash_log_monitor() -> None:
+    while True:
+        time.sleep(_CRASH_LOG_CHECK_INTERVAL_S)
+        try:
+            with _faulthandler_lock:
+                _rotate_crash_log_locked()
+        except Exception:
+            pass
+
+
+def _start_crash_log_monitor() -> None:
+    global _crash_log_monitor_started
+    with _faulthandler_lock:
+        if _crash_log_monitor_started:
+            return
+        thread = threading.Thread(
+            target=_crash_log_monitor,
+            daemon=True,
+            name="crash-log-monitor",
+        )
+        thread.start()
+        _crash_log_monitor_started = True
+
+
+_configure_faulthandler()
+_start_crash_log_monitor()
 
 
 from .core.audio.capture import AudioCapture, AudioConfig

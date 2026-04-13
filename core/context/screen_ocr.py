@@ -111,13 +111,44 @@ _UIA_BROWSER_CLASSES = {
 
 
 def _try_ui_automation(hwnd) -> tuple:
-    """Extract text via UIA accessibility tree. For non-browser apps.
+    """Extract text via targeted UIA probes. For non-browser apps.
 
     Returns:
         (text, has_document_content): text is the extracted string (or None),
         has_document_content is True if actual document/edit text was captured
         (not just toolbar labels).
+
+    Thread safety:
+        This function MUST initialize COM on entry because it runs on a
+        background thread. UIA objects and patterns are created and consumed on
+        the same thread only. We also avoid full GetChildren()/sibling walking:
+        provider disconnects inside those native traversals can raise SEH
+        exceptions that Python cannot catch reliably.
     """
+    # Initialize COM for this thread in MTA mode.
+    # MSDN recommends UIA clients use multi-threaded apartment: STA requires
+    # a Windows message pump, which a daemon thread doesn't have, causing
+    # UIA's cross-apartment marshaling to deadlock or disconnect
+    # (RPC_E_DISCONNECTED / RPC_E_SERVER_DIED_DNE). comtypes (the layer
+    # uiautomation sits on) defaults to STA on first COM call — this default
+    # is precisely the root cause of the observed crash loop, so we must
+    # initialize explicitly BEFORE any uiautomation access.
+    co_initialized = False
+    try:
+        import pythoncom
+
+        try:
+            pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
+            co_initialized = True
+        except pythoncom.com_error:
+            # Already initialized with different mode on this thread —
+            # don't uninit, we didn't own the initialization.
+            pass
+    except ImportError:
+        # pywin32 missing: continue without explicit init (uiautomation may
+        # still work if it initializes internally, though likely as STA).
+        pass
+
     try:
         cls_buf = ctypes.create_unicode_buffer(256)
         ctypes.windll.user32.GetClassNameW(hwnd, cls_buf, 256)
@@ -129,77 +160,88 @@ def _try_ui_automation(hwnd) -> tuple:
 
         import uiautomation as auto
 
-        ctrl = auto.ControlFromHandle(hwnd)
+        if hasattr(auto, "SetGlobalSearchTimeout"):
+            auto.SetGlobalSearchTimeout(1.5)
+        elif hasattr(auto, "uiautomation") and hasattr(
+            auto.uiautomation, "SetGlobalSearchTimeout"
+        ):
+            auto.uiautomation.SetGlobalSearchTimeout(1.5)
+
+        try:
+            ctrl = auto.ControlFromHandle(hwnd)
+        except Exception as e:
+            _ocr_log(f"UIA ControlFromHandle failed: {e}")
+            return None, False
         if not ctrl:
             return None, False
 
-        texts = set()
-        edit_text = ""  # Text content from edit/document controls
-        count = [0]
         MAX_EDIT_CHARS = 500  # Cap edit text to avoid pulling entire documents
 
-        def walk(element, depth=0):
-            nonlocal edit_text
-            if depth > 8 or count[0] > 500:
-                return
-            count[0] += 1
+        def _read_candidate(control) -> str:
+            """Read text from a single Edit/Document-like control."""
+            if not control:
+                return ""
             try:
-                name = element.Name
-                if name and len(name) >= 2:
-                    texts.add(name)
-            except Exception:
-                pass
-            # Read text content from Edit/Document controls (Notepad, Word, etc.)
-            # element.Name only returns the control label, not what the user typed.
-            if not edit_text:
-                try:
-                    ctrl_type = element.ControlTypeName
-                    if ctrl_type in ("EditControl", "DocumentControl"):
-                        # Try ValuePattern first (simple text fields: Notepad, etc.)
-                        vp = element.GetValuePattern()
-                        if vp:
-                            val = vp.Value or ""
-                            if len(val) >= 4:
-                                edit_text = val[:MAX_EDIT_CHARS]
-                        # Fallback: TextPattern for rich text (Word, WPS, RichEdit)
-                        if not edit_text:
-                            tp = element.GetTextPattern()
-                            if tp:
-                                doc_text = tp.DocumentRange.GetText(MAX_EDIT_CHARS)
-                                if doc_text and len(doc_text) >= 4:
-                                    edit_text = doc_text[:MAX_EDIT_CHARS]
-                except Exception:
-                    pass
-            try:
-                children = element.GetChildren()
-                if children:
-                    for child in children[:50]:
-                        walk(child, depth + 1)
+                value_pattern = control.GetValuePattern()
+                if value_pattern:
+                    value = (value_pattern.Value or "").strip()
+                    if len(value) >= 4:
+                        return value[:MAX_EDIT_CHARS]
             except Exception:
                 pass
 
-        walk(ctrl)
+            try:
+                text_pattern = control.GetTextPattern()
+                if text_pattern:
+                    value = (text_pattern.DocumentRange.GetText(MAX_EDIT_CHARS) or "")
+                    value = value.strip()
+                    if len(value) >= 4:
+                        return value[:MAX_EDIT_CHARS]
+            except Exception:
+                pass
 
-        # Combine UI element names + edit content
-        parts = []
-        has_document_content = bool(edit_text)
-        if edit_text:
-            parts.append(edit_text)
-        if len(texts) >= 3:
-            parts.append(" ".join(texts))
+            return ""
 
-        if not parts:
-            return None, False
+        # Do not recursively enumerate the entire accessibility tree here.
+        # For this feature we only need document text, and screenshot OCR can
+        # supplement everything else. The broad tree walk was the main native
+        # crash surface in the observed dumps.
+        candidates = [ctrl]
+        for control_getter in ("DocumentControl", "EditControl"):
+            try:
+                getter = getattr(ctrl, control_getter, None)
+                candidate = getter(searchDepth=6) if getter else None
+                if candidate:
+                    candidates.append(candidate)
+            except Exception:
+                pass
 
-        result = " ".join(parts)
-        _ocr_log(f"UIA: {len(texts)} elements, {len(result)} chars")
-        return result, has_document_content
+        seen = set()
+        for candidate in candidates:
+            marker = id(candidate)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            edit_text = _read_candidate(candidate)
+            if edit_text:
+                _ocr_log(f"UIA: captured {len(edit_text)} chars")
+                return edit_text, True
+
+        return None, False
 
     except ImportError:
         return None, False
     except Exception as e:
         _ocr_log(f"UIA error: {e}")
         return None, False
+    finally:
+        if co_initialized:
+            try:
+                import pythoncom
+
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 # ============================================================================
@@ -362,7 +404,9 @@ class ScreenOCR:
         # Also update title immediately (Layer 0)
         self.update_title()
 
-        thread = threading.Thread(target=self._run_background, daemon=True)
+        thread = threading.Thread(
+            target=self._run_background, daemon=True, name="screen-ocr"
+        )
         thread.start()
 
     def get_text(self, current_hwnd: int = 0) -> str:
