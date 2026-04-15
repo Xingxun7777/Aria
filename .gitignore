@@ -1,0 +1,89 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+
+# === Virtual Environments ===
+.venv/
+.venv_old/
+env/
+venv/
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*.code-workspace
+
+# === OS ===
+.DS_Store
+Thumbs.db
+nul
+desktop.ini
+
+# === Logs ===
+*.log
+logs/
+DebugLog/
+
+# === User Config (contains API keys and personal settings) ===
+config/hotwords.json
+config/*.backup.*.json
+
+# === User Data ===
+data/
+
+# === Large Model Files ===
+models/
+models/*.gguf
+models/*.bin
+models/*.pt
+
+# === Build Artifacts ===
+dist_portable/
+dist_release/
+build_portable/.cache/
+build_portable/.pyinstaller_build/
+build_portable/*.spec
+
+# === Temporary Files ===
+*.tmp
+*.tmp.*
+*.bak
+*.bak*
+*.backup.*
+
+# === Debug Audio ===
+debug_audio_*.wav
+*.wav.tmp
+
+# === Marketing / Internal Docs ===
+发布视频文案/
+Aria-v*功能列表*
+
+# === Test Artifacts ===
+_test_*
+test_paths.txt
+
+# === Claude Code Local Settings ===
+.claude/
+
+# === AI Agent Artifacts ===
+.agent/
+
+# === Sisyphus Planning ===
+.sisyphus/
+
+# === Temporary Archives ===
+*.7z
+*.zip
+*.tar
+.tmp_arxiv/
+Aria-v1.0.2-lite/
+Aria-v1.0.2-full/
+*.stackdump

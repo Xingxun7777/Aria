@@ -1,0 +1,366 @@
+{
+  "enabled": true,
+  "wakeword": "小助手",
+  "available_wakewords": [
+    "小助手",
+    "助手",
+    "小白",
+    "小朋友",
+    "小溪"
+  ],
+  "cooldown_ms": 500,
+  "commands": {
+    "auto_send_on": {
+      "action": "set_auto_send",
+      "value": true,
+      "triggers": [
+        "开启自动发送",
+        "打开自动发送",
+        "开自动发送",
+        "开启自动模式",
+        "打开自动模式",
+        "开自动模式",
+        "自动发送开",
+        "自动模式开"
+      ],
+      "response": "已开启自动发送"
+    },
+    "auto_send_off": {
+      "action": "set_auto_send",
+      "value": false,
+      "triggers": [
+        "关闭自动发送",
+        "关自动发送",
+        "取消自动发送",
+        "关闭自动模式",
+        "停止自动发送",
+        "关自动模式",
+        "自动发送关",
+        "自动模式关"
+      ],
+      "response": "已关闭自动发送"
+    },
+    "voice_off": {
+      "action": "set_sleeping",
+      "value": true,
+      "triggers": [
+        "关闭语音",
+        "关语音",
+        "停止语音",
+        "暂停语音",
+        "关闭监听",
+        "停止监听",
+        "休眠",
+        "睡眠",
+        "别听了",
+        "不用听了",
+        "安静",
+        "闭嘴",
+        "睡觉",
+        "别说了",
+        "停",
+        "安静一下",
+        "暂停"
+      ],
+      "response": "已关闭语音"
+    },
+    "voice_on": {
+      "action": "set_sleeping",
+      "value": false,
+      "triggers": [
+        "开启语音",
+        "开语音",
+        "恢复语音",
+        "继续语音",
+        "开启监听",
+        "恢复监听",
+        "醒来",
+        "唤醒",
+        "开始听",
+        "继续听",
+        "出来",
+        "起来",
+        "起床",
+        "继续",
+        "开始"
+      ],
+      "response": "已开启语音"
+    },
+    "selection_polish": {
+      "action": "selection_process",
+      "value": "polish",
+      "triggers": [
+        "润色",
+        "润色一下",
+        "帮我润色",
+        "优化一下",
+        "帮我优化",
+        "改一下",
+        "帮我改",
+        "修改一下",
+        "帮我修改",
+        "优化"
+      ],
+      "response": "正在润色..."
+    },
+    "selection_translate_en": {
+      "action": "selection_process",
+      "value": "translate_en",
+      "triggers": [
+        "翻译成英文",
+        "翻译英文",
+        "译成英文",
+        "转英文",
+        "英文翻译",
+        "翻译",
+        "翻译一下",
+        "帮我翻译",
+        "翻译这个"
+      ],
+      "response": "正在翻译..."
+    },
+    "selection_translate_zh": {
+      "action": "selection_process",
+      "value": "translate_zh",
+      "triggers": [
+        "翻译成中文",
+        "翻译中文",
+        "译成中文",
+        "转中文",
+        "中文翻译"
+      ],
+      "response": "正在翻译..."
+    },
+    "selection_translate_ja": {
+      "action": "selection_process",
+      "value": "translate_ja",
+      "triggers": [
+        "翻译成日文",
+        "翻译日文",
+        "译成日文",
+        "转日文",
+        "日文翻译",
+        "翻译成日语",
+        "翻译日语",
+        "译成日语",
+        "转日语",
+        "日语翻译"
+      ],
+      "response": "正在翻译..."
+    },
+    "selection_expand": {
+      "action": "selection_process",
+      "value": "expand",
+      "triggers": [
+        "扩写",
+        "扩写一下",
+        "帮我扩写",
+        "展开",
+        "展开一下",
+        "帮我展开",
+        "写详细点",
+        "详细一点"
+      ],
+      "response": "正在扩写..."
+    },
+    "selection_summarize": {
+      "action": "selection_process",
+      "value": "summarize",
+      "triggers": [
+        "缩写",
+        "缩写一下",
+        "精简",
+        "精简一下",
+        "简短一点",
+        "压缩一下",
+        "帮我精简"
+      ],
+      "response": "正在缩写..."
+    },
+    "summary_popup": {
+      "action": "summarize_popup",
+      "value": null,
+      "triggers": [
+        "总结一下",
+        "总结",
+        "帮我总结",
+        "概括一下",
+        "提炼一下",
+        "帮我总结一下",
+        "归纳一下",
+        "归纳"
+      ],
+      "response": "正在总结..."
+    },
+    "selection_rewrite": {
+      "action": "selection_process",
+      "value": "rewrite",
+      "triggers": [
+        "重写",
+        "重写一下",
+        "改写",
+        "改写一下",
+        "换个说法",
+        "换种表达"
+      ],
+      "response": "正在重写..."
+    },
+    "translate_popup": {
+      "action": "translate_popup",
+      "value": null,
+      "triggers": [
+        "什么意思",
+        "啥意思",
+        "这是什么意思",
+        "这个什么意思",
+        "帮我翻译一下",
+        "翻成中文",
+        "翻成英文"
+      ],
+      "response": "正在翻译..."
+    },
+    "ask_ai": {
+      "action": "ask_ai",
+      "value": null,
+      "triggers": [
+        "帮我看一下",
+        "帮我看看",
+        "帮我查一下",
+        "帮我查查",
+        "问问AI",
+        "问AI",
+        "问一下AI",
+        "问问",
+        "帮我问问",
+        "解释一下",
+        "帮我解释",
+        "看看这个",
+        "帮我查",
+        "查一下",
+        "帮忙看看",
+        "分析一下",
+        "帮我分析"
+      ],
+      "response": "正在连接AI...",
+      "capture_following": true
+    },
+    "save_highlight_idea": {
+      "action": "save_highlight",
+      "value": {
+        "type": "highlight",
+        "tags": [
+          "想法"
+        ],
+        "importance": "high"
+      },
+      "triggers": [
+        "重点记一下",
+        "重点记录",
+        "帮我重点记一下",
+        "帮我重点记录",
+        "记录一下重点",
+        "记录重点",
+        "记一下",
+        "记录一下想法",
+        "记录想法",
+        "记住",
+        "记下来",
+        "帮我记",
+        "记录",
+        "记下"
+      ],
+      "response": "已记录想法",
+      "capture_following": true
+    },
+    "reply_popup": {
+      "action": "reply_popup",
+      "value": null,
+      "triggers": [
+        "帮我回复",
+        "帮我回",
+        "回复一下",
+        "回复",
+        "帮我回复一下",
+        "回复他",
+        "帮忙回复",
+        "怎么回复",
+        "回他"
+      ],
+      "response": "正在生成回复...",
+      "capture_following": true
+    },
+    "set_reminder": {
+      "action": "set_reminder",
+      "value": null,
+      "triggers": [
+        "提醒我",
+        "帮我提醒",
+        "帮我定时",
+        "定时提醒",
+        "设个提醒",
+        "设个闹钟",
+        "定个提醒",
+        "定个闹钟",
+        "提醒一下",
+        "定时",
+        "定个时",
+        "计时",
+        "帮我计时",
+        "闹钟"
+      ],
+      "response": "正在设置提醒...",
+      "capture_following": true
+    },
+    "open_path": {
+      "action": "open_path",
+      "value": null,
+      "triggers": [
+        "帮我打开",
+        "打开文件",
+        "打开路径",
+        "打开这个",
+        "打开",
+        "打开它",
+        "帮我打开这个",
+        "打开看看"
+      ],
+      "response": "正在打开..."
+    },
+    "open_directory": {
+      "action": "open_directory",
+      "value": null,
+      "triggers": [
+        "帮我打开根目录",
+        "打开根目录",
+        "帮我打开目录",
+        "打开目录",
+        "打开文件夹",
+        "帮我打开文件夹",
+        "打开所在目录",
+        "打开所在文件夹",
+        "定位文件",
+        "打开目录看看",
+        "找到文件",
+        "定位到这个文件"
+      ],
+      "response": "正在打开目录..."
+    },
+    "deep_sleep_on": {
+      "action": "set_deep_sleep",
+      "value": true,
+      "triggers": [
+        "深度休眠",
+        "深度睡眠",
+        "关闭引擎",
+        "卸载模型",
+        "关机",
+        "关掉引擎",
+        "引擎休眠",
+        "彻底休眠",
+        "完全休眠",
+        "深睡"
+      ],
+      "response": "已进入深度休眠（引擎已卸载）"
+    }
+  }
+}
