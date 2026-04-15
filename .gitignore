@@ -46,6 +46,7 @@ models/*.pt
 
 # === Build Artifacts ===
 dist_portable/
+dist_release/
 build_portable/.cache/
 build_portable/.pyinstaller_build/
 build_portable/*.spec
