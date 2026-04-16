@@ -1,0 +1,15 @@
+# Exclude release-manifest.json from `git archive` output.
+# Rationale: zip's SHA256 is recorded in the manifest. If manifest is inside
+# the zip, any manifest regeneration changes zip bytes, which changes SHA256,
+# which changes the manifest — infinite loop. Keeping manifest out of the
+# archive breaks that cycle: zip content stays stable across manifest rewrites.
+release-manifest.json export-ignore
+
+# Exclude other release/build infrastructure from client downloads.
+# Clients only need the aria/ source tree, not the tooling that made it.
+build_portable/ export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore
+
+# CLAUDE.md is repo-internal; never ship to clients.
+CLAUDE.md export-ignore

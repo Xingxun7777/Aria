@@ -1,0 +1,1537 @@
+# main.py
+# Qt frontend entry point for Aria
+# Floating ball UI with mouse interactions
+
+import sys
+import signal
+import atexit
+import argparse
+from pathlib import Path
+
+from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon, QMenu
+from PySide6.QtGui import QIcon, QAction, QClipboard
+from PySide6.QtCore import Qt, QTimer, QThreadPool
+
+from .bridge import QtBridge
+from .floating_ball import FloatingBall
+from .settings import SettingsWindow
+from .sound import play_sound
+from .history import HistoryWindow
+from .history_browser import HistoryBrowserWindow
+from .translation_popup import TranslationPopup
+from .ai_chat_window import AIChatWindow
+from .workers import TranslationWorker, SummaryWorker, LLMWorker, ReplyWorker
+from .elevation_dialog import ElevationWarningDialog
+from core.history.models import RecordType
+
+# Debug log for main.py
+_DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+
+
+def _log(msg: str):
+    """Write debug message to shared log file (pythonw.exe safe)."""
+    import datetime
+    import sys
+
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] {msg}\n"
+    # Guard for pythonw.exe (sys.stdout is None)
+    if sys.stdout is not None:
+        print(line.strip())
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+def main():
+    """Main entry point for Qt frontend with floating ball UI."""
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="Aria Qt Frontend")
+    parser.add_argument(
+        "--hotkey", default="grave", help="Hotkey for recording (default: grave/`)"
+    )
+    args = parser.parse_args()
+
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)  # Keep running with floating ball
+    app.setApplicationName("Aria")
+
+    # Create UI components
+    bridge = QtBridge()
+    ball = FloatingBall(size=48)
+    settings = SettingsWindow()
+    history = HistoryWindow()
+    history_browser = HistoryBrowserWindow()
+    translation_popup = TranslationPopup()
+    summary_popup = TranslationPopup()
+    reply_popup = TranslationPopup()
+    ai_chat_window = AIChatWindow()
+    elevation_dialog = ElevationWarningDialog()
+
+    from .reminder_dialog import ReminderDialog
+
+    reminder_dialog = ReminderDialog()
+
+    # Connect undo signal — cancel the reminder in store
+    def on_reminder_undo(reminder_id: str):
+        _log(f"[MAIN] Reminder undo: {reminder_id}")
+        if hasattr(backend, "reminder_store") and backend.reminder_store:
+            backend.reminder_store.cancel(reminder_id)
+
+    reminder_dialog.undoClicked.connect(on_reminder_undo)
+
+    def on_reminder_confirmed(reminder_id: str):
+        """User confirmed the reminder — show tray notification."""
+        _log(f"[MAIN] Reminder confirmed: {reminder_id}")
+        if hasattr(tray, "showMessage"):
+            # Count pending reminders for tray tooltip
+            count = 0
+            if hasattr(backend, "reminder_store") and backend.reminder_store:
+                count = len(backend.reminder_store.get_pending())
+            tray.setToolTip(f"Aria — {count} 个提醒待触发" if count else "Aria")
+            tray.showMessage(
+                "Aria", "提醒已设置 \u23F0", QSystemTrayIcon.Information, 2000
+            )
+
+    reminder_dialog.dismissClicked.connect(on_reminder_confirmed)
+
+    # Thread pool for background workers
+    thread_pool = QThreadPool.globalInstance()
+
+    # Container to keep signal objects alive until delivery
+    # (QRunnable with autoDelete=True can delete signals before delivery)
+    _active_signals = []
+    _active_dialogs = []
+    _quit_in_progress = False
+
+    # Track pending action source texts for history recording
+    # {request_id: {"source_text": str, "type": RecordType}}
+    _pending_action_sources = {}
+
+    # Create minimal system tray for unlock and quit
+    tray = QSystemTrayIcon()
+    # Custom tray icon (don't rely on fromTheme - unreliable on Windows)
+    from PySide6.QtGui import QPixmap, QPainter, QBrush, QColor, QPen, QLinearGradient
+
+    def create_tray_icon():
+        """Create a black-orange Aria tray icon."""
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Dark circle background
+        painter.setBrush(QBrush(QColor(30, 30, 35, 240)))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(2, 2, 28, 28)
+
+        # Orange border
+        painter.setPen(QPen(QColor("#ff8c00"), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(3, 3, 26, 26)
+
+        # Orange sound wave bars (3 bars)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor("#ff8c00")))
+        # Left bar
+        painter.drawRoundedRect(9, 12, 3, 8, 1, 1)
+        # Center bar (taller)
+        painter.drawRoundedRect(14, 9, 3, 14, 1, 1)
+        # Right bar
+        painter.drawRoundedRect(19, 12, 3, 8, 1, 1)
+
+        painter.end()
+        return QIcon(pixmap)
+
+    tray.setIcon(create_tray_icon())
+    tray_menu = QMenu()
+
+    action_unlock = QAction("解锁悬浮球", None)
+    action_unlock.triggered.connect(ball.unlock)
+    tray_menu.addAction(action_unlock)
+
+    action_mute = QAction("静音", None)
+    action_mute.setCheckable(True)
+    action_mute.setChecked(False)
+    tray_menu.addAction(action_mute)
+
+    action_auto_send = QAction("自动发送", None)
+    action_auto_send.setCheckable(True)
+    action_auto_send.setChecked(False)
+    tray_menu.addAction(action_auto_send)
+
+    action_deep_sleep = QAction("深度休眠", None)
+    action_deep_sleep.setCheckable(True)
+    action_deep_sleep.setChecked(False)
+    tray_menu.addAction(action_deep_sleep)
+
+    tray_menu.addSeparator()
+
+    action_settings = QAction("高级设置", None)
+    tray_menu.addAction(action_settings)
+
+    tray_menu.addSeparator()
+
+    action_check_update = QAction("检查更新", None)
+    tray_menu.addAction(action_check_update)
+
+    tray_menu.addSeparator()
+
+    action_quit = QAction("退出", None)
+    tray_menu.addAction(action_quit)
+
+    tray.setContextMenu(tray_menu)
+    tray.setToolTip("Aria - 单击显示历史，双击打开热词设置")
+    tray.show()
+
+    # Tray icon click handlers
+    def on_tray_activated(reason):
+        if reason == QSystemTrayIcon.Trigger:  # Single click
+            # Show history popup near tray icon
+            geo = tray.geometry()
+            if geo.isValid():
+                history.showAt(geo.center())
+            else:
+                # Fallback: show near cursor
+                from PySide6.QtGui import QCursor
+
+                history.showAt(QCursor.pos())
+        elif reason == QSystemTrayIcon.DoubleClick:  # Double click
+            # Open settings and navigate to hotwords tab (index 1)
+            settings.show()
+            settings.raise_()
+            settings.activateWindow()
+            settings.sidebar.setCurrentRow(1)  # Hotwords tab
+
+    tray.activated.connect(on_tray_activated)
+
+    # Connect signals: Bridge -> Ball
+    bridge.stateChanged.connect(ball.on_state_changed)
+    bridge.textUpdated.connect(ball.on_text_updated)
+    bridge.insertComplete.connect(ball.on_insert_complete)
+    bridge.voiceActivity.connect(ball.on_voice_activity)
+    bridge.levelChanged.connect(ball.on_level_changed)  # Audio level for waveform
+    bridge.commandExecuted.connect(ball.on_command_executed)  # Voice command feedback
+    bridge.highlightSaved.connect(
+        ball.on_highlight_saved
+    )  # Gold flash for highlight save
+    bridge.slowStage.connect(ball.on_slow_stage)  # Slow pipeline glow indicator
+
+    def show_error_dialog(msg: str) -> None:
+        """Show non-blocking error dialog to avoid trapping the event loop."""
+        try:
+            box = QMessageBox(QMessageBox.Warning, "Aria Error", msg)
+            box.setWindowModality(Qt.NonModal)
+            box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            box.setAttribute(Qt.WA_DeleteOnClose, True)
+            _active_dialogs.append(box)
+
+            def _cleanup_dialog(_result):
+                if box in _active_dialogs:
+                    _active_dialogs.remove(box)
+
+            box.finished.connect(_cleanup_dialog)
+            box.show()
+            box.raise_()
+            box.activateWindow()
+        except Exception as e:
+            _log(f"[UI] Failed to show error dialog: {e}")
+
+        # Also show tray notification if available
+        try:
+            tray.showMessage(
+                "Aria 错误", msg, QSystemTrayIcon.MessageIcon.Warning, 3000
+            )
+        except Exception:
+            pass
+
+    def _is_elevation_error(msg: str) -> bool:
+        """Check if the error message is related to elevation/permission issues."""
+        elevation_keywords = ["权限", "管理员", "elevated", "elevation", "Aria 没有"]
+        msg_lower = msg.lower()
+        return any(kw.lower() in msg_lower for kw in elevation_keywords)
+
+    def _is_hotkey_conflict(msg: str) -> bool:
+        """Check if the error message is about hotkey conflict."""
+        return "already in use" in msg.lower() or (
+            "hotkey" in msg.lower() and "failed" in msg.lower()
+        )
+
+    def on_error(msg: str) -> None:
+        """Handle errors - route appropriately based on error type."""
+        if _is_elevation_error(msg):
+            _log(f"[UI] Elevation warning detected, showing elevation dialog")
+            elevation_dialog.show_warning(msg)
+        elif _is_hotkey_conflict(msg):
+            # Hotkey conflict: just log and set tooltip, no popup
+            _log(f"[UI] Hotkey conflict (no popup): {msg}")
+            print(f"[Aria] 快捷键冲突: {msg}")
+            print(f"[Aria] 提示: 快捷键被占用，可点击悬浮窗手动启用语音输入")
+            # Set tooltip on floating ball
+            ball.setToolTip("快捷键被占用\n点击悬浮窗启用语音输入")
+        else:
+            show_error_dialog(msg)
+
+    bridge.error.connect(on_error)
+
+    # Elevation dialog signal handlers
+    def on_elevation_close_requested():
+        """Handle user clicking 'Close Aria' in elevation dialog."""
+        _log("[UI] User requested to close Aria from elevation dialog")
+        cleanup_and_quit()
+
+    def on_elevation_restart_admin():
+        """Handle user clicking 'Restart as Admin' in elevation dialog."""
+        _log("[UI] User requested admin restart from elevation dialog")
+        try:
+            from aria.system.admin import restart_as_admin
+
+            if restart_as_admin():
+                _log("[UI] Admin restart successful, exiting current instance")
+                # Give the new process time to start before we exit
+                QTimer.singleShot(500, cleanup_and_quit)
+            else:
+                _log("[UI] Admin restart failed or cancelled by user")
+                # Show a brief notification - don't show another dialog
+                tray.showMessage(
+                    "Aria",
+                    "管理员重启已取消或失败",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000,
+                )
+        except Exception as e:
+            _log(f"[UI] Exception during admin restart: {e}")
+            show_error_dialog(f"重启失败: {e}")
+
+    # Connect elevation dialog signals (connected later after cleanup_and_quit is defined)
+
+    # Handle setting changes from backend (e.g., via wakeword commands)
+    def on_setting_changed(setting: str, value: bool):
+        # Write to debug log file
+        from pathlib import Path
+        import datetime
+
+        log_path = (
+            Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
+        )
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [MAIN] on_setting_changed received: {setting} = {value}\n")
+        _log(f"[UI] Setting changed via wakeword: {setting} = {value}")
+        if setting == "auto_send":
+            action_auto_send.setChecked(value)
+            ball.set_auto_send(value)  # Update floating ball color indicator
+        elif setting == "mute" or setting == "sound_enabled":
+            # sound_enabled=False means mute=True
+            action_mute.setChecked(not value if setting == "sound_enabled" else value)
+        elif setting == "sleeping":
+            # Light sleep state change (from voice command)
+            ball.on_state_changed("SLEEPING" if value else "IDLE")
+        elif setting == "deep_sleeping":
+            # Deep sleep state change (sync popup menu button + tray menu)
+            ball.set_deep_sleeping_state(value)
+            action_deep_sleep.setChecked(value)
+        elif setting == "enabled":
+            # Update popup menu toggle when hotkey re-enables from disabled state
+            ball.set_enabled_state(value)
+
+    bridge.settingChanged.connect(on_setting_changed)
+
+    # === Auto-update UI (v1.0.5) ===
+    _update_info = {"local": "", "remote": "", "notes": "", "armed": False}
+
+    def _load_manifest_notes() -> str:
+        """Pull notes_summary from stage's manifest snapshot, best-effort."""
+        try:
+            from aria.update_tool import get_update_state
+
+            st = get_update_state()
+            snap = st.get("manifest_snapshot") or {}
+            return snap.get("notes_summary", "") or ""
+        except Exception:
+            return ""
+
+    def _open_update_dialog():
+        if not _update_info["armed"]:
+            return
+        from aria.ui.qt.update_dialog import show_update_dialog
+        from aria.core.utils import get_config_path
+        from aria.core.update_gates import load_update_prefs, save_update_prefs
+
+        def _apply_now():
+            if backend and hasattr(backend, "apply_staged_update"):
+                ok = backend.apply_staged_update()
+                if ok:
+                    # Use the standard shutdown path (stops backend threads,
+                    # closes dialogs, hides tray) then Qt quits. updater_runner.bat
+                    # is already detached and will pick up the PID to wait on.
+                    try:
+                        cleanup_and_quit()
+                    except Exception as e:
+                        _log(f"[UPDATE] cleanup_and_quit fallback: {e}")
+                        try:
+                            app.quit()
+                        except Exception:
+                            pass
+
+        def _skip(version: str):
+            try:
+                cfg_path = Path(get_config_path("hotwords.json"))
+                prefs = load_update_prefs(cfg_path)
+                sv = list(prefs.get("skipped_versions", []))
+                if version not in sv:
+                    sv.append(version)
+                prefs["skipped_versions"] = sv
+                save_update_prefs(cfg_path, prefs)
+                _update_info["armed"] = False
+                ball.set_update_badge(False)
+            except Exception as e:
+                _log(f"[UPDATE] skip save failed: {e}")
+
+        show_update_dialog(
+            _update_info["local"],
+            _update_info["remote"],
+            _update_info["notes"],
+            _apply_now,
+            _skip,
+        )
+
+    import time as _time_mod
+
+    _boot_time = _time_mod.time()
+    _current_app_state = {"s": "IDLE"}
+
+    def _track_app_state(state: str):
+        _current_app_state["s"] = state
+
+    bridge.stateChanged.connect(_track_app_state)
+
+    def _fire_update_bubble(local_ver: str, remote_ver: str):
+        tray.showMessage(
+            "Aria 有新版本已就绪",
+            f"v{local_ver} → v{remote_ver}\n点击此消息查看更新详情",
+            QSystemTrayIcon.Information,
+            8000,
+        )
+
+    def on_update_available(local_ver: str, remote_ver: str):
+        _update_info["local"] = local_ver
+        _update_info["remote"] = remote_ver
+        _update_info["notes"] = _load_manifest_notes()
+        _update_info["armed"] = True
+
+        # Badge: passive. Always on.
+        ball.set_update_badge(True, f"新版本 v{remote_ver} 已就绪，点击查看")
+
+        # Gate decides whether to actively interrupt with a tray bubble
+        try:
+            from aria.core.update_gates import (
+                load_update_prefs,
+                save_update_prefs,
+                should_show_update_prompt,
+                now_utc_iso,
+            )
+            from aria.core.utils import get_config_path
+            from aria.update_tool import get_update_state
+
+            cfg_path = Path(get_config_path("hotwords.json"))
+            prefs = load_update_prefs(cfg_path)
+            st = get_update_state()
+            manifest = st.get("manifest_snapshot") or {}
+            is_critical = bool(manifest.get("critical", False))
+            stage_ready = st.get("status") == "ready"
+
+            show, reason = should_show_update_prompt(
+                remote_ver,
+                is_critical,
+                prefs,
+                _current_app_state["s"],
+                _boot_time,
+                stage_is_ready=stage_ready,
+            )
+            if show:
+                _fire_update_bubble(local_ver, remote_ver)
+                prefs.setdefault("last_prompt_per_version", {})[remote_ver] = {
+                    "first_shown_at": now_utc_iso(),
+                    "user_dismissed_count": 0,
+                    "was_critical": is_critical,
+                }
+                save_update_prefs(cfg_path, prefs)
+            else:
+                _log(f"[UPDATE] bubble suppressed: {reason}")
+        except Exception as e:
+            _log(f"[UPDATE] gate check failed: {e}; fallback to plain bubble")
+            _fire_update_bubble(local_ver, remote_ver)
+
+    bridge.updateAvailable.connect(on_update_available)
+    tray.messageClicked.connect(_open_update_dialog)
+
+    def _on_check_update_clicked():
+        """Menu: 检查更新.
+
+        If stage already ready → open dialog directly.
+        Else → trigger background re-check; surface the toast regardless of
+        anti-nuisance gate (user explicitly asked).
+        """
+        if _update_info["armed"]:
+            _open_update_dialog()
+            return
+        try:
+            from aria.update_tool import get_update_state
+
+            st = get_update_state()
+            if st.get("status") == "ready":
+                to_ver = st.get("to_version", "")
+                if to_ver:
+                    on_update_available(_update_info.get("local") or "", to_ver)
+                    return
+        except Exception as e:
+            _log(f"[UPDATE] menu state check failed: {e}")
+
+        tray.showMessage(
+            "Aria",
+            "正在后台检查更新…（如有新版本将稍后提示）",
+            QSystemTrayIcon.Information,
+            3000,
+        )
+        if backend and hasattr(backend, "_check_update_background"):
+            import threading as _th
+
+            _th.Thread(
+                target=backend._check_update_background,
+                kwargs={"force_stage": True},
+                daemon=True,
+            ).start()
+
+    action_check_update.triggered.connect(_on_check_update_clicked)
+
+    # Sound effects disabled - only hotkey press sounds in app.py
+    # (start_recording beep and stop_recording beep)
+
+    # Initialize backend
+    backend = None
+
+    try:
+        from aria.app import AriaApp
+        import json
+        from aria.core.utils import get_config_path
+
+        # Read hotkey from config (before creating backend)
+        config_path = get_config_path("hotwords.json")
+        actual_hotkey = args.hotkey  # fallback to command line arg
+        config = {}  # Default empty config (prevents NameError if JSON load fails)
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            config_hotkey = config.get("general", {}).get("hotkey", "")
+            if config_hotkey:
+                actual_hotkey = config_hotkey.lower()
+                _log(f"[Aria] Using hotkey from config: {actual_hotkey}")
+        except Exception as e:
+            _log(f"[Aria] Could not read hotkey from config: {e}")
+
+        backend = AriaApp(hotkey=actual_hotkey)
+        backend.set_bridge(bridge)
+        backend.start()
+        _log(f"Aria Qt Frontend Started (Hotkey: {actual_hotkey})")
+
+        # Pass history store to browser window
+        if hasattr(backend, "history_store"):
+            history_browser.set_history_store(backend.history_store)
+            _log("[Aria] HistoryStore connected to browser window")
+
+        # Check start_active setting - if False, disable hotkey listening
+        # (reuse config already loaded above)
+        try:
+            start_active = config.get("general", {}).get("start_active", True)
+            if not start_active:
+                # Enter sleeping mode (UI shows dimmed, wakeword still works)
+                backend.set_sleeping(True)
+                _log("[Aria] Started in sleeping mode (start_active=False)")
+            else:
+                # CRITICAL FIX: Explicitly ensure system is fully active
+                # Issue: PopupMenu emits enableToggled(True) during __init__,
+                # but main.py connects the handler AFTER ball is created.
+                # This means backend.set_enabled(True) is never called!
+                # Fix: Explicitly enable and sync all states after event loop starts.
+                def _ensure_active_state():
+                    _log("[STARTUP] _ensure_active_state() running...")
+                    # 1. Ensure backend hotkey is enabled
+                    if hasattr(backend, "set_enabled"):
+                        backend.set_enabled(True)
+                        _log("[STARTUP] backend.set_enabled(True) called")
+                    # 2. Ensure not sleeping
+                    if hasattr(backend, "set_sleeping"):
+                        backend.set_sleeping(False)
+                        _log("[STARTUP] backend.set_sleeping(False) called")
+                    # 3. Sync UI state
+                    bridge.emit_state("IDLE")
+                    ball.set_deep_sleeping_state(False)
+                    _log("[STARTUP] UI state synced to IDLE")
+                    # 4. Sync UI toggle state (don't trigger signal, just update visual)
+                    #    NOTE: Do NOT toggle False→True as it calls stop() which
+                    #    unregisters hotkeys that start() won't re-register!
+                    ball.set_enabled_state(True)
+                    _log("[STARTUP] Toggle switch synced to ON")
+                    _log("[Aria] System fully activated (start_active=True)")
+                    _log("[STARTUP] System fully activated!")
+
+                def _auto_start_recording():
+                    """Auto-start recording after system is ready."""
+                    _log("[STARTUP] Auto-starting recording...")
+                    if hasattr(backend, "toggle_recording"):
+                        backend.toggle_recording()
+                        _log("[STARTUP] Recording started automatically!")
+                        _log("[Aria] Recording started automatically")
+
+                # Use 500ms delay to ensure all components are ready
+                # (100ms was sometimes too short on slower machines)
+                QTimer.singleShot(500, _ensure_active_state)
+                # Auto-start recording 200ms after activation
+                QTimer.singleShot(700, _auto_start_recording)
+                _log("[Aria] Started in active mode (start_active=True)")
+        except Exception as e:
+            _log(f"[Aria] Could not read start_active setting: {e}")
+            # Default: emit IDLE state after event loop starts
+            QTimer.singleShot(100, lambda: bridge.emit_state("IDLE"))
+    except Exception as e:
+        # Clean up any partially started resources
+        if backend is not None and hasattr(backend, "stop"):
+            try:
+                backend.stop()
+            except Exception:
+                pass  # Ignore cleanup errors
+
+        QMessageBox.critical(
+            None,
+            "Startup Error",
+            f"Aria 启动失败:\n{e}\n\n请使用 Aria_debug.bat 查看详细错误信息。",
+        )
+        sys.exit(1)
+
+    # Connect ball actions
+    ball.toggleRequested.connect(backend.toggle_recording)
+
+    # =========================================================================
+    # v1.1: Action-driven UI handling (Translation Popup, AI Chat)
+    # =========================================================================
+
+    def on_action_triggered(action):
+        """Handle UI actions from backend."""
+        # CRITICAL: Must use aria.core.action (not core.action) to match
+        # the module identity used by executor.py. Otherwise enum comparison fails.
+        from aria.core.action import (
+            ActionType,
+            TranslationAction,
+            SummaryAction,
+            ChatAction,
+            ClipboardTranslationAction,
+            ReplyAction,
+            ReminderConfirmAction,
+            ReminderNotifyAction,
+        )
+
+        _log(f"[MAIN] on_action_triggered: {action.type}, id={action.request_id}")
+        _log(
+            f"[MAIN] action.type value: {action.type.value if hasattr(action.type, 'value') else action.type}"
+        )
+        _log(f"[MAIN] ActionType.SHOW_TRANSLATION: {ActionType.SHOW_TRANSLATION}")
+        _log(f"[MAIN] Type match check: {action.type == ActionType.SHOW_TRANSLATION}")
+        _log(
+            f"[MAIN] Type name check: {action.type.name if hasattr(action.type, 'name') else 'N/A'}"
+        )
+        _log(f"[UI] Action triggered: {action.type}, id={action.request_id}")
+
+        if action.type == ActionType.SHOW_TRANSLATION:
+            try:
+                # Show translation popup with loading state
+                _log(
+                    f"[MAIN] Calling show_loading with {len(action.source_text)} chars"
+                )
+                # RAW DEBUG: Write directly to file before calling
+                try:
+                    from pathlib import Path
+
+                    _raw_log = (
+                        Path(__file__).parent.parent.parent
+                        / "DebugLog"
+                        / "wakeword_debug.log"
+                    )
+                    with open(_raw_log, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"[RAW] MAIN: About to call translation_popup.show_loading()\n"
+                        )
+                except Exception:
+                    pass
+                translation_popup.show_loading(action.source_text, action.request_id)
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SELECTION_TRANSLATE,
+                }
+                _log("[MAIN] show_loading called OK")
+
+                # Get API config from backend's polisher (reuse existing config)
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+                    _log(f"[MAIN] Got API config: url={api_url[:30]}..., model={model}")
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured")
+                    _pending_action_sources.pop(action.request_id, None)
+                    translation_popup.show_error(
+                        "API 未配置（本地模式不支持翻译）", action.request_id
+                    )
+                    return
+
+                # Create and start translation worker
+                _log("[MAIN] Creating TranslationWorker...")
+                worker = TranslationWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    source_lang=action.source_lang,
+                    target_lang=action.target_lang,
+                )
+                # CRITICAL: Keep signals reference alive until delivery
+                # (QRunnable autoDelete can destroy signals before async delivery)
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_signals(sig_ref):
+                    """Remove signals reference after delivery."""
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+                        _log(
+                            f"[MAIN] Cleaned up signals ref, remaining: {len(_active_signals)}"
+                        )
+
+                signals_ref.finished.connect(on_translation_finished)
+                signals_ref.finished.connect(lambda *_: cleanup_signals(signals_ref))
+                signals_ref.error.connect(on_translation_error)
+                signals_ref.error.connect(lambda *_: cleanup_signals(signals_ref))
+                thread_pool.start(worker)
+                _log(
+                    f"[MAIN] TranslationWorker started, active_signals: {len(_active_signals)}"
+                )
+            except Exception as e:
+                _log(f"[MAIN] ERROR in SHOW_TRANSLATION: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+        elif action.type == ActionType.SHOW_SUMMARY:
+            try:
+                _log(f"[MAIN] Summary popup: {len(action.source_text)} chars")
+                summary_popup.show_loading(
+                    action.source_text,
+                    action.request_id,
+                    title_prefix="总结",
+                    title_done="摘要",
+                    loading_text="正在总结...",
+                    error_prefix="总结失败",
+                )
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SUMMARY,
+                }
+
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+                    _log(f"[MAIN] Got API config: url={api_url[:30]}..., model={model}")
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured for summary")
+                    _pending_action_sources.pop(action.request_id, None)
+                    summary_popup.show_error("API 未配置", action.request_id)
+                    return
+
+                worker = SummaryWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                )
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_summary_signals(sig_ref):
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+
+                signals_ref.finished.connect(on_summary_finished)
+                signals_ref.finished.connect(
+                    lambda *_: cleanup_summary_signals(signals_ref)
+                )
+                signals_ref.error.connect(on_summary_error)
+                signals_ref.error.connect(
+                    lambda *_: cleanup_summary_signals(signals_ref)
+                )
+                thread_pool.start(worker)
+                _log("[MAIN] SummaryWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in SHOW_SUMMARY: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+        elif action.type == ActionType.OPEN_CHAT:
+            # Show AI chat window with context
+            ai_chat_window.show_with_context(
+                context_text=action.context_text,
+                request_id=action.request_id,
+                initial_question=action.initial_question,
+            )
+            _log(
+                f"[UI] ChatAction: opened chat window with {len(action.context_text)} chars"
+            )
+
+        elif action.type == ActionType.CLIPBOARD_TRANSLATION:
+            # Clipboard translation: translate and copy to clipboard, show notification
+            try:
+                _log(
+                    f"[MAIN] ClipboardTranslation: {len(action.source_text)} chars -> {action.target_lang}"
+                )
+
+                # Get API config from backend's polisher
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured for clipboard translation")
+                    tray.showMessage(
+                        "Aria", "API 未配置", QSystemTrayIcon.Warning, 2000
+                    )
+                    return
+
+                # Create and start translation worker
+                worker = TranslationWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    source_lang="auto",
+                    target_lang=action.target_lang,
+                )
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SELECTION_TRANSLATE,
+                }
+                # CRITICAL: Keep signals reference alive until delivery
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_clipboard_signals(sig_ref):
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+
+                signals_ref.finished.connect(on_clipboard_translation_finished)
+                signals_ref.finished.connect(
+                    lambda *_: cleanup_clipboard_signals(signals_ref)
+                )
+                signals_ref.error.connect(on_clipboard_translation_error)
+                signals_ref.error.connect(
+                    lambda *_: cleanup_clipboard_signals(signals_ref)
+                )
+                thread_pool.start(worker)
+                _log("[MAIN] Clipboard TranslationWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in CLIPBOARD_TRANSLATION: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+        elif action.type == ActionType.SHOW_REPLY:
+            # Reply popup: generate reply to selected message
+            try:
+                _log(f"[MAIN] Reply popup: {len(action.source_text)} chars")
+                reply_popup.show_loading(
+                    action.source_text,
+                    action.request_id,
+                    title_prefix="回复",
+                    title_done="回复建议",
+                    loading_text="正在生成回复...",
+                    error_prefix="回复失败",
+                )
+                _pending_action_sources[action.request_id] = {
+                    "source_text": action.source_text,
+                    "type": RecordType.SELECTION_REPLY,
+                    "style_hint": getattr(action, "style_hint", ""),
+                }
+
+                api_url = ""
+                api_key = ""
+                model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+                if (
+                    hasattr(backend, "polisher")
+                    and backend.polisher
+                    and hasattr(backend.polisher.config, "api_url")
+                ):
+                    api_url = backend.polisher.config.api_url
+                    api_key = backend.polisher.config.api_key
+                    model = backend.polisher.config.model
+                    _log(
+                        f"[MAIN] Got API config for reply: url={api_url[:30]}..., model={model}"
+                    )
+
+                if not api_url or not api_key:
+                    _log("[MAIN] ERROR: API not configured for reply")
+                    _pending_action_sources.pop(action.request_id, None)
+                    reply_popup.show_error("API 未配置", action.request_id)
+                    return
+
+                # Combine config reply_style with action's style_hint
+                reply_style = ""
+                try:
+                    import json as _json
+                    from pathlib import Path as _Path
+
+                    _cfg_path = (
+                        _Path(__file__).parent.parent.parent
+                        / "config"
+                        / "hotwords.json"
+                    )
+                    with open(_cfg_path, "r", encoding="utf-8") as _f:
+                        _cfg = _json.load(_f)
+                    reply_style = _cfg.get("reply_style", "")
+                except Exception:
+                    pass
+                combined_style = reply_style
+                if action.style_hint:
+                    combined_style = (
+                        f"{reply_style}\n{action.style_hint}"
+                        if reply_style
+                        else action.style_hint
+                    )
+
+                worker = ReplyWorker(
+                    request_id=action.request_id,
+                    source_text=action.source_text,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    style_hint=combined_style if combined_style else None,
+                )
+                signals_ref = worker.signals
+                _active_signals.append(signals_ref)
+
+                def cleanup_reply_signals(sig_ref):
+                    if sig_ref in _active_signals:
+                        _active_signals.remove(sig_ref)
+
+                signals_ref.finished.connect(on_reply_finished)
+                signals_ref.finished.connect(
+                    lambda *_: cleanup_reply_signals(signals_ref)
+                )
+                signals_ref.error.connect(on_reply_error)
+                signals_ref.error.connect(lambda *_: cleanup_reply_signals(signals_ref))
+                thread_pool.start(worker)
+                _log("[MAIN] ReplyWorker started")
+            except Exception as e:
+                _log(f"[MAIN] ERROR in SHOW_REPLY: {e}")
+                import traceback
+
+                _log(traceback.format_exc())
+
+        elif action.type == ActionType.SHOW_REMINDER_CONFIRM:
+            _log(
+                f"[MAIN] Reminder confirm: {action.content} @ {action.trigger_display}"
+            )
+            # Position above the floating ball
+            ball_pos = ball.mapToGlobal(ball.rect().center())
+            reminder_dialog.show_confirm(
+                reminder_id=action.reminder_id,
+                content=action.content,
+                trigger_display=action.trigger_display,
+                anchor_pos=ball_pos,
+            )
+
+        elif action.type == ActionType.SHOW_REMINDER_NOTIFY:
+            _log(
+                f"[MAIN] Reminder notify: {action.content} (batch={action.batch_count})"
+            )
+            ball_pos = ball.mapToGlobal(ball.rect().center())
+            reminder_dialog.show_notify(
+                reminder_id=action.reminder_id,
+                content=action.content,
+                batch_count=action.batch_count,
+                anchor_pos=ball_pos,
+            )
+            # Sound
+            try:
+                from .sound import play_sound
+
+                play_sound("reminder")
+            except Exception:
+                pass
+            # Ball flash
+            if hasattr(ball, "on_reminder_fired"):
+                ball.on_reminder_fired()
+
+    def on_clipboard_translation_finished(request_id: str, translated_text: str):
+        """Handle clipboard translation completion."""
+        try:
+            # Use Qt's clipboard (always available) instead of pyperclip
+            clipboard = QApplication.clipboard()
+            clipboard.setText(translated_text)
+            _record_to_history(request_id, translated_text)
+            _log(
+                f"[UI] Clipboard translation finished: {len(translated_text)} chars copied"
+            )
+            tray.showMessage(
+                "Aria", "已复制到剪切板", QSystemTrayIcon.Information, 2000
+            )
+        except Exception as e:
+            _log(f"[UI] Failed to copy to clipboard: {e}")
+            tray.showMessage("Aria", f"复制失败: {e}", QSystemTrayIcon.Warning, 2000)
+
+    def on_clipboard_translation_error(request_id: str, error_msg: str):
+        """Handle clipboard translation error."""
+        _pending_action_sources.pop(request_id, None)
+        _log(f"[UI] Clipboard translation error: {error_msg}")
+        tray.showMessage(
+            "Aria", f"翻译失败: {error_msg}", QSystemTrayIcon.Warning, 3000
+        )
+
+    def _record_to_history(request_id: str, output_text: str):
+        """Write a completed action to history store, using tracked source info."""
+        source_info = _pending_action_sources.pop(request_id, None)
+        if not source_info:
+            return
+        if not hasattr(backend, "history_store") or not backend.history_store:
+            return
+        try:
+            metadata = {}
+            if source_info.get("style_hint"):
+                metadata["style_hint"] = source_info["style_hint"]
+            backend.history_store.add(
+                record_type=source_info["type"],
+                input_text=source_info["source_text"],
+                output_text=output_text,
+                metadata=metadata,
+            )
+        except Exception as e:
+            _log(f"[UI] History record failed: {e}")
+
+    def on_translation_finished(request_id: str, translated_text: str):
+        """Handle translation completion."""
+        _log(
+            f"[UI] Translation finished CALLBACK: request_id={request_id}, text_len={len(translated_text)}"
+        )
+        try:
+            translation_popup.show_result(translated_text, request_id)
+            _record_to_history(request_id, translated_text)
+            _log(f"[UI] Translation show_result completed OK")
+        except Exception as e:
+            _log(f"[UI] Translation show_result ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_translation_error(request_id: str, error_msg: str):
+        """Handle translation error."""
+        _pending_action_sources.pop(request_id, None)
+        _log(
+            f"[UI] Translation error CALLBACK: request_id={request_id}, error={error_msg}"
+        )
+        try:
+            translation_popup.show_error(error_msg, request_id)
+            _log(f"[UI] Translation show_error completed OK")
+        except Exception as e:
+            _log(f"[UI] Translation show_error ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_summary_finished(request_id: str, summary_text: str):
+        """Handle summary completion."""
+        _log(
+            f"[UI] Summary finished CALLBACK: request_id={request_id}, text_len={len(summary_text)}"
+        )
+        try:
+            summary_popup.show_result(summary_text, request_id)
+            _record_to_history(request_id, summary_text)
+            _log(f"[UI] Summary show_result completed OK")
+        except Exception as e:
+            _log(f"[UI] Summary show_result ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_summary_error(request_id: str, error_msg: str):
+        """Handle summary error."""
+        _pending_action_sources.pop(request_id, None)
+        _log(f"[UI] Summary error CALLBACK: request_id={request_id}, error={error_msg}")
+        try:
+            summary_popup.show_error(error_msg, request_id)
+            _log(f"[UI] Summary show_error completed OK")
+        except Exception as e:
+            _log(f"[UI] Summary show_error ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_reply_finished(request_id: str, reply_text: str):
+        """Handle reply generation completion."""
+        _log(
+            f"[UI] Reply finished CALLBACK: request_id={request_id}, text_len={len(reply_text)}"
+        )
+        try:
+            reply_popup.show_result(reply_text, request_id)
+            _record_to_history(request_id, reply_text)
+            _log("[UI] Reply show_result completed OK")
+        except Exception as e:
+            _log(f"[UI] Reply show_result ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_reply_error(request_id: str, error_msg: str):
+        """Handle reply generation error."""
+        _pending_action_sources.pop(request_id, None)
+        _log(f"[UI] Reply error CALLBACK: request_id={request_id}, error={error_msg}")
+        try:
+            reply_popup.show_error(error_msg, request_id)
+            _log("[UI] Reply show_error completed OK")
+        except Exception as e:
+            _log(f"[UI] Reply show_error ERROR: {e}")
+            import traceback
+
+            _log(f"[UI] TRACEBACK: {traceback.format_exc()}")
+
+    def on_copy_translation(text: str):
+        """Handle copy request from translation popup."""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        _log(f"[UI] Translation copied to clipboard: {text[:50]}...")
+
+    # =========================================================================
+    # AI Chat LLM handling
+    # =========================================================================
+
+    def on_chat_send_message():
+        """Handle send button click in chat window - start LLM worker."""
+        # Get API config from backend's polisher
+        api_url = ""
+        api_key = ""
+        model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+        if (
+            hasattr(backend, "polisher")
+            and backend.polisher
+            and hasattr(backend.polisher.config, "api_url")
+        ):
+            api_url = backend.polisher.config.api_url
+            api_key = backend.polisher.config.api_key
+            model = backend.polisher.config.model
+
+        if not api_url or not api_key:
+            ai_chat_window.show_error("API 未配置（本地模式不支持对话）")
+            return
+
+        # Get conversation and context from chat window
+        messages = ai_chat_window.get_conversation()
+        context = ai_chat_window.get_context()
+        request_id = ai_chat_window._request_id or "chat"
+
+        # Create and start LLM worker
+        worker = LLMWorker(
+            request_id=request_id,
+            messages=messages,
+            context_text=context,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            stream=True,
+        )
+        worker.signals.streamUpdate.connect(on_chat_stream_update)
+        worker.signals.finished.connect(on_chat_finished)
+        worker.signals.error.connect(on_chat_error)
+        thread_pool.start(worker)
+
+    def on_chat_stream_update(request_id: str, partial_content: str):
+        """Handle streaming update from LLM."""
+        ai_chat_window.update_response(partial_content, is_final=False)
+
+    def on_chat_finished(request_id: str, final_content: str):
+        """Handle LLM completion."""
+        _log(f"[UI] Chat finished: {len(final_content)} chars")
+        ai_chat_window.update_response(final_content, is_final=True)
+
+    def on_chat_error(request_id: str, error_msg: str):
+        """Handle LLM error."""
+        _log(f"[UI] Chat error: {error_msg}")
+        ai_chat_window.show_error(error_msg)
+
+    def on_chat_insert_requested(text: str):
+        """Handle insert request from chat window."""
+        if hasattr(backend, "output_injector"):
+            backend.output_injector.insert_text(text)
+            _log(f"[UI] Chat response inserted: {text[:50]}...")
+
+    # Connect chat window signals
+    def on_chat_send_wrapper():
+        """Wrapper to handle send: add bubble then start LLM."""
+        ai_chat_window._on_send_clicked()  # Original handler (adds message bubble)
+        on_chat_send_message()  # Start LLM worker
+
+    ai_chat_window._send_btn.clicked.disconnect()  # Disconnect default
+    ai_chat_window._send_btn.clicked.connect(on_chat_send_wrapper)
+    ai_chat_window.insertRequested.connect(on_chat_insert_requested)
+
+    # Connect action signals
+    bridge.actionTriggered.connect(on_action_triggered)
+    translation_popup.copyRequested.connect(on_copy_translation)
+    summary_popup.copyRequested.connect(on_copy_translation)
+    reply_popup.copyRequested.connect(on_copy_translation)
+
+    # Connect mute action to backend
+    def on_mute_toggled():
+        muted = action_mute.isChecked()
+        if hasattr(backend, "set_sound_enabled"):
+            backend.set_sound_enabled(not muted)
+        # Also mute UI sounds
+        from .sound import get_sound_manager
+
+        get_sound_manager().enabled = not muted
+
+    action_mute.triggered.connect(on_mute_toggled)
+
+    # Connect auto-send action to backend
+    def on_auto_send_toggled():
+        enabled = action_auto_send.isChecked()
+        if hasattr(backend, "set_auto_send"):
+            backend.set_auto_send(enabled)
+        ball.set_auto_send(enabled)  # Update floating ball color indicator
+
+    action_auto_send.triggered.connect(on_auto_send_toggled)
+
+    # Settings window: show and bring to front
+    def show_settings():
+        settings.show()
+        settings.raise_()
+        settings.activateWindow()
+
+    ball.detailsRequested.connect(show_settings)
+    action_settings.triggered.connect(show_settings)  # Tray menu -> settings
+
+    # History browser: show and bring to front
+    def show_history_browser():
+        history_browser.show()
+        history_browser.raise_()
+        history_browser.activateWindow()
+
+    ball.historyRequested.connect(show_history_browser)
+
+    # Handle enable toggle from popup menu
+    def on_enable_toggled(enabled):
+        _log(f"[Aria] Enable toggled: {enabled}")
+        if hasattr(backend, "set_enabled"):
+            backend.set_enabled(enabled)
+
+    ball.enableToggled.connect(on_enable_toggled)
+
+    # Handle mode change from popup menu
+    def on_mode_changed(mode):
+        _log(f"[Aria] Polish mode changed: {mode}")
+        if hasattr(backend, "set_polish_mode"):
+            backend.set_polish_mode(mode)
+        # Sync settings window
+        settings.set_polish_mode(mode)
+
+    ball.modeChanged.connect(on_mode_changed)
+
+    # Handle deep sleep toggle from popup menu
+    def on_deep_sleep_toggled(deep):
+        _log(f"[Aria] Deep sleep toggled via UI: {deep}")
+        if hasattr(backend, "set_deep_sleep"):
+            backend.set_deep_sleep(deep)
+
+    ball.deepSleepToggled.connect(on_deep_sleep_toggled)
+
+    # Tray menu deep sleep toggle
+    def on_tray_deep_sleep_toggled(checked):
+        _log(f"[Aria] Deep sleep toggled via tray: {checked}")
+        if hasattr(backend, "set_deep_sleep"):
+            backend.set_deep_sleep(checked)
+
+    action_deep_sleep.triggered.connect(on_tray_deep_sleep_toggled)
+
+    # Handle translate output mode change from popup menu
+    def on_translate_mode_changed(mode):
+        """Handle translation output mode change from popup menu."""
+        _log(f"[Aria] Translate output mode changed: {mode}")
+        try:
+            import json
+            from aria.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            # Update translation config
+            if "translation" not in config:
+                config["translation"] = {}
+            config["translation"]["output_mode"] = mode
+
+            import os
+
+            tmp_path = str(config_path) + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+
+            _log(f"[Aria] Translate output mode saved: {mode}")
+            tray.showMessage(
+                "Aria",
+                f"翻译输出模式: {'弹窗显示' if mode == 'popup' else '复制到剪贴板'}",
+                QSystemTrayIcon.MessageIcon.Information,
+                1500,
+            )
+        except Exception as e:
+            _log(f"[Aria] Failed to save translate mode: {e}")
+
+    ball.translateModeChanged.connect(on_translate_mode_changed)
+
+    # Load and sync initial translate mode
+    try:
+        import json
+        from aria.core.utils import get_config_path
+
+        config_path = get_config_path("hotwords.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        translate_mode = config.get("translation", {}).get("output_mode", "popup")
+        ball.set_translate_mode(translate_mode)
+    except Exception:
+        pass  # Default to popup mode
+
+    # Sync initial mode from backend to popup menu
+    if hasattr(backend, "get_polish_mode"):
+        initial_mode = backend.get_polish_mode()
+        ball.set_polish_mode(initial_mode)
+        _log(f"[Aria] Initial polish mode: {initial_mode}")
+
+    # Set engine info on floating ball for popup display
+    def _get_engine_display_name() -> str:
+        """Get human-readable engine name from config."""
+        try:
+            import json
+            from aria.core.utils import get_config_path
+
+            config_path = get_config_path("hotwords.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            engine = cfg.get("asr_engine", "qwen3")
+
+            if engine == "funasr":
+                model = cfg.get("funasr", {}).get("model_name", "paraformer-zh")
+                if "sensevoice" in model.lower():
+                    return "FunASR (SenseVoice)"
+                return "FunASR (Paraformer)"
+            elif engine == "qwen3":
+                model = cfg.get("qwen3", {}).get("model_name", "Qwen/Qwen3-ASR-1.7B")
+                short = "1.7B" if "1.7B" in model else "0.6B"
+                return f"Qwen3-ASR ({short})"
+            else:
+                return engine.upper()
+        except Exception as e:
+            _log(f"[Aria] Failed to get engine display name: {e}")
+            return "Unknown"
+
+    engine_name = _get_engine_display_name()
+    ball.set_engine_info(engine_name)
+    _log(f"[Aria] Engine info set: {engine_name}")
+
+    def cleanup_and_quit():
+        """Cleanup backend before quitting."""
+        import threading
+        import os
+        import time
+        from PySide6.QtCore import QCoreApplication
+
+        nonlocal _quit_in_progress
+        if _quit_in_progress:
+            return
+        _quit_in_progress = True
+        _log("[Aria] Cleaning up and quitting...")
+
+        # Step 1: Hide tray icon first to prevent ghost icons on Windows
+        try:
+            tray.hide()
+        except Exception as e:
+            _log(f"[Aria] Tray hide error (ignored): {e}")
+
+        # Step 2: Close any active dialogs and windows to avoid modal traps
+        try:
+            for dlg in list(_active_dialogs):
+                try:
+                    dlg.close()
+                except Exception:
+                    pass
+            _active_dialogs.clear()
+        except Exception as e:
+            _log(f"[Aria] Dialog cleanup error (ignored): {e}")
+
+        try:
+            for w in app.topLevelWidgets():
+                try:
+                    w.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            _log(f"[Aria] Window cleanup error (ignored): {e}")
+
+        # Step 3: Stop backend (ASR, audio capture, hotkey listener)
+        if hasattr(backend, "stop"):
+            try:
+                backend.stop()
+                _log("[Aria] Backend stopped successfully")
+            except Exception as e:
+                _log(f"[Aria] Backend stop error: {e}")
+
+        # Step 4: Wait briefly for threads to terminate
+        time.sleep(0.3)
+
+        # Step 5: Check for remaining non-daemon threads
+        remaining = [
+            t for t in threading.enumerate() if not t.daemon and t.name != "MainThread"
+        ]
+        if remaining:
+            _log(
+                f"[Aria] Warning: {len(remaining)} non-daemon threads still running: {[t.name for t in remaining]}"
+            )
+
+        # Step 6: Try to drain thread pool tasks
+        try:
+            if thread_pool:
+                thread_pool.waitForDone(1000)
+        except Exception as e:
+            _log(f"[Aria] Thread pool wait error (ignored): {e}")
+
+        # Step 7: Quit Qt application
+        try:
+            app.quit()
+            QCoreApplication.exit(0)
+        except Exception as e:
+            _log(f"[Aria] App quit error (ignored): {e}")
+
+        _log("[Aria] Cleanup complete")
+
+        # Step 8: Force exit if still running after timeout (covers modal traps)
+        def force_exit():
+            time.sleep(2.0)
+            _log("[Aria] Force exiting due to timeout")
+            os._exit(0)
+
+        force_thread = threading.Thread(target=force_exit, daemon=True)
+        force_thread.start()
+
+    action_quit.triggered.connect(cleanup_and_quit)
+
+    # Handle elevation dialog disable request - just call on_enable_toggled(False)
+    def on_elevation_disable_requested():
+        """Handle user clicking 'Disable' in elevation dialog."""
+        _log("[UI] User requested to temporarily disable from elevation dialog")
+        on_enable_toggled(False)  # Reuse existing disable logic
+        # Update popup menu UI state
+        ball.set_enabled_state(False)
+
+    # Connect elevation dialog signals (cleanup_and_quit is now defined)
+    elevation_dialog.closeRequested.connect(on_elevation_close_requested)
+    elevation_dialog.restartAsAdminRequested.connect(on_elevation_restart_admin)
+    elevation_dialog.disableRequested.connect(on_elevation_disable_requested)
+
+    # Register cleanup for signal handling and atexit
+    def signal_handler(signum, frame):
+        _log(f"[Aria] Received signal {signum}, cleaning up...")
+        cleanup_and_quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    def atexit_cleanup():
+        """Safe cleanup on process exit."""
+        try:
+            if hasattr(backend, "stop"):
+                backend.stop()
+        except Exception as e:
+            _log(f"[Aria] atexit cleanup error (ignored): {e}")
+
+    atexit.register(atexit_cleanup)
+
+    # Settings saved -> reload backend config and sync popup menu
+    def on_settings_saved(config):
+        if hasattr(backend, "reload_config"):
+            backend.reload_config()
+
+        # Sync hotkey if changed
+        general = config.get("general", {})
+        saved_hotkey = general.get("hotkey", "")
+        if saved_hotkey and hasattr(backend, "set_hotkey"):
+            # Convert Qt key sequence format to hotkey format if needed
+            hotkey_lower = saved_hotkey.lower().replace(" ", "")
+            backend.set_hotkey(hotkey_lower)
+
+        # Sync popup menu with saved mode
+        saved_mode = config.get("polish_mode", "quality")
+        ball.set_polish_mode(saved_mode)
+        _log(f"[Aria] Settings saved, polish mode synced: {saved_mode}")
+
+    settings.settingsSaved.connect(on_settings_saved)
+
+    # Show floating ball
+    ball.show()
+
+    _log("Aria Floating Ball is now visible.")
+    _log("  - Left-click: Toggle recording")
+    _log("  - Right-click: Show popup menu")
+    _log("  - Middle-click: Lock position")
+    _log("  - Drag: Move ball (when unlocked)")
+    _log("  - System tray single-click: Show history (Ctrl+1-9 to copy)")
+    _log("  - System tray double-click: Open hotwords settings")
+
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
