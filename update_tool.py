@@ -1,431 +1,522 @@
 """
-Aria 一键升级工具
-=================
-从 GitHub 拉取最新源码，覆盖更新本地文件。
-不会影响：用户配置(hotwords.json)、模型、历史数据。
+Aria Auto-Update Client (v1.0.5 spec)
+=====================================
+Manifest-based, SHA256-verified, atomic stage-and-swap.
 
-使用方法：
-  双击 update.bat（放在 Aria 安装根目录）
+Module layout:
+    - check_for_update(local_version)            → {"available", "local", "remote", "manifest", "error"}
+    - download_and_stage(manifest)               → {"ok", "state_path", "error"}
+    - get_update_state() / set_update_state(**p) → transaction state I/O
+    - main()                                     → CLI notice (legacy update.bat entry)
+
+Spec: .claude/plans/autoupdate-v1.0.5.md
 """
 
+import hashlib
 import io
+import json
 import os
 import shutil
+import ssl
 import sys
+import time
+import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
-# ─── 配置 ───────────────────────────────────────────────
+# ─── Paths ───────────────────────────────────────────────
 
-GITHUB_ZIP = "https://github.com/Xingxun7777/Aria/archive/refs/heads/main.zip"
+_THIS_DIR = Path(__file__).resolve().parent  # .../_internal/app/aria
+INSTALL_ROOT = _THIS_DIR.parent.parent.parent  # .../Aria (install root)
+ARIA_LIVE = _THIS_DIR  # live source dir
+ARIA_STAGE = _THIS_DIR.parent / "aria.new"  # stage dir (sibling of live)
+STATE_PATH = INSTALL_ROOT / ".update_state.json"
+MANIFEST_CACHE = INSTALL_ROOT / ".manifest_cache.json"
+LOCK_PATH = INSTALL_ROOT / ".update.lock"
 
-# 下载失败时依次尝试的镜像
-MIRRORS = [
-    "https://ghfast.top/https://github.com/Xingxun7777/Aria/archive/refs/heads/main.zip",
-    "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/archive/refs/heads/main.zip",
-    "https://ghproxy.cc/https://github.com/Xingxun7777/Aria/archive/refs/heads/main.zip",
+
+# ─── Protocol (manifest source of truth) ────────────────
+
+OFFICIAL_MANIFEST_URL = (
+    "https://raw.githubusercontent.com/Xingxun7777/Aria/main/release-manifest.json"
+)
+
+ZIP_MIRROR_PREFIXES = [
+    "",  # direct (official)
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
 ]
 
-# 要更新的源码目录（GitHub 仓库根目录 → 本地 _internal/app/aria/）
-SOURCE_DIRS = ["core", "ui", "system", "aria"]
-
-# 要更新的源码文件
-SOURCE_FILES = [
-    "app.py",
-    "__init__.py",
-    "__main__.py",
-    "launcher.py",
-    "progress_ipc.py",
-]
-
-# 要更新的配置模板（不会覆盖用户的 hotwords.json）
-TEMPLATE_FILES = [
-    "config/hotwords.template.json",
-]
-
-# 绝不覆盖的文件（用户个人配置）
-NEVER_OVERWRITE = {
-    "config/hotwords.json",
-}
-
-# 用户可能已自定义的文件（仅当本地不存在时才写入）
-MERGE_IF_MISSING = {
-    "config/wakeword.json",
-    "config/commands.json",
-}
-
-# 根目录要更新的文件
-ROOT_FILES = [
-    "update.bat",
-    "Aria.cmd",
-    "Aria.vbs",
-    "Aria_debug.bat",
-]
+SCHEMA_VERSION = 1
+MANIFEST_CACHE_MAX_AGE_SEC = 7 * 24 * 3600  # 7 days
+MANIFEST_CACHE_FETCH_TIMEOUT = 8
+ZIP_DOWNLOAD_TIMEOUT = 120
+ATOMIC_REPLACE_RETRIES = 3
+LOCK_RETRIES = 5
+LOCK_RETRY_INTERVAL = 0.1
 
 
-# ─── 工具函数 ────────────────────────────────────────────
+# ─── Low-level utilities ────────────────────────────────
 
 
-def print_banner():
-    print()
-    print("  ╔═══════════════════════════════════╗")
-    print("  ║       Aria 一键升级工具            ║")
-    print("  ╚═══════════════════════════════════╝")
-    print()
-
-
-def get_local_version(aria_root: Path) -> str:
-    """读取本地版本号。"""
-    init_file = aria_root / "__init__.py"
-    if init_file.exists():
-        for line in init_file.read_text(encoding="utf-8").splitlines():
-            if "__version__" in line and "=" in line:
-                return line.split("=")[1].strip().strip("\"'")
-    return "未知"
-
-
-def get_zip_version(zip_root: Path) -> str:
-    """读取下载包中的版本号。"""
-    init_file = zip_root / "__init__.py"
-    if init_file.exists():
-        for line in init_file.read_text(encoding="utf-8").splitlines():
-            if "__version__" in line and "=" in line:
-                return line.split("=")[1].strip().strip("\"'")
-    return "未知"
-
-
-def check_aria_running() -> bool:
-    """检查 Aria 是否正在运行。"""
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq AriaRuntime.exe", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if "AriaRuntime.exe" in result.stdout:
-            return True
-    except Exception:
-        pass
-
-    # 也检查通过 pythonw.exe 运行的情况
-    try:
-        result = subprocess.run(
-            ["wmic", "process", "where", "name='pythonw.exe'", "get", "commandline"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if "launcher.py" in result.stdout or "aria" in result.stdout.lower():
-            return True
-    except Exception:
-        pass
-
-    return False
-
-
-def download_zip(timeout: int = 30) -> bytes:
-    """从 GitHub 或镜像下载最新源码 zip。"""
-    import urllib.request
-    import ssl
-
-    # 创建不验证证书的上下文（某些企业网络需要）
-    ctx = ssl.create_default_context()
-
-    urls = [GITHUB_ZIP] + MIRRORS
-    last_error = None
-
-    for i, url in enumerate(urls):
-        source = "GitHub" if i == 0 else f"镜像 {i}"
-        print(f"  尝试 {source}...", end="", flush=True)
-        try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "Aria-Updater/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-                data = resp.read()
-            print(f" 成功 ({len(data) / 1024 / 1024:.1f} MB)")
-            return data
-        except Exception as e:
-            last_error = e
-            print(f" 失败 ({type(e).__name__})")
-
-    raise RuntimeError(
-        f"所有下载源均失败。最后错误: {last_error}\n" "请检查网络连接后重试。"
-    )
-
-
-def extract_and_update(zip_data: bytes, aria_root: Path, install_root: Path):
-    """解压并更新文件。"""
-    updated = 0
-    skipped = 0
-
-    with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
-        # GitHub zip 内有一个顶层目录 "Aria-main/"
-        top_dirs = {name.split("/")[0] for name in zf.namelist() if "/" in name}
-        if len(top_dirs) != 1:
-            raise RuntimeError(f"zip 结构异常，预期 1 个顶层目录，实际 {len(top_dirs)}")
-        zip_prefix = top_dirs.pop() + "/"
-
-        # ── 更新源码目录 ──
-        for src_dir in SOURCE_DIRS:
-            prefix = zip_prefix + src_dir + "/"
-            dst_base = aria_root / src_dir
-
-            for info in zf.infolist():
-                if not info.filename.startswith(prefix) or info.is_dir():
-                    continue
-
-                rel_path = info.filename[len(prefix) :]
-                dst_path = dst_base / rel_path
-
-                dst_path.parent.mkdir(parents=True, exist_ok=True)
-                dst_path.write_bytes(zf.read(info.filename))
-                updated += 1
-
-        # ── 更新源码文件 ──
-        for src_file in SOURCE_FILES:
-            zip_path = zip_prefix + src_file
-            if zip_path in zf.namelist():
-                dst = aria_root / src_file
-                dst.write_bytes(zf.read(zip_path))
-                updated += 1
-
-        # ── 更新配置模板 ──
-        for tmpl in TEMPLATE_FILES:
-            zip_path = zip_prefix + tmpl
-            if zip_path in zf.namelist():
-                dst = aria_root / tmpl
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                dst.write_bytes(zf.read(zip_path))
-                updated += 1
-
-        # ── 处理用户可能自定义的配置 ──
-        for merge_file in MERGE_IF_MISSING:
-            zip_path = zip_prefix + merge_file
-            dst = aria_root / merge_file
-            if zip_path in zf.namelist():
-                if dst.exists():
-                    skipped += 1  # 保留用户自定义
-                else:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    dst.write_bytes(zf.read(zip_path))
-                    updated += 1
-
-        # ── 更新根目录文件（启动脚本、升级脚本）──
-        for root_file in ROOT_FILES:
-            zip_path = zip_prefix + root_file
-            if zip_path in zf.namelist():
-                dst = install_root / root_file
-                dst.write_bytes(zf.read(zip_path))
-                updated += 1
-
-        # ── 更新升级工具自身 ──
-        updater_zip = zip_prefix + "update_tool.py"
-        if updater_zip in zf.namelist():
-            dst = aria_root / "update_tool.py"
-            dst.write_bytes(zf.read(updater_zip))
-            updated += 1
-
-    # ── 清理旧 __pycache__ 并预编译新 .pyc ──
-    for cache_dir in aria_root.rglob("__pycache__"):
-        try:
-            shutil.rmtree(cache_dir)
-        except Exception:
-            pass
-
-    # Pre-compile all .py → .pyc so first launch doesn't pay compilation cost
-    import compileall
-
-    compileall.compile_dir(str(aria_root), quiet=2, workers=0)
-
-    return updated, skipped
-
-
-# ─── 自动检测更新（后台轻量检查）──────────────────────────
-
-GITHUB_RAW_INIT = "https://raw.githubusercontent.com/Xingxun7777/Aria/main/__init__.py"
-GITHUB_RAW_MIRRORS = [
-    "https://ghfast.top/https://raw.githubusercontent.com/Xingxun7777/Aria/main/__init__.py",
-    "https://raw.gitmirror.com/Xingxun7777/Aria/main/__init__.py",
-]
-
-
-def _parse_version(text: str) -> str:
-    for line in text.splitlines():
-        if "__version__" in line and "=" in line:
-            return line.split("=")[1].strip().strip("\"'")
-    return ""
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _version_tuple(v: str) -> tuple:
-    """Convert '1.0.3.2' to (1, 0, 3, 2) for comparison."""
     try:
         return tuple(int(x) for x in v.split("."))
     except (ValueError, AttributeError):
         return (0,)
 
 
-def check_for_update(local_version: str = "", timeout: int = 8) -> dict:
-    """Check if a newer version is available on GitHub.
+def _atomic_write(path: Path, text: str) -> None:
+    """Write tmp + os.replace with retry on Windows sharing violations."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    last_err: Exception | None = None
+    for _ in range(ATOMIC_REPLACE_RETRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as e:
+            last_err = e
+            time.sleep(0.1)
+    # Final attempt surfaces the error
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
+    raise last_err or RuntimeError(f"atomic write failed: {path}")
 
-    Non-blocking safe: designed to run in a background thread.
 
-    Args:
-        local_version: Current local version string. If empty, reads from __init__.py.
-        timeout: HTTP request timeout in seconds.
+def _read_json_or_rename_corrupt(path: Path, default: dict) -> dict:
+    """Load JSON. On parse error, rename to .corrupt.{ts}.json (cap 3) and return default."""
+    if not path.exists():
+        return dict(default)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        corrupt = path.with_name(f"{path.stem}.corrupt.{ts}{path.suffix}")
+        try:
+            os.replace(path, corrupt)
+        except OSError:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        # Cap forensic files to 3
+        pattern = f"{path.stem}.corrupt.*{path.suffix}"
+        corrupts = sorted(path.parent.glob(pattern), key=lambda p: p.stat().st_mtime)
+        for old in corrupts[:-3]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return dict(default)
 
-    Returns:
-        dict with keys:
-            "available": bool — True if newer version exists
-            "local": str — local version
-            "remote": str — remote version (empty if check failed)
-            "error": str — error message if check failed
+
+def _acquire_lock() -> object | None:
+    """msvcrt LK_NBLCK + retry. Returns file handle on success, None on failure."""
+    if sys.platform != "win32":
+        return None
+    import msvcrt
+
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(LOCK_RETRIES):
+        try:
+            fh = open(LOCK_PATH, "a+b")
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return fh
+        except OSError:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            time.sleep(LOCK_RETRY_INTERVAL)
+    return None
+
+
+def _release_lock(fh: object | None) -> None:
+    if fh is None or sys.platform != "win32":
+        return
+    import msvcrt
+
+    try:
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    try:
+        fh.close()
+    except Exception:
+        pass
+
+
+def _safe_member_path(zip_prefix: str, member: str, target_dir: Path) -> Path | None:
+    """Reject path traversal, absolute, drive letter, UNC, symlink-ish entries.
+
+    Returns the resolved target path if safe, None if rejected.
     """
-    import urllib.request
-    import ssl
+    if not member.startswith(zip_prefix):
+        return None
+    rel = member[len(zip_prefix) :]
+    if not rel:
+        return None
+    # Reject Windows drive letter / UNC / absolute
+    if rel.startswith(("/", "\\")) or ":" in rel or rel.startswith("\\\\"):
+        return None
+    # Reject any .. component
+    parts = rel.replace("\\", "/").split("/")
+    if any(p == ".." or p == "." for p in parts):
+        return None
+    dst = (target_dir / rel).resolve()
+    try:
+        dst.relative_to(target_dir.resolve())
+    except ValueError:
+        return None
+    return dst
 
+
+# ─── State I/O ───────────────────────────────────────────
+
+_STATE_DEFAULT = {
+    "schema_version": SCHEMA_VERSION,
+    "status": "idle",  # idle | downloading | downloaded | verified | staging | ready | swapping | swapped | confirmed | rollback
+    "from_version": "",
+    "to_version": "",
+    "stage_dir": "",
+    "backup_dir": "",
+    "zip_sha256": "",
+    "manifest_snapshot": None,
+    "created_at": "",
+    "updated_at": "",
+    "failed_boots": 0,
+    "error": "",
+}
+
+
+def get_update_state() -> dict:
+    state = _read_json_or_rename_corrupt(STATE_PATH, _STATE_DEFAULT)
+    # Schema migration: fill missing keys
+    for k, v in _STATE_DEFAULT.items():
+        state.setdefault(k, v)
+    return state
+
+
+def set_update_state(**patch) -> dict:
+    state = get_update_state()
+    state.update(patch)
+    state["updated_at"] = _now_utc_iso()
+    _atomic_write(STATE_PATH, json.dumps(state, indent=2, ensure_ascii=False))
+    return state
+
+
+def clear_update_state() -> None:
+    try:
+        STATE_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+# ─── Manifest fetch + cache ─────────────────────────────
+
+
+def _fetch_manifest() -> dict | None:
+    """Load manifest from official raw only. Fallback to .manifest_cache.json if < 7d old."""
+    ctx = ssl.create_default_context()
+    try:
+        req = urllib.request.Request(
+            OFFICIAL_MANIFEST_URL,
+            headers={"User-Agent": "Aria-UpdateCheck/2.0"},
+        )
+        with urllib.request.urlopen(
+            req, timeout=MANIFEST_CACHE_FETCH_TIMEOUT, context=ctx
+        ) as resp:
+            data = resp.read()
+        text = data.decode("utf-8", errors="replace")
+        manifest = json.loads(text)
+        # Only cache valid manifests
+        if manifest.get("version") and manifest.get("assets", {}).get("main_zip"):
+            try:
+                _atomic_write(MANIFEST_CACHE, text)
+            except OSError:
+                pass
+            return manifest
+    except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
+        pass
+    # Fallback: last-known-good cache
+    if MANIFEST_CACHE.exists():
+        try:
+            age = time.time() - MANIFEST_CACHE.stat().st_mtime
+            if age <= MANIFEST_CACHE_MAX_AGE_SEC:
+                return json.loads(MANIFEST_CACHE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return None
+
+
+# ─── Public API: check ──────────────────────────────────
+
+
+def check_for_update(local_version: str = "", timeout: int = 8) -> dict:
+    """Check manifest for newer version.
+
+    Backward-compatible shape: {"available", "local", "remote", "error"}.
+    Extended: "manifest" (full dict on success).
+    """
     if not local_version:
         try:
-            init_file = Path(__file__).parent / "__init__.py"
-            local_version = _parse_version(init_file.read_text(encoding="utf-8"))
-        except Exception:
+            init_file = _THIS_DIR / "__init__.py"
+            for line in init_file.read_text(encoding="utf-8").splitlines():
+                if "__version__" in line and "=" in line:
+                    local_version = line.split("=")[1].strip().strip("\"'")
+                    break
+        except OSError:
             local_version = "0"
 
-    result = {"available": False, "local": local_version, "remote": "", "error": ""}
+    result = {
+        "available": False,
+        "local": local_version,
+        "remote": "",
+        "manifest": None,
+        "error": "",
+    }
 
-    ctx = ssl.create_default_context()
-    urls = [GITHUB_RAW_INIT] + GITHUB_RAW_MIRRORS
+    manifest = _fetch_manifest()
+    if manifest is None:
+        result["error"] = "无法获取更新清单"
+        return result
 
-    for url in urls:
-        try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "Aria-UpdateCheck/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-                remote_text = resp.read().decode("utf-8", errors="replace")
-            remote_ver = _parse_version(remote_text)
-            if not remote_ver:
-                continue
+    remote_version = manifest.get("version", "")
+    result["remote"] = remote_version
+    result["manifest"] = manifest
 
-            result["remote"] = remote_ver
-            if _version_tuple(remote_ver) > _version_tuple(local_version):
-                result["available"] = True
-            return result
-        except Exception:
-            continue
+    # Downgrade attack hard reject
+    if _version_tuple(remote_version) <= _version_tuple(local_version):
+        return result
 
-    result["error"] = "无法连接更新服务器"
+    # min_compatible gate
+    min_compat = manifest.get("min_compatible_from", "0")
+    if _version_tuple(local_version) < _version_tuple(min_compat):
+        result["error"] = f"本地版本过旧（<{min_compat}），请手动重装"
+        return result
+
+    result["available"] = True
     return result
 
 
-# ─── 主流程 ──────────────────────────────────────────────
+# ─── Public API: download + stage ───────────────────────
 
 
-def main():
-    print_banner()
+def _sha256_of_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
 
-    # 定位路径
-    # 脚本位于 _internal/app/aria/update_tool.py
-    # aria_root = _internal/app/aria/
-    # install_root = Aria/ (最外层)
-    script_path = Path(__file__).resolve()
-    aria_root = script_path.parent
-    install_root = (
-        aria_root.parent.parent.parent
-    )  # _internal/app/aria → _internal/app → _internal → Aria
 
-    # 验证路径
-    if not (aria_root / "app.py").exists():
-        print("  [错误] 无法定位 Aria 源码目录。")
-        return 1
+def _download_zip(manifest_asset: dict) -> bytes:
+    """Try official then mirrors. Returns zip bytes on success."""
+    primary = manifest_asset["url"]
+    urls = [primary]
+    for prefix in ZIP_MIRROR_PREFIXES[1:]:
+        urls.append(prefix + primary)
 
-    # 检查 Aria 是否在运行
-    if check_aria_running():
-        print("  [警告] 检测到 Aria 正在运行！")
-        print("         请先关闭 Aria 再运行升级。")
-        print()
-        return 1
+    ctx = ssl.create_default_context()
+    last_err: Exception | None = None
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Aria-Updater/2.0"}
+            )
+            with urllib.request.urlopen(
+                req, timeout=ZIP_DOWNLOAD_TIMEOUT, context=ctx
+            ) as resp:
+                data = resp.read()
+            return data
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"all zip sources failed: {last_err}")
 
-    # 显示当前版本
-    local_ver = get_local_version(aria_root)
-    print(f"  当前版本: {local_ver}")
-    print()
 
-    # 下载
-    print("  [1/3] 下载最新版本...")
-    try:
-        zip_data = download_zip()
-    except RuntimeError as e:
-        print(f"\n  [错误] {e}")
-        return 1
+def _extract_to_stage(zip_data: bytes, stage_dir: Path) -> int:
+    """Extract with path whitelist. Returns file count."""
+    # Clean stage dir first
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir, ignore_errors=True)
+    stage_dir.mkdir(parents=True, exist_ok=True)
 
-    # 解压到临时目录检查版本
+    count = 0
     with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
         top_dirs = {name.split("/")[0] for name in zf.namelist() if "/" in name}
+        if len(top_dirs) != 1:
+            raise RuntimeError(f"zip top-level dir count != 1: {top_dirs}")
         zip_prefix = top_dirs.pop() + "/"
-        init_zip = zip_prefix + "__init__.py"
-        if init_zip in zf.namelist():
-            init_content = zf.read(init_zip).decode("utf-8", errors="replace")
-            remote_ver = "未知"
-            for line in init_content.splitlines():
-                if "__version__" in line and "=" in line:
-                    remote_ver = line.split("=")[1].strip().strip("\"'")
-                    break
-            print(f"\n  最新版本: {remote_ver}")
 
-            if remote_ver == local_ver:
-                print("  已经是最新版本，无需升级。")
-                print()
-                return 0
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            dst = _safe_member_path(zip_prefix, info.filename, stage_dir)
+            if dst is None:
+                # fail-closed: a zip with ANY rejected entry is treated as
+                # malformed. SHA256 already verified the bytes, so this only
+                # triggers on truly hostile archives — but we still refuse to
+                # stage partially.
+                raise RuntimeError(
+                    f"zip 拒绝: 不安全的条目 {info.filename!r}（路径穿越或绝对路径）"
+                )
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(zf.read(info.filename))
+            count += 1
+    return count
 
-    # 更新
-    print()
-    print("  [2/3] 更新文件...")
+
+def _compile_stage(stage_dir: Path) -> bool:
+    """compileall all .py files. Also import-smoke-test update_tool module only."""
+    import compileall
+
+    ok = compileall.compile_dir(str(stage_dir), quiet=2, workers=0)
+    if not ok:
+        return False
+    # Lightweight smoke: try py_compile on updater-critical files
+    import py_compile
+
+    critical = ["update_tool.py", "__init__.py", "launcher.py", "app.py"]
+    for name in critical:
+        p = stage_dir / name
+        if p.exists():
+            try:
+                py_compile.compile(str(p), doraise=True)
+            except py_compile.PyCompileError:
+                return False
+    return True
+
+
+def download_and_stage(manifest: dict) -> dict:
+    """Download zip → SHA256 verify → stage → compile → state=ready.
+
+    Returns {"ok": bool, "state_path": str, "error": str}.
+    """
+    result = {"ok": False, "state_path": str(STATE_PATH), "error": ""}
+
+    lock_fh = _acquire_lock()
+    if lock_fh is None:
+        result["error"] = "另一个更新操作正在进行"
+        return result
+
     try:
-        updated, skipped = extract_and_update(zip_data, aria_root, install_root)
-    except Exception as e:
-        print(f"\n  [错误] 更新失败: {e}")
-        import traceback
+        asset = manifest.get("assets", {}).get("main_zip", {})
+        if not asset.get("url") or not asset.get("sha256"):
+            result["error"] = "manifest 缺少 main_zip.url/sha256"
+            return result
 
-        traceback.print_exc()
-        return 1
+        to_version = manifest["version"]
+        from_version = check_for_update("")["local"]
 
-    print(f"         更新了 {updated} 个文件")
-    if skipped:
-        print(f"         保留了 {skipped} 个用户自定义配置")
+        set_update_state(
+            status="downloading",
+            from_version=from_version,
+            to_version=to_version,
+            zip_sha256=asset["sha256"],
+            manifest_snapshot=manifest,
+            created_at=_now_utc_iso(),
+            error="",
+        )
 
-    # 验证
+        # Download
+        try:
+            zip_data = _download_zip(asset)
+        except RuntimeError as e:
+            set_update_state(status="idle", error=f"下载失败: {e}")
+            result["error"] = str(e)
+            return result
+
+        # Size check (±1%)
+        expected_size = asset.get("size", 0)
+        actual_size = len(zip_data)
+        if expected_size and abs(actual_size - expected_size) > expected_size * 0.01:
+            set_update_state(
+                status="idle",
+                error=f"大小不匹配: expected={expected_size} actual={actual_size}",
+            )
+            result["error"] = "下载不完整"
+            return result
+
+        # SHA256
+        actual_sha = _sha256_of_bytes(zip_data)
+        if actual_sha.lower() != asset["sha256"].lower():
+            set_update_state(status="idle", error="SHA256 校验失败")
+            result["error"] = "SHA256 校验失败"
+            return result
+
+        set_update_state(status="verified")
+
+        # Extract to stage
+        set_update_state(status="staging", stage_dir=str(ARIA_STAGE))
+        try:
+            _extract_to_stage(zip_data, ARIA_STAGE)
+        except (RuntimeError, OSError) as e:
+            # Clean up partial stage so next attempt starts fresh
+            shutil.rmtree(ARIA_STAGE, ignore_errors=True)
+            set_update_state(status="idle", error=f"解压失败: {e}")
+            result["error"] = str(e)
+            return result
+
+        # Compile + smoke
+        if not _compile_stage(ARIA_STAGE):
+            set_update_state(status="idle", error="语法校验失败")
+            result["error"] = "语法校验失败"
+            shutil.rmtree(ARIA_STAGE, ignore_errors=True)
+            return result
+
+        # Bootstrap: always refresh install_root copies of updater_runner.*
+        # so apply_staged_update works even for upgrades from versions that
+        # didn't ship these files (e.g. v1.0.3.17 → v1.0.3.18 via old update.bat).
+        for fname in ("updater_runner.py", "updater_runner.bat"):
+            src = ARIA_STAGE / fname
+            if src.exists():
+                try:
+                    shutil.copy2(src, INSTALL_ROOT / fname)
+                except OSError as e:
+                    # Non-fatal — apply_staged_update has fallback logic
+                    print(f"[UPDATE] warn: cannot refresh {fname}: {e}")
+
+        set_update_state(status="ready")
+        result["ok"] = True
+        return result
+
+    finally:
+        _release_lock(lock_fh)
+
+
+# ─── Legacy CLI entry (update.bat) ──────────────────────
+
+
+def main() -> int:
+    """Legacy entry: tell user auto-update has taken over."""
     print()
-    print("  [3/3] 验证...")
-    new_ver = get_local_version(aria_root)
-    print(f"         版本: {local_ver} → {new_ver}")
-
-    if (aria_root / "app.py").exists() and (aria_root / "launcher.py").exists():
-        print("         核心文件完整 [OK]")
-    else:
-        print("         [警告] 核心文件可能不完整，请检查！")
-
+    print("  ╔══════════════════════════════════════════════════════╗")
+    print("  ║  Aria 自动更新已接管                                  ║")
+    print("  ╚══════════════════════════════════════════════════════╝")
     print()
-    print("  ===================================")
-    print(f"  升级完成！请重新启动 Aria。")
-    print("  ===================================")
+    print("  本版本起，更新由 Aria 主程序后台静默处理：")
+    print("    1. 启动后 3 秒自动检查")
+    print("    2. 发现新版本后静默下载校验")
+    print("    3. 准备就绪时在悬浮球显示角标提示")
     print()
+    print("  如需手动更新或遇到问题，请访问:")
+    print("    https://github.com/Xingxun7777/Aria")
+    print()
+    try:
+        input("  按 Enter 关闭...")
+    except EOFError:
+        pass
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n  已取消。")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n  [未预期的错误] {e}")
-        import traceback
-
-        traceback.print_exc()
-        sys.exit(1)
+    sys.exit(main())

@@ -70,7 +70,7 @@ Aria-v*功能列表*
 _test_*
 test_paths.txt
 
-# === Claude Code Local Settings ===
+# === Local Tooling Settings ===
 .claude/
 
 # === AI Agent Artifacts ===

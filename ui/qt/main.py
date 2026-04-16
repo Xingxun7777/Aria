@@ -174,6 +174,11 @@ def main():
 
     tray_menu.addSeparator()
 
+    action_check_update = QAction("检查更新", None)
+    tray_menu.addAction(action_check_update)
+
+    tray_menu.addSeparator()
+
     action_quit = QAction("退出", None)
     tray_menu.addAction(action_quit)
 
@@ -334,15 +339,173 @@ def main():
 
     bridge.settingChanged.connect(on_setting_changed)
 
-    def on_update_available(local_ver: str, remote_ver: str):
+    # === Auto-update UI (v1.0.5) ===
+    _update_info = {"local": "", "remote": "", "notes": "", "armed": False}
+
+    def _load_manifest_notes() -> str:
+        """Pull notes_summary from stage's manifest snapshot, best-effort."""
+        try:
+            from aria.update_tool import get_update_state
+
+            st = get_update_state()
+            snap = st.get("manifest_snapshot") or {}
+            return snap.get("notes_summary", "") or ""
+        except Exception:
+            return ""
+
+    def _open_update_dialog():
+        if not _update_info["armed"]:
+            return
+        from aria.ui.qt.update_dialog import show_update_dialog
+        from aria.core.utils import get_config_path
+        from aria.core.update_gates import load_update_prefs, save_update_prefs
+
+        def _apply_now():
+            if backend and hasattr(backend, "apply_staged_update"):
+                ok = backend.apply_staged_update()
+                if ok:
+                    # Use the standard shutdown path (stops backend threads,
+                    # closes dialogs, hides tray) then Qt quits. updater_runner.bat
+                    # is already detached and will pick up the PID to wait on.
+                    try:
+                        cleanup_and_quit()
+                    except Exception as e:
+                        _log(f"[UPDATE] cleanup_and_quit fallback: {e}")
+                        try:
+                            app.quit()
+                        except Exception:
+                            pass
+
+        def _skip(version: str):
+            try:
+                cfg_path = Path(get_config_path("hotwords.json"))
+                prefs = load_update_prefs(cfg_path)
+                sv = list(prefs.get("skipped_versions", []))
+                if version not in sv:
+                    sv.append(version)
+                prefs["skipped_versions"] = sv
+                save_update_prefs(cfg_path, prefs)
+                _update_info["armed"] = False
+                ball.set_update_badge(False)
+            except Exception as e:
+                _log(f"[UPDATE] skip save failed: {e}")
+
+        show_update_dialog(
+            _update_info["local"],
+            _update_info["remote"],
+            _update_info["notes"],
+            _apply_now,
+            _skip,
+        )
+
+    import time as _time_mod
+
+    _boot_time = _time_mod.time()
+    _current_app_state = {"s": "IDLE"}
+
+    def _track_app_state(state: str):
+        _current_app_state["s"] = state
+
+    bridge.stateChanged.connect(_track_app_state)
+
+    def _fire_update_bubble(local_ver: str, remote_ver: str):
         tray.showMessage(
-            "Aria 有新版本可用",
-            f"v{local_ver} → v{remote_ver}\n请运行 update.bat 升级",
+            "Aria 有新版本已就绪",
+            f"v{local_ver} → v{remote_ver}\n点击此消息查看更新详情",
             QSystemTrayIcon.Information,
             8000,
         )
 
+    def on_update_available(local_ver: str, remote_ver: str):
+        _update_info["local"] = local_ver
+        _update_info["remote"] = remote_ver
+        _update_info["notes"] = _load_manifest_notes()
+        _update_info["armed"] = True
+
+        # Badge: passive. Always on.
+        ball.set_update_badge(True, f"新版本 v{remote_ver} 已就绪，点击查看")
+
+        # Gate decides whether to actively interrupt with a tray bubble
+        try:
+            from aria.core.update_gates import (
+                load_update_prefs,
+                save_update_prefs,
+                should_show_update_prompt,
+                now_utc_iso,
+            )
+            from aria.core.utils import get_config_path
+            from aria.update_tool import get_update_state
+
+            cfg_path = Path(get_config_path("hotwords.json"))
+            prefs = load_update_prefs(cfg_path)
+            st = get_update_state()
+            manifest = st.get("manifest_snapshot") or {}
+            is_critical = bool(manifest.get("critical", False))
+            stage_ready = st.get("status") == "ready"
+
+            show, reason = should_show_update_prompt(
+                remote_ver,
+                is_critical,
+                prefs,
+                _current_app_state["s"],
+                _boot_time,
+                stage_is_ready=stage_ready,
+            )
+            if show:
+                _fire_update_bubble(local_ver, remote_ver)
+                prefs.setdefault("last_prompt_per_version", {})[remote_ver] = {
+                    "first_shown_at": now_utc_iso(),
+                    "user_dismissed_count": 0,
+                    "was_critical": is_critical,
+                }
+                save_update_prefs(cfg_path, prefs)
+            else:
+                _log(f"[UPDATE] bubble suppressed: {reason}")
+        except Exception as e:
+            _log(f"[UPDATE] gate check failed: {e}; fallback to plain bubble")
+            _fire_update_bubble(local_ver, remote_ver)
+
     bridge.updateAvailable.connect(on_update_available)
+    tray.messageClicked.connect(_open_update_dialog)
+
+    def _on_check_update_clicked():
+        """Menu: 检查更新.
+
+        If stage already ready → open dialog directly.
+        Else → trigger background re-check; surface the toast regardless of
+        anti-nuisance gate (user explicitly asked).
+        """
+        if _update_info["armed"]:
+            _open_update_dialog()
+            return
+        try:
+            from aria.update_tool import get_update_state
+
+            st = get_update_state()
+            if st.get("status") == "ready":
+                to_ver = st.get("to_version", "")
+                if to_ver:
+                    on_update_available(_update_info.get("local") or "", to_ver)
+                    return
+        except Exception as e:
+            _log(f"[UPDATE] menu state check failed: {e}")
+
+        tray.showMessage(
+            "Aria",
+            "正在后台检查更新…（如有新版本将稍后提示）",
+            QSystemTrayIcon.Information,
+            3000,
+        )
+        if backend and hasattr(backend, "_check_update_background"):
+            import threading as _th
+
+            _th.Thread(
+                target=backend._check_update_background,
+                kwargs={"force_stage": True},
+                daemon=True,
+            ).start()
+
+    action_check_update.triggered.connect(_on_check_update_clicked)
 
     # Sound effects disabled - only hotkey press sounds in app.py
     # (start_recording beep and stop_recording beep)

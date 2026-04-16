@@ -232,6 +232,10 @@ class FloatingBall(QWidget):
         self._is_speaking = False  # True when voice activity detected
         self._is_processing = False  # True when waiting for ASR/polish to complete
 
+        # Update badge (v1.0.5 auto-update): red dot overlay indicating ready-to-apply
+        self._update_badge_visible = False
+        self._update_badge_tooltip = ""
+
         # Popup menu
         self._popup_menu = None
 
@@ -919,6 +923,30 @@ class FloatingBall(QWidget):
 
         # Draw icon/indicator
         self._draw_indicator(painter, center, radius)
+
+        # Draw update-ready badge (small red dot, top-right)
+        if self._update_badge_visible:
+            badge_r = max(4, self.ball_size // 10)
+            # Position at top-right of the ball bounding circle
+            offset_x = radius * 0.72
+            offset_y = -radius * 0.72
+            badge_center = QPointF(center.x() + offset_x, center.y() + offset_y)
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1.2))
+            painter.setBrush(QBrush(QColor(231, 76, 60, 240)))
+            painter.drawEllipse(badge_center, badge_r, badge_r)
+
+    def set_update_badge(self, visible: bool, tooltip: str = "") -> None:
+        """Show/hide the red update-ready badge. Safe to call from any thread."""
+        if (
+            self._update_badge_visible == visible
+            and self._update_badge_tooltip == tooltip
+        ):
+            return
+        self._update_badge_visible = visible
+        self._update_badge_tooltip = tooltip
+        if tooltip:
+            self.setToolTip(tooltip)
+        self.update()
 
     def _draw_rainbow_border(self, painter: QPainter, center: QPoint, radius: int):
         """Draw rainbow border - 3-segment style, faster+brighter when speaking."""

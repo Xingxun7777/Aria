@@ -85,12 +85,16 @@ def git_archive_zip(version: str, out_path: Path) -> None:
     """
     DIST_DIR.mkdir(exist_ok=True)
     prefix = f"Aria-{version}/"
+    # Fix mtime so successive amends don't change the zip SHA256.
+    # Without this, git archive stamps all entries with the commit's timestamp,
+    # which changes every `git commit --amend` → chicken/egg with manifest SHA.
     subprocess.run(
         [
             "git",
             "archive",
             "--format=zip",
             f"--prefix={prefix}",
+            "--mtime=2000-01-01T00:00:00Z",
             "-o",
             str(out_path),
             "HEAD",
@@ -98,6 +102,34 @@ def git_archive_zip(version: str, out_path: Path) -> None:
         cwd=REPO_ROOT,
         check=True,
     )
+
+    # git archive embeds HEAD's commit SHA in the zip central-directory
+    # comment. That defeats determinism: every `git commit --amend` changes
+    # the commit SHA and thus the zip comment, breaking manifest stability.
+    # Strip the comment so the zip bytes depend only on tree content + mtime.
+    _strip_zip_comment(out_path)
+
+
+def _strip_zip_comment(zip_path: Path) -> None:
+    """Rewrite the zip file without any central-directory comment."""
+    import zipfile
+    import shutil as _sh
+
+    tmp = zip_path.with_suffix(".zip.tmp")
+    with zipfile.ZipFile(zip_path, "r") as src:
+        with zipfile.ZipFile(
+            tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as dst:
+            for info in src.infolist():
+                data = src.read(info.filename)
+                # Re-create ZipInfo to keep fixed mtime + no extra fields
+                new_info = zipfile.ZipInfo(
+                    filename=info.filename, date_time=(2000, 1, 1, 0, 0, 0)
+                )
+                new_info.external_attr = info.external_attr
+                new_info.compress_type = zipfile.ZIP_DEFLATED
+                dst.writestr(new_info, data)
+    tmp.replace(zip_path)
 
 
 def sha256_of(path: Path) -> str:

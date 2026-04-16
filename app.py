@@ -18,6 +18,8 @@ import time
 import threading
 import queue
 import winsound
+import json
+import subprocess
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -3053,6 +3055,19 @@ class AriaApp:
 
             self._running = True
 
+            # === Auto-update v1.0.5: write .app_ready.json ack after 3s ===
+            # If we get here, app init succeeded. Let the rest of Qt event loop
+            # run briefly, then write the ack so launcher knows swap succeeded.
+            def _emit_app_ready_ack():
+                try:
+                    self._write_app_ready_ack()
+                except Exception as e:
+                    logger.warning(f"app_ready ack failed: {e}")
+
+            _ack_timer = threading.Timer(3.0, _emit_app_ready_ack)
+            _ack_timer.daemon = True
+            _ack_timer.start()
+
             # Background update check (non-blocking)
             try:
                 import json
@@ -3320,32 +3335,176 @@ class AriaApp:
             logger.error(f"Config reload failed: {e}", exc_info=True)
             print(f"[HOT-RELOAD] Error: {e}")
 
-    def _check_update_background(self) -> None:
-        """Background thread: check GitHub for newer version, notify via bridge."""
+    def _get_install_root(self):
+        """Derive install_root for portable builds. None for dev."""
+        script = Path(__file__).resolve()
+        if "dist_portable" in str(script) or "_internal" in str(script):
+            # <install_root>/_internal/app/aria/app.py → 4 levels up
+            return script.parent.parent.parent.parent
+        return None
+
+    def _write_app_ready_ack(self) -> None:
+        """v1.0.5 spec: one-shot ack that app booted successfully.
+
+        Writes <install_root>/.app_ready.json and marks state=confirmed.
+        Any prior failed_boots counter is reset to 0.
+        """
+        install_root = self._get_install_root()
+        if not install_root:
+            return  # Dev mode: no-op
+        try:
+            from . import __version__
+            from .update_tool import set_update_state, get_update_state
+
+            ready_path = install_root / ".app_ready.json"
+            ts = (
+                datetime.datetime.now(datetime.timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            payload = {"version": __version__, "pid": os.getpid(), "at": ts}
+            tmp = ready_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp, ready_path)
+            # Confirm state (resets failed_boots). Only confirm if we were in swapped state.
+            state = get_update_state()
+            # Always arm boot_acked — it's the failure signal for launcher.
+            # Separate from status transition (only flip status when we came
+            # from a swap, otherwise leave idle/confirmed untouched).
+            patch = {"boot_acked": True}
+            if state.get("status") in ("swapped", "launched"):
+                patch.update({"status": "confirmed", "failed_boots": 0, "error": ""})
+                print(f"[UPDATE] Confirmed boot at v{__version__}")
+            set_update_state(**patch)
+        except Exception as e:
+            logger.warning(f"_write_app_ready_ack: {e}")
+
+    def _check_update_background(self, force_stage: bool = False) -> None:
+        """Background thread: fetch manifest, if newer → download+stage → notify UI.
+
+        Args:
+            force_stage: When True, ignores the auto_download_update config flag
+                         (used by explicit "检查更新" menu action).
+        """
         try:
             import time as _time
 
-            _time.sleep(3)  # Wait for UI to be ready
+            if not force_stage:
+                _time.sleep(3)  # Wait for UI to be ready (auto-check path)
 
             from . import __version__
-            from .update_tool import check_for_update
+            from .update_tool import (
+                check_for_update,
+                download_and_stage,
+                get_update_state,
+            )
+
+            # If a stage is already ready from a previous run, just surface it
+            prior = get_update_state()
+            if prior.get("status") == "ready":
+                to_ver = prior.get("to_version", "")
+                print(f"[UPDATE] Stage already ready: v{to_ver}")
+                if self._bridge and to_ver:
+                    self._bridge.emit_update_available(__version__, to_ver)
+                return
 
             result = check_for_update(local_version=__version__)
-            if result["available"]:
-                msg = f"发现新版本 v{result['remote']}（当前 v{result['local']}）\n请运行 update.bat 升级"
-                print(f"[UPDATE] New version available: {result['remote']}")
-                if self._bridge:
-                    self._bridge.emit_update_available(
-                        result["local"], result["remote"]
-                    )
+            if not result["available"]:
+                if result["error"]:
+                    print(f"[UPDATE] Check failed: {result['error']}")
                 else:
-                    self._emit_error(msg)
-            elif result["error"]:
-                print(f"[UPDATE] Check failed: {result['error']}")
+                    print(f"[UPDATE] Already latest ({result['local']})")
+                return
+
+            remote = result["remote"]
+            manifest = result.get("manifest") or {}
+            print(f"[UPDATE] New version: {remote}, downloading...")
+
+            # Check auto_download pref
+            try:
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                auto_dl = cfg.get("general", {}).get("auto_download_update", True)
+            except Exception:
+                auto_dl = True
+
+            if not auto_dl and not force_stage:
+                # Auto-download disabled: don't emit 'available' (UI treats that
+                # as 'staged & ready to apply'). Just log — user can force via
+                # 托盘菜单 → 检查更新.
+                print(f"[UPDATE] auto_download disabled; v{remote} not staged")
+                return
+
+            stage_result = download_and_stage(manifest)
+            if stage_result["ok"]:
+                print(f"[UPDATE] Stage ready for v{remote}")
+                if self._bridge:
+                    self._bridge.emit_update_available(result["local"], remote)
             else:
-                print(f"[UPDATE] Already latest version ({result['local']})")
+                print(f"[UPDATE] Stage failed: {stage_result.get('error')}")
         except Exception as e:
             print(f"[UPDATE] Check error: {e}")
+
+    def apply_staged_update(self) -> bool:
+        """Called from UI when user clicks "立即重启并更新".
+
+        Copies updater_runner.py/.bat to install_root, spawns BAT detached,
+        then initiates Aria shutdown. Returns True if spawn succeeded.
+        """
+        install_root = self._get_install_root()
+        if not install_root:
+            print("[UPDATE] apply_staged_update: dev mode, no-op")
+            return False
+        try:
+            from .update_tool import get_update_state
+
+            state = get_update_state()
+            if state.get("status") != "ready":
+                print(f"[UPDATE] apply_staged: state not ready ({state.get('status')})")
+                return False
+
+            aria_root = Path(__file__).resolve().parent
+            stage_dir = install_root / "_internal" / "app" / "aria.new"
+            # Locate updater_runner files in priority: install_root (already present) →
+            # aria.new/ (newer, guaranteed by download_and_stage post-copy) → aria/ (live).
+            # This handles the v1.0.3.17→v1.0.3.18 bootstrap where aria/ may lack these.
+            import shutil as _sh
+
+            for fname in ("updater_runner.py", "updater_runner.bat"):
+                dst = install_root / fname
+                if dst.exists():
+                    continue  # already bootstrapped by download_and_stage
+                src = None
+                for candidate in (stage_dir / fname, aria_root / fname):
+                    if candidate.exists():
+                        src = candidate
+                        break
+                if src is None:
+                    print(f"[UPDATE] missing {fname} in stage/ and aria/")
+                    return False
+                _sh.copy2(src, dst)
+
+            # Spawn updater_runner.bat detached
+            bat = install_root / "updater_runner.bat"
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            CREATE_NO_WINDOW = 0x08000000
+            subprocess.Popen(
+                ["cmd.exe", "/d", "/c", str(bat), str(os.getpid())],
+                cwd=str(install_root),
+                creationflags=DETACHED_PROCESS
+                | CREATE_NEW_PROCESS_GROUP
+                | CREATE_NO_WINDOW,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            print(f"[UPDATE] Spawned updater_runner.bat (pid={os.getpid()})")
+            return True
+        except Exception as e:
+            logger.error(f"apply_staged_update failed: {e}")
+            return False
 
     def _config_watcher(self) -> None:
         """Watch config file for changes and auto-reload (polling every 2s)."""

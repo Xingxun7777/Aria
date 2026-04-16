@@ -43,7 +43,18 @@
     "audio_device": "",
     "auto_startup": false,
     "minimize_to_tray": false,
-    "start_active": true
+    "start_active": true,
+    "auto_check_update": true,
+    "auto_download_update": true,
+    "update_check_interval_hours": 24,
+    "update_prefs": {
+      "skipped_versions": [],
+      "last_check_at": "",
+      "last_failed_count": 0,
+      "backoff_until": null,
+      "last_prompt_per_version": {},
+      "last_successful_update": null
+    }
   },
   "vad": {
     "noise_filter": true,

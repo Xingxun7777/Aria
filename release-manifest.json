@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "version": "1.0.3.17",
-  "released_at": "2026-04-15T03:08:04.085563Z",
+  "version": "1.0.3.18",
+  "released_at": "2026-04-16T10:55:35.402747Z",
   "update_scope": "python_only",
   "critical": false,
-  "notes_summary": "发布基础设施升级",
+  "notes_summary": "端到端自动更新系统；防骚扰门禁；安全强化；状态持久化拆分",
   "assets": {
     "main_zip": {
-      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.17/Aria-source-1.0.3.17.zip",
+      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.18/Aria-source-1.0.3.18.zip",
       "mirrors": [
-        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.17/Aria-source-1.0.3.17.zip",
-        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.17/Aria-source-1.0.3.17.zip"
+        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.18/Aria-source-1.0.3.18.zip",
+        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.18/Aria-source-1.0.3.18.zip"
       ],
-      "size": 1172966,
-      "sha256": "733a85455a75375dd3fae562164e43303882ce75b4b5067e576e4ce64213c5d4"
+      "size": 1155845,
+      "sha256": "1e4774be83f640cc0cac3723a3755193c3fd849fb07ef3b6c9190880ea0dc984"
     }
   },
   "min_compatible_from": "1.0.3.2"

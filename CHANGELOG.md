@@ -2,6 +2,19 @@
 
 Aria 的所有重要变更都记录在此文件中。
 
+## [1.0.3.18] - 2026-04-16
+
+### 新增
+- **端到端自动更新系统** — 主程序后台静默检查官方 `release-manifest.json`，下载、SHA256 校验并暂存新版本到 `aria.new/`，悬浮球右上角显示红色小点提示，用户点击托盘气泡打开详情窗，可选择"立即重启并更新"/"下次启动时更新"/"跳过此版本"。应用时通过独立 `updater_runner.bat`（detached）原子交换目录并拉起新进程，启动失败两次自动回滚到 `aria.backup.*`
+- **防骚扰门禁** — 录音/识别中、全屏工作区覆盖 > 95%、启动不满 30 秒、同版本 24 小时内已提示 → 抑制主动弹窗（角标仍可见）
+- **安全强化** — 清单来源仅限官方 `raw.githubusercontent.com`，镜像仅用于 zip 加速；资产 URL 走 `refs/tags/v{version}.zip` immutable；大小 ±1% + SHA256 双重校验；降级攻击硬拒绝；zip 路径白名单（拒绝 `..`/绝对路径/UNC）
+- **状态持久化拆分** — 瞬时事务状态放 `<install_root>/.update_state.json`（swap 不影响），耐久偏好（跳过列表/退避窗）放 `config/hotwords.json > general.update_prefs`（additive-only 迁移，向后兼容老版本）
+
+### 改进
+- `update.bat` 改为"自动更新已接管"提示，不再执行手动流程
+- 旧 `update_tool.py` 重构为 manifest-based，保留 `check_for_update()` 向后兼容签名
+- 崩溃状态文件损坏自动保留 forensic 副本（`.update_state.corrupt.<ts>.json`，上限 3 份）
+
 ## [1.0.3.17] - 2026-04-14
 
 ### 改进

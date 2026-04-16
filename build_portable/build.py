@@ -50,6 +50,8 @@ SOURCE_FILES = [
     "launcher.py",
     "progress_ipc.py",
     "update_tool.py",
+    "updater_runner.py",
+    "updater_runner.bat",
 ]
 
 # Data directories (assets, resources, etc.)

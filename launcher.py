@@ -41,6 +41,236 @@ def _is_portable_build() -> bool:
 
 IS_PORTABLE = _is_portable_build()
 
+
+# === Update state handling at boot (v1.0.5 spec) ===
+def _get_install_root():
+    """Derive install_root from launcher.py location.
+
+    Portable: <install_root>/_internal/app/aria/launcher.py
+              → install_root = 3 levels up from launcher.py
+    Dev: launcher.py at repo root → no install_root concept (state check is no-op).
+    """
+    if not IS_PORTABLE:
+        return None
+    return os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+
+
+def _read_update_state(install_root):
+    """Best-effort state read. Returns dict or empty dict."""
+    if not install_root:
+        return {}
+    import json
+
+    state_path = os.path.join(install_root, ".update_state.json")
+    if not os.path.exists(state_path):
+        return {}
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_update_state_patch(install_root, patch):
+    """Atomic state update. Swallows errors."""
+    if not install_root:
+        return
+    import json
+    from datetime import datetime, timezone
+
+    state_path = os.path.join(install_root, ".update_state.json")
+    state = _read_update_state(install_root)
+    state.update(patch)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    tmp = state_path + f".tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        for _ in range(3):
+            try:
+                os.replace(tmp, state_path)
+                return
+            except OSError:
+                time.sleep(0.1)
+    except OSError:
+        pass
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+
+
+def _do_rollback(install_root, state):
+    """Restore aria from aria.backup.TS. Returns True on success."""
+    backup_dir = state.get("backup_dir", "")
+    if not backup_dir or not os.path.exists(backup_dir):
+        return False
+    app_dir = os.path.dirname(backup_dir)  # <install_root>/_internal/app
+    live = os.path.join(app_dir, "aria")
+    retired = os.path.join(
+        app_dir,
+        "aria.retired."
+        + __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S"),
+    )
+    # Move current (failed) live → retired, then backup → live
+    if os.path.exists(live):
+        try:
+            os.rename(live, retired)
+        except OSError:
+            return False
+    try:
+        os.rename(backup_dir, live)
+    except OSError:
+        # Attempt undo retire
+        if os.path.exists(retired):
+            try:
+                os.rename(retired, live)
+            except OSError:
+                pass
+        return False
+    _write_update_state_patch(
+        install_root,
+        {"status": "rollback", "failed_boots": 0, "error": "连续 2 次启动失败已回滚"},
+    )
+    return True
+
+
+def _recover_interrupted_swap(install_root, state):
+    """If updater_runner died mid-swap (status='swapping'), try to heal.
+
+    Filesystem states after a crash:
+      (a) live missing, stage present  → complete the swap (stage → live)
+      (b) live missing, backup present → restore (backup → live)
+      (c) live present, stage present  → orphan stage; leave it but clear state
+      (d) everything intact            → just clear state
+    """
+    app_dir = os.path.join(install_root, "_internal", "app")
+    live = os.path.join(app_dir, "aria")
+    stage = os.path.join(app_dir, "aria.new")
+    backup_dir = state.get("backup_dir", "")
+
+    if os.path.exists(live):
+        # Case (c) or (d): live intact. Clear state, leave stage alone.
+        _write_update_state_patch(
+            install_root,
+            {"status": "idle", "error": "swap 状态清理（live 完好）"},
+        )
+        return True
+
+    # Live missing — must restore.
+    if os.path.exists(stage):
+        # Case (a): complete the swap.
+        try:
+            os.rename(stage, live)
+            _write_update_state_patch(
+                install_root,
+                {"status": "swapped", "failed_boots": 0, "error": ""},
+            )
+            return True
+        except OSError:
+            pass
+    if backup_dir and os.path.exists(backup_dir):
+        # Case (b): restore from backup.
+        try:
+            os.rename(backup_dir, live)
+            _write_update_state_patch(
+                install_root,
+                {
+                    "status": "rollback",
+                    "failed_boots": 0,
+                    "error": "swap 中断已回滚到旧版",
+                },
+            )
+            return True
+        except OSError:
+            pass
+    # Truly stuck: no live, no stage, no backup.
+    _write_update_state_patch(
+        install_root,
+        {"status": "failed", "error": "swap 中断，无 stage 也无 backup，需手动修复"},
+    )
+    return False
+
+
+def _handle_update_state_at_boot():
+    """Return (should_abort: bool, reason: str). Relaunches self after rollback."""
+    install_root = _get_install_root()
+    if not install_root:
+        return False, ""
+    state = _read_update_state(install_root)
+    status = state.get("status", "idle")
+
+    # Heal mid-swap interruption BEFORE aria/ imports are attempted.
+    if status == "swapping":
+        _recover_interrupted_swap(install_root, state)
+        # Re-read state; it may be 'swapped' or 'rollback' now.
+        state = _read_update_state(install_root)
+        status = state.get("status", "idle")
+
+    if status == "swapped":
+        # Failure signal: did the PREVIOUS boot reach the app_ready ack (3s
+        # QTimer fires → boot_acked=true)? If boot_acked is still false from
+        # the previous swapped boot, that boot crashed or was force-killed
+        # before it had a chance to ack. Count as failed_boot.
+        # This handles <3s fast crash loops (which would defeat elapsed-time
+        # heuristics) while being lenient on user "quit within 3s" cases.
+        import time as _t
+
+        prev_acked = bool(state.get("boot_acked", False))
+        if prev_acked is False and state.get("failed_boots", 0) > 0:
+            # Previous boot was already counted (crashed twice or more); keep going
+            failed = int(state.get("failed_boots", 0)) + 1
+        elif prev_acked is False:
+            # First unacked boot detected
+            failed = int(state.get("failed_boots", 0)) + 1
+        else:
+            # Previous boot acked (user saw UI work) → reset counter
+            failed = 0
+        # Arm for THIS boot: boot_acked defaults false; app.py will flip on success
+        _write_update_state_patch(
+            install_root,
+            {
+                "failed_boots": failed,
+                "boot_acked": False,
+                "last_boot_started_at": _t.time(),
+            },
+        )
+        if failed >= 2:
+            # Triggered rollback
+            if _do_rollback(install_root, state):
+                # Release singleton mutex + lock file BEFORE spawning restored
+                # launcher, or new process will fail "already running" check.
+                try:
+                    release_lock()
+                except Exception:
+                    pass
+                restored_launcher = os.path.join(
+                    install_root, "_internal", "app", "aria", "launcher.py"
+                )
+                pythonw = os.path.join(install_root, "_internal", "pythonw.exe")
+                if not os.path.exists(pythonw):
+                    pythonw = os.path.join(install_root, "_internal", "python.exe")
+                if os.path.exists(restored_launcher) and os.path.exists(pythonw):
+                    DETACHED_PROCESS = 0x00000008
+                    CREATE_NO_WINDOW = 0x08000000
+                    try:
+                        subprocess.Popen(
+                            [pythonw, restored_launcher],
+                            cwd=install_root,
+                            creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            close_fds=True,
+                        )
+                    except OSError:
+                        pass
+                return True, "rollback_spawned"
+    return False, ""
+
+
 # === Singleton Check with Named Mutex (Windows) + File Lock (fallback) ===
 # Use different names for dev and portable to allow simultaneous running
 if IS_PORTABLE:
@@ -583,6 +813,12 @@ try:
     if parent_dir not in sys.path:
         sys.path.insert(1, parent_dir)  # After project_dir
     log(f"Path set OK: project={project_dir}, parent={parent_dir}")
+
+    # === Check update state at boot (v1.0.5 auto-update) ===
+    _should_abort, _reason = _handle_update_state_at_boot()
+    if _should_abort:
+        log(f"Boot aborted: {_reason}")
+        sys.exit(0)
 
     # === Start Splash Screen ===
     splash_proc, reporter = start_splash()
