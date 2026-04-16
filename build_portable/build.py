@@ -630,7 +630,7 @@ def _run_embedded_python(python_exe: Path, code: str, cwd: Path, timeout: int = 
     )
 
 
-def step_create_launcher():
+def step_create_launcher(full_mode: bool = False):
     """Step 6: Create launcher scripts."""
     log("Step 6: Creating launcher...")
 
@@ -638,13 +638,16 @@ def step_create_launcher():
     if not (DIST_DIR / "_internal" / RUNTIME_EXE_NAME).exists():
         runtime_exe = "_internal\\pythonw.exe"
 
-    # 1. Main CMD launcher
-    cmd_content = f"""@echo off
+    # 1. Main CMD launcher — lite only. Full version ships Aria.exe only.
+    if not full_mode:
+        cmd_content = f"""@echo off
 cd /d "%~dp0"
 start "" "{runtime_exe}" -s -m aria.launcher
 """
-    (DIST_DIR / "Aria.cmd").write_text(cmd_content, encoding="utf-8")
-    log("  Created Aria.cmd")
+        (DIST_DIR / "Aria.cmd").write_text(cmd_content, encoding="utf-8")
+        log("  Created Aria.cmd")
+    else:
+        log("  Skipped Aria.cmd (full mode uses Aria.exe only)")
 
     # 2. DEBUG launcher (shows console and errors)
     debug_content = """@echo off
@@ -870,7 +873,7 @@ def step_summary():
     log("")
     log("Directory structure:")
     log(f"  {DIST_DIR.name}/")
-    log("  +-- Aria.cmd        <- 启动器")
+    log("  +-- Aria.exe        <- 启动器（需用 build_launcher_exe.py 生成）")
     log("  +-- Aria_debug.bat  <- 调试模式")
     log("  +-- update.bat      <- 一键升级")
     log("  +-- _internal/")
@@ -1044,7 +1047,7 @@ def main():
         if args.full:
             step_bundle_models()  # Bundle ASR models for offline use
         step_copy_site_packages()
-        step_create_launcher()
+        step_create_launcher(full_mode=args.full)
         step_verify_build(full_mode=args.full)
         step_summary()
 

@@ -18,6 +18,19 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Redirect submodule search to project root
 __path__ = [_project_root]
 
-# Re-export version info from root __init__.py
-__version__ = "1.0.2"
+
+# Re-export version info from root __init__.py by reading the file directly.
+# Avoids stale hardcoded version when root bumps are forgotten to mirror here.
+def _read_root_version() -> str:
+    try:
+        with open(os.path.join(_project_root, "__init__.py"), encoding="utf-8") as f:
+            for line in f:
+                if "__version__" in line and "=" in line:
+                    return line.split("=", 1)[1].strip().strip("\"'")
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+__version__ = _read_root_version()
 __author__ = "Aria Team"

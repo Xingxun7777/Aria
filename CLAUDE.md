@@ -11,7 +11,7 @@
 ## 部署测试
 - **不要手动复制文件到部署目录**
 - 测试更新流程：推 GitHub → 部署目录运行 `update.bat`
-- 部署目录：`G:/AriaV1.03/Aria-v1.0.3.2-full`
+- 部署目录：`G:/AriaV1.03/Aria-v1.0.3.2-full`（历史名称，内部版本已更新至 1.0.3.18）
 
 ## 代码修改
 - **NEVER use Edit tool on `config/hotwords.json`** — Chinese triggers Rust UTF-8 bug
