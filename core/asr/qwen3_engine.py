@@ -653,85 +653,101 @@ class Qwen3ASREngine(ASREngine):
                     detected_language = self.config.language
 
                 # === Hallucination Detection ===
-                # Check for context leakage (model outputs context instead of speech)
+                # Multiple triggers feed the same retry-without-context path.
                 text = text.strip()
-                # Compute audio energy for acoustic-aware leakage detection
                 audio_energy = float(np.abs(audio_float).mean())
+                audio_duration_s = len(audio_float) / 16000
 
-                # Leakage detection only against hotword context (not recent ASR text)
-                if text and hotword_context:
-                    if self._is_context_leakage(text, hotword_context, audio_energy):
-                        _qwen3_log(
-                            f"[HALLUCINATION] Context leakage suspected: '{text[:80]}...'"
-                            f" (energy={audio_energy:.5f})"
-                        )
-
-                        # Retry-without-context: rerun ASR without context biasing.
-                        # If we still get meaningful text, it's likely real speech.
-                        # Time guard: skip retry if initial transcription already took too long.
-                        elapsed = time.time() - start_time
-                        if elapsed > 20:
-                            _qwen3_log(
-                                f"[RETRY] Skipping retry — initial took {elapsed:.1f}s (>20s limit)"
+                leakage_reason = None
+                if text:
+                    # Trigger 1: impossible speech rate catches recent_context
+                    # regurgitation (model outputs prior ASR text verbatim).
+                    # Chinese speech peaks ~8 chars/s; >15 is acoustically impossible.
+                    # len>20 guards against short-text false positives.
+                    if audio_duration_s > 0 and len(text) > 20:
+                        chars_per_sec = len(text) / audio_duration_s
+                        if chars_per_sec > 15:
+                            leakage_reason = (
+                                f"impossible speech rate "
+                                f"{chars_per_sec:.1f} chars/s "
+                                f"({len(text)} chars / {audio_duration_s:.2f}s)"
                             )
-                            text = ""
+
+                    # Trigger 2: output matches hotword_context.
+                    # Not checked against recent_context — real speech naturally
+                    # shares vocabulary with recent topic.
+                    if not leakage_reason and hotword_context:
+                        if self._is_context_leakage(
+                            text, hotword_context, audio_energy
+                        ):
+                            leakage_reason = "matches hotword context"
+
+                if leakage_reason:
+                    _qwen3_log(
+                        f"[HALLUCINATION] Suspected ({leakage_reason}): '{text[:80]}...'"
+                        f" (energy={audio_energy:.5f})"
+                    )
+
+                    # Retry-without-context: rerun ASR without context biasing.
+                    # If we still get meaningful text, it's likely real speech.
+                    # Time guard: skip retry if initial transcription already took too long.
+                    elapsed = time.time() - start_time
+                    if elapsed > 20:
+                        _qwen3_log(
+                            f"[RETRY] Skipping retry — initial took {elapsed:.1f}s (>20s limit)"
+                        )
+                        text = ""
+                    else:
+                        _qwen3_log("[RETRY] Retrying transcription without context...")
+                        try:
+                            retry_results = self._model.transcribe(
+                                audio=audio_tuple,
+                                context=None,
+                                language=self.config.language,
+                            )
+                            retry_text = ""
+                            if retry_results and len(retry_results) > 0:
+                                retry_text = (
+                                    getattr(retry_results[0], "text", "") or ""
+                                ).strip()
+                        except Exception as retry_err:
+                            _qwen3_log(f"[RETRY] Retry failed: {retry_err}")
+                            logger.warning(
+                                f"Qwen3 ASR: Retry transcription failed: {retry_err}"
+                            )
+                            retry_text = ""
+                            retry_results = None
+
+                        # Filter filler tokens from retry (common noise artifacts)
+                        _FILLER_TOKENS = {"嗯", "啊", "呃", "哦", "额", "噢", "唔"}
+                        if retry_text and retry_text in _FILLER_TOKENS:
+                            _qwen3_log(f"[RETRY] Filtered filler token: '{retry_text}'")
+                            retry_text = ""
+
+                        if retry_text and len(retry_text) >= 2:
+                            _qwen3_log(
+                                f"[RETRY] Recovered real speech: '{retry_text[:80]}'"
+                            )
+                            logger.info(f"Qwen3 ASR: Leakage retry recovered text")
+                            text = retry_text
+                            # Update detected language from retry result
+                            if retry_results and len(retry_results) > 0:
+                                detected_language = (
+                                    getattr(
+                                        retry_results[0],
+                                        "language",
+                                        detected_language,
+                                    )
+                                    or detected_language
+                                )
                         else:
                             _qwen3_log(
-                                "[RETRY] Retrying transcription without context..."
+                                f"[HALLUCINATION] Confirmed (retry empty/trivial), discarding"
                             )
-                            try:
-                                retry_results = self._model.transcribe(
-                                    audio=audio_tuple,
-                                    context=None,
-                                    language=self.config.language,
-                                )
-                                retry_text = ""
-                                if retry_results and len(retry_results) > 0:
-                                    retry_text = (
-                                        getattr(retry_results[0], "text", "") or ""
-                                    ).strip()
-                            except Exception as retry_err:
-                                _qwen3_log(f"[RETRY] Retry failed: {retry_err}")
-                                logger.warning(
-                                    f"Qwen3 ASR: Retry transcription failed: {retry_err}"
-                                )
-                                retry_text = ""
-                                retry_results = None
-
-                            # Filter filler tokens from retry (common noise artifacts)
-                            _FILLER_TOKENS = {"嗯", "啊", "呃", "哦", "额", "噢", "唔"}
-                            if retry_text and retry_text in _FILLER_TOKENS:
-                                _qwen3_log(
-                                    f"[RETRY] Filtered filler token: '{retry_text}'"
-                                )
-                                retry_text = ""
-
-                            if retry_text and len(retry_text) >= 2:
-                                # Non-trivial text recovered → likely real speech
-                                _qwen3_log(
-                                    f"[RETRY] Recovered real speech: '{retry_text[:80]}'"
-                                )
-                                logger.info(f"Qwen3 ASR: Leakage retry recovered text")
-                                text = retry_text
-                                # Update detected language from retry result
-                                if retry_results and len(retry_results) > 0:
-                                    detected_language = (
-                                        getattr(
-                                            retry_results[0],
-                                            "language",
-                                            detected_language,
-                                        )
-                                        or detected_language
-                                    )
-                            else:
-                                # Retry also empty/trivial → confirmed hallucination
-                                _qwen3_log(
-                                    f"[HALLUCINATION] Confirmed (retry empty/trivial), discarding"
-                                )
-                                logger.warning(
-                                    f"Qwen3 ASR: Context leakage confirmed, returning empty"
-                                )
-                                text = ""
+                            logger.warning(
+                                f"Qwen3 ASR: Context leakage confirmed, returning empty"
+                            )
+                            text = ""
 
                 transcribe_time = time.time() - start_time
                 logger.debug(

@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "version": "1.0.3.18",
-  "released_at": "2026-04-16T10:55:35.402747Z",
+  "version": "1.0.3.19",
+  "released_at": "2026-04-17T04:40:06.713306Z",
   "update_scope": "python_only",
   "critical": false,
-  "notes_summary": "端到端自动更新系统；防骚扰门禁；安全强化；状态持久化拆分",
+  "notes_summary": "流式 Polish（打字机模式专属）；ASR 幻觉漏网（recent_context 泄漏）；悬浮字幕气泡不再弹噪声/幻觉",
   "assets": {
     "main_zip": {
-      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.18/Aria-source-1.0.3.18.zip",
+      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.19/Aria-source-1.0.3.19.zip",
       "mirrors": [
-        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.18/Aria-source-1.0.3.18.zip",
-        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.18/Aria-source-1.0.3.18.zip"
+        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.19/Aria-source-1.0.3.19.zip",
+        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.0.3.19/Aria-source-1.0.3.19.zip"
       ],
-      "size": 1155845,
-      "sha256": "1e4774be83f640cc0cac3723a3755193c3fd849fb07ef3b6c9190880ea0dc984"
+      "size": 1160289,
+      "sha256": "290cb41dbd19853e6a3bf3142fb60924253ab3a27f3d93f51a3687f002e4d27d"
     }
   },
   "min_compatible_from": "1.0.3.2"

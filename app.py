@@ -269,6 +269,7 @@ from .core.hotword import (
     HotWordManager,
     HotWordProcessor,
     AIPolisher,
+    PolishStreamError,
     PinyinFuzzyMatcher,
     FuzzyMatchConfig,
 )
@@ -1794,6 +1795,58 @@ class AriaApp:
             finally:
                 self._asr_lock.release()
 
+            # Suppress interim emit for noise/hallucination so the subtitle bubble
+            # doesn't flash filler words ("嗯") or random regurgitation.
+            # Final ASR path (_asr_worker) already has equivalent filters;
+            # interim was the remaining source of bubble pollution.
+            if text_to_emit:
+                import re as _re
+
+                _filler_set = {
+                    "嗯",
+                    "啊",
+                    "哦",
+                    "呃",
+                    "额",
+                    "噢",
+                    "唔",
+                    "嘶",
+                    "哼",
+                    "啧",
+                    "就",
+                    "嗯嗯",
+                    "啊啊",
+                    "哦哦",
+                    "呃呃",
+                    "嗯哼",
+                    "嗯啊",
+                    "嘶嘶",
+                    "咚咚",
+                }
+                _stripped = _re.sub(r"[，。！？、,\.!\?\s]", "", text_to_emit)
+                if _stripped in _filler_set:
+                    _pipeline_log(
+                        "STREAM", f"Interim suppressed (filler): '{text_to_emit}'"
+                    )
+                    text_to_emit = None
+                elif self._is_hallucination(text_to_emit):
+                    _pipeline_log(
+                        "STREAM",
+                        f"Interim suppressed (hallucination): '{text_to_emit}'",
+                    )
+                    text_to_emit = None
+                else:
+                    # Rate guard — same as qwen3_engine: >15 chars/s with >20 chars = regurgitation
+                    _audio_dur_s = len(audio) / 16000
+                    if _audio_dur_s > 0 and len(text_to_emit) > 20:
+                        _cps = len(text_to_emit) / _audio_dur_s
+                        if _cps > 15:
+                            _pipeline_log(
+                                "STREAM",
+                                f"Interim suppressed (rate {_cps:.1f}cps): '{text_to_emit[:60]}'",
+                            )
+                            text_to_emit = None
+
             # Emit outside lock to avoid blocking final transcription
             if text_to_emit:
                 self._emit_text(text_to_emit, is_final=False)
@@ -2330,6 +2383,9 @@ class AriaApp:
                             "POST",
                             f"Polish skipped: text too short ({len(text.strip())} chars)",
                         )
+                    # Streaming-Polish state: True if we typed the polished text
+                    # chunk-by-chunk into the target (skip the later batched insert).
+                    streamed_inserted = False
                     if _snap_polisher and not _skip_polish:
                         # Slow-stage indicator: after 3s, tell ball to show API-slow glow
                         _polish_hint_timer = threading.Timer(
@@ -2387,11 +2443,72 @@ class AriaApp:
                                 )
 
                         before_polish = text
+                        # Pre-flight: pick output mode so streaming Polish only fires
+                        # for typewriter targets where incremental chars help.
+                        # Clipboard targets (terminals, typewriter_mode=False) stay on
+                        # the old atomic path.
+                        _output_mode = self.output_injector.detect_output_mode()
+                        polish_debug = None
                         try:
-                            polish_debug = _snap_polisher.polish_with_debug(
-                                text, screen_context=screen_ctx_str
-                            )
-                            text = polish_debug["output_text"]
+                            if _output_mode == "typewriter":
+                                import time as _time_mod
+
+                                _stream_start = _time_mod.time()
+                                _accumulated = ""
+                                try:
+                                    for _chunk in _snap_polisher.polish_stream(
+                                        text, screen_context=screen_ctx_str
+                                    ):
+                                        if not _chunk:
+                                            continue
+                                        _accumulated += _chunk
+                                        _ok = self.output_injector.insert_text_typewriter_chunk(
+                                            _chunk
+                                        )
+                                        if not _ok:
+                                            # Focus lost or typewriter aborted —
+                                            # keep whatever got typed so far.
+                                            _pipeline_log(
+                                                "POST",
+                                                f"Typewriter abort mid-stream at {len(_accumulated)} chars",
+                                            )
+                                            break
+                                except PolishStreamError as _stream_err:
+                                    # Pre-first-chunk failure → fall back to classic polish
+                                    _pipeline_log(
+                                        "POST",
+                                        f"Polish stream failed pre-first-chunk: {_stream_err} — falling back",
+                                    )
+                                    _accumulated = ""
+
+                                _stream_ms = (_time_mod.time() - _stream_start) * 1000
+
+                                if _accumulated:
+                                    text = _accumulated
+                                    streamed_inserted = True
+                                    polish_debug = {
+                                        "enabled": True,
+                                        "error": "",
+                                        "api_time_ms": _stream_ms,
+                                        "changed": _accumulated != before_polish,
+                                        "output_text": _accumulated,
+                                        "input_text": before_polish,
+                                        "api_url": _snap_polisher.config.api_url,
+                                        "model": _snap_polisher.config.model,
+                                        "timeout": _snap_polisher.config.timeout,
+                                        "prompt_template": "",
+                                        "full_prompt": "",
+                                        "http_status": 200,
+                                        "using_backup": _snap_polisher._using_backup,
+                                        "streamed": True,
+                                    }
+
+                            if polish_debug is None:
+                                # Clipboard target OR streaming aborted before first chunk
+                                polish_debug = _snap_polisher.polish_with_debug(
+                                    text, screen_context=screen_ctx_str
+                                )
+                                text = polish_debug["output_text"]
                         except Exception as polish_err:
                             # Polish is optional — never block text insertion
                             print(f"[POLISH] EXCEPTION (degraded to raw): {polish_err}")
@@ -2462,15 +2579,27 @@ class AriaApp:
                     self._emit_text(text, is_final=True)
 
                     # Insert into active application
-                    _pipeline_log("OUTPUT", "Calling output_injector.insert_text()...")
-                    insert_ok = self.output_injector.insert_text(text)
-                    inserted = insert_ok
-                    if insert_ok:
-                        _pipeline_log("OUTPUT", ">>> Text inserted successfully!")
-                        print("[OK] Inserted!")
+                    if streamed_inserted:
+                        # Streaming Polish already typed each chunk into the target
+                        _pipeline_log(
+                            "OUTPUT",
+                            ">>> Already streamed to typewriter, skipping batch insert",
+                        )
+                        insert_ok = True
+                        inserted = True
+                        print("[OK] Streamed!")
                     else:
-                        _pipeline_log("OUTPUT", ">>> Text insertion FAILED!")
-                        print("[FAIL] Insert failed! (clipboard/paste error)")
+                        _pipeline_log(
+                            "OUTPUT", "Calling output_injector.insert_text()..."
+                        )
+                        insert_ok = self.output_injector.insert_text(text)
+                        inserted = insert_ok
+                        if insert_ok:
+                            _pipeline_log("OUTPUT", ">>> Text inserted successfully!")
+                            print("[OK] Inserted!")
+                        else:
+                            _pipeline_log("OUTPUT", ">>> Text insertion FAILED!")
+                            print("[FAIL] Insert failed! (clipboard/paste error)")
 
                     # Auto-send: press Enter after text insertion if enabled
                     if self._auto_send_enabled:

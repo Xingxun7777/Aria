@@ -453,6 +453,20 @@ kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 WM_CHAR = 0x0102
 EM_REPLACESEL = 0x00C2  # Insert text at cursor in Edit/RichEdit controls
 
+# Terminals where SendInput silently fails or \n in clipboard would execute
+# each line as a command. Both insert_text() and detect_output_mode() consult
+# this set — keep them in sync by defining it at module level.
+_CLIPBOARD_FORCED_PROCESSES = {
+    "windowsterminal.exe",
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "conhost.exe",
+    "wezterm-gui.exe",
+    "alacritty.exe",
+    "hyper.exe",
+}
+
 # Window class names that support EM_REPLACESEL (standard text controls).
 # For these controls, EM_REPLACESEL goes through the native text rendering
 # pipeline (including font linking for CJK), avoiding the white-box issue
@@ -1185,6 +1199,44 @@ class OutputInjector:
 
         return paste_success
 
+    def detect_output_mode(self) -> str:
+        """
+        Predict which output path insert_text() will take for the current
+        foreground window.
+
+        Returned before polish starts so the caller can pick streaming-friendly
+        typewriter path vs atomic-paste clipboard path. Mirrors the terminal
+        detection in insert_text() — but skips the newline-class check because
+        that requires the final polished text.
+
+        Returns:
+            'typewriter' — can accept incremental chunks
+            'clipboard'  — needs full text for atomic paste
+        """
+        if not self.config.typewriter_mode:
+            return "clipboard"
+        try:
+            fg_info = get_foreground_window_info()
+            proc = fg_info.get("process_name", "").lower()
+            if proc in _CLIPBOARD_FORCED_PROCESSES:
+                return "clipboard"
+        except Exception:
+            pass
+        return "typewriter"
+
+    def insert_text_typewriter_chunk(self, chunk: str) -> bool:
+        """
+        Insert a chunk of text in typewriter mode. Used by streaming polish to
+        append each LLM delta as it arrives.
+
+        Thin wrapper around _insert_text_typewriter so the streaming path has
+        a public entry point without re-running terminal/mode detection on
+        every chunk (caller already decided mode via detect_output_mode).
+        """
+        if not chunk:
+            return True
+        return self._insert_text_typewriter(chunk)
+
     def insert_text(self, text: str) -> bool:
         """
         Insert text into the active application using layered strategy.
@@ -1233,16 +1285,6 @@ class OutputInjector:
         # Note: WordPad/RichEdit no longer here — handled by EM_REPLACESEL path
         # in _insert_text_typewriter() which avoids the white-box issue.
         if use_typewriter:
-            _CLIPBOARD_FORCED_PROCESSES = {
-                "windowsterminal.exe",
-                "cmd.exe",
-                "powershell.exe",
-                "pwsh.exe",
-                "conhost.exe",
-                "wezterm-gui.exe",
-                "alacritty.exe",
-                "hyper.exe",
-            }
             try:
                 fg_info = get_foreground_window_info()
                 proc = fg_info.get("process_name", "").lower()

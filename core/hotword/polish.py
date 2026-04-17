@@ -7,8 +7,15 @@ Uses LLM to polish and correct ASR transcription output.
 import httpx
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Generator
 from urllib.parse import urlparse
+
+
+class PolishStreamError(Exception):
+    """Raised when streaming polish fails before any content is yielded."""
+
+    pass
+
 
 from ..logging import get_system_logger
 
@@ -832,6 +839,139 @@ class AIPolisher:
             # 其他错误也检查切换
             self._check_and_switch_api(0, had_error=True)
             return debug_info
+
+    def polish_stream(
+        self, text: str, screen_context: str = ""
+    ) -> Generator[str, None, None]:
+        """
+        Stream polish via SSE. Yields text chunks as they arrive from the LLM.
+
+        Trade-offs vs polish_with_debug:
+        - No JSON mode (can't partial-parse); relies on strict system prompt instead
+        - No length validation (can't un-type chars already sent to target)
+        - Raises PolishStreamError if API fails before first chunk, so caller can fall back
+
+        Use only for typewriter-output paths where incremental chars make sense.
+        Clipboard targets should use polish_with_debug (atomic paste).
+        """
+        if not self.config.enabled:
+            raise PolishStreamError("Polish disabled")
+        if not text or len(text.strip()) < 2:
+            raise PolishStreamError("Text too short")
+
+        current_url, current_key, current_model = self._get_current_api_config()
+        prompt = self._build_prompt(text, screen_context=screen_context)
+
+        # Tightened system prompt: no JSON/markdown/prefixes, just the corrected text.
+        # Strict anti-preamble rules because streaming can't retroactively strip them.
+        system_msg = (
+            "你是语音识别文本修正工具。严格规则：\n"
+            "1. 只输出修正后的文本本身\n"
+            "2. 禁止任何前缀、引导语、解释、JSON、Markdown、引号包裹\n"
+            '3. 禁止说"修正后："、"结果："、"以下是"之类的引导\n'
+            "4. 严禁改变句子原意或增删实质信息\n"
+            "5. 直接从第一个字开始输出修正后的文本"
+        )
+
+        payload = {
+            "model": current_model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.1,
+            "stream": True,
+        }
+
+        base_url = current_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            full_url = f"{base_url}/chat/completions"
+        else:
+            full_url = f"{base_url}/v1/chat/completions"
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {current_key}",
+            "Accept": "text/event-stream",
+        }
+
+        # Runaway cap: LLM shouldn't emit > 4x input + 50 chars of headroom.
+        # Larger than that is almost certainly regurgitation or explanation.
+        runaway_cap = max(len(text) * 4 + 50, 200)
+        emitted_chars = 0
+        first_chunk_received = False
+        start_time = time.time()
+        client = self._get_client()
+        had_error = False
+
+        try:
+            with client.stream(
+                "POST", full_url, headers=headers, json=payload
+            ) as response:
+                if response.status_code != 200:
+                    had_error = True
+                    # Consume body so the connection closes cleanly
+                    err_body = ""
+                    try:
+                        err_body = response.read().decode("utf-8", errors="replace")[
+                            :200
+                        ]
+                    except Exception:
+                        pass
+                    raise PolishStreamError(f"HTTP {response.status_code}: {err_body}")
+
+                import json as _json
+
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    # httpx yields str lines already decoded
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", errors="replace")
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = _json.loads(data)
+                        delta = (
+                            event.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                        )
+                    except (ValueError, KeyError, IndexError):
+                        continue
+                    if not delta:
+                        continue
+                    first_chunk_received = True
+                    emitted_chars += len(delta)
+                    if emitted_chars > runaway_cap:
+                        logger.warning(
+                            f"Polish stream exceeded runaway cap "
+                            f"({emitted_chars} > {runaway_cap}), truncating"
+                        )
+                        break
+                    yield delta
+        except PolishStreamError:
+            raise
+        except httpx.TimeoutException as e:
+            had_error = True
+            if not first_chunk_received:
+                raise PolishStreamError(f"Timeout: {e}") from e
+            # Partial content already yielded — caller keeps what was typed
+            logger.warning(f"Polish stream timeout mid-response: {e}")
+        except Exception as e:
+            had_error = True
+            if not first_chunk_received:
+                raise PolishStreamError(str(e)) from e
+            logger.warning(f"Polish stream error mid-response: {e}")
+        finally:
+            elapsed_ms = (time.time() - start_time) * 1000
+            # Feed the smart-switch logic with same signal as non-streaming path.
+            # For streaming we proxy "time-to-completion" as the response time.
+            self._check_and_switch_api(elapsed_ms, had_error=had_error)
 
     def close(self):
         """Close HTTP client."""

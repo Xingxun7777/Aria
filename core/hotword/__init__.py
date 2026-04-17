@@ -13,7 +13,7 @@ from .utils import CJK_PATTERN, is_cjk_word, is_english_word
 from .manager import HotWordManager, HotWordConfig
 from .processor import HotWordProcessor
 from .fuzzy_matcher import PinyinFuzzyMatcher, FuzzyMatchConfig
-from .polish import AIPolisher, PolishConfig, DEFAULT_POLISH_PROMPT
+from .polish import AIPolisher, PolishConfig, DEFAULT_POLISH_PROMPT, PolishStreamError
 from .local_polish import LocalPolishEngine, LocalPolishConfig
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "FuzzyMatchConfig",
     "AIPolisher",
     "PolishConfig",
+    "PolishStreamError",
     "DEFAULT_POLISH_PROMPT",
     "LocalPolishEngine",
     "LocalPolishConfig",
