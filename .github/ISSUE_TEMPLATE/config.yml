@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 配置参考文档
+    url: https://github.com/Xingxun7777/Aria/blob/main/docs/CONFIGURATION.md
+    about: 查看完整配置说明（热词、VAD、ASR 引擎等）
+  - name: 常见问题 (FAQ)
+    url: https://github.com/Xingxun7777/Aria#常见问题
+    about: README 中的常见问题解答
