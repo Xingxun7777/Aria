@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "version": "1.6.0",
+  "released_at": "2026-08-11T03:54:13.444555Z",
+  "update_scope": "python_only",
+  "critical": false,
+  "notes_summary": "统一语音修改与 AI 请求链路，改进嘈杂环境识别、GPU 安装、普通用户配置和启动交互体验",
+  "assets": {
+    "main_zip": {
+      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.6.0/Aria-source-1.6.0.zip",
+      "mirrors": [
+        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.6.0/Aria-source-1.6.0.zip",
+        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.6.0/Aria-source-1.6.0.zip"
+      ],
+      "size": 2886050,
+      "sha256": "079ab8bdab74c945e791cb0d09066771b9e75e1aebe5e4db54202d7e7b1edc54"
+    }
+  },
+  "min_compatible_from": "1.0.5.31"
+}

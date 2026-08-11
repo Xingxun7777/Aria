@@ -1,0 +1,174 @@
+{
+  "asr_engine": "qwen3",
+  "funasr": {
+    "device": "cuda",
+    "enable_vad": false,
+    "enable_punc": false,
+    "model_name": "paraformer-zh"
+  },
+  "qwen3": {
+    "model_name": "auto",
+    "device": "cuda",
+    "language": "Chinese",
+    "torch_dtype": "bfloat16"
+  },
+  "qwen3_sherpa": {
+    "model_dir": "models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+    "provider": "cpu",
+    "max_total_len": 2048,
+    "_comment": "Qwen3-ASR 轻量引擎（sherpa-onnx int8，无需显卡/torch）。asr_engine 设为 qwen3_sherpa 启用；model_dir 相对路径以程序根目录为基准，也可用 ARIA_SHERPA_MODEL_DIR 环境变量覆盖。num_threads 不配置时按 CPU 核数自动取 min(16, max(4, 逻辑核数/2))（约等于物理核数）；需要固定线程数时显式加 num_threads 字段，显式值优先。"
+  },
+  "qwen3_llamacpp": {
+    "server_path": "llamacpp/llama-server.exe",
+    "model_path": "models/qwen3-asr-gguf/Qwen3-ASR-1.7B-Q8_0.gguf",
+    "mmproj_path": "",
+    "port": 18539,
+    "ngl": 99,
+    "ctx": 8192,
+    "request_timeout_base": 8,
+    "logprobs": true,
+    "_comment": "Qwen3-ASR GPU 加速引擎（llama.cpp CUDA + GGUF，常驻 llama-server 子进程，无需 torch）。asr_engine 设为 qwen3_llamacpp 启用；相对路径先按程序根目录解析，找不到再回退 models/llamacpp_runtime/ 资产缓存（可用 ARIA_LLAMACPP_DIR 环境变量覆盖缓存位置）。GPU 随包版资产在 models/llamacpp_runtime/bin 与 models/llamacpp_runtime/models 下。mmproj_path 留空时自动取 model_path 同目录的 mmproj-<模型名>.gguf。ngl=GPU 层数（99=全上卡），ctx=KV 上下文长度，request_timeout_base=单请求最小超时秒数（实际按音频时长放大）。logprobs=请求逐 token 置信度遥测（供解码置信度闸校准；旧版 server 不支持时运行期自动降级，重启生效）。"
+  },
+  "whisper": {
+    "model_name": "large-v3",
+    "device": "cuda",
+    "language": "zh",
+    "compute_type": "float16"
+  },
+  "enable_initial_prompt": true,
+  "hotwords": [],
+  "hotword_weights": {},
+  "replacements": {},
+  "domain_context": "",
+  "personalization_rules": "",
+  "reply_style": "",
+  "polish_style": "smooth",
+  "auto_structure": false,
+  "filter_filler_words": true,
+  "screen_context_enabled": true,
+  "history_enabled": true,
+  "history_retention_days": 90,
+  "app_categories": {},
+  "polish_mode": "quality",
+  "polish": {
+    "enabled": false,
+    "api_url": "https://api.deepseek.com",
+    "api_key": "",
+    "model": "deepseek-v4-flash",
+    "timeout": 20,
+    "pinyin_hint": false,
+    "prewarm": true,
+    "skip_short_text": true,
+    "_comment": "v5.0+ 不再内嵌 prompt_template/prompt_template_structured；留空时由 core/hotword/polish.py 的 POLISH_PROMPT_LOOSE / POLISH_PROMPT_STRUCTURED 提供默认值。用户在 UI 中编辑后会自动写入这两个字段。"
+  },
+  "local_polish": {
+    "enabled": false,
+    "model_path": "",
+    "n_gpu_layers": -1,
+    "n_ctx": 512
+  },
+  "asr_rescue": {
+    "enabled": true,
+    "cloud_enabled": false,
+    "api_key": "",
+    "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3-asr-flash",
+    "timeout_s": 15,
+    "max_audio_s": 60,
+    "beep": true,
+    "_comment": "最终段转写超时/异常返空后的救援链。enabled 总开关（含连续失败后的引擎自愈重载）；cloud_enabled+api_key 配置后，把丢失段音频发阿里云百炼 Qwen3-ASR-Flash 二次转写补救，迟到结果超过 20 秒或期间已有新上屏则存入历史不上屏。"
+  },
+  "auto_hotword": {
+    "enabled": false,
+    "min_count_for_review": 3,
+    "max_terms_per_review": 50,
+    "review_interval_hours": 6,
+    "min_batch_size": 8,
+    "review_on_startup": false,
+    "api_url": "",
+    "api_key": "",
+    "model": "",
+    "timeout": 60,
+    "sample_logging": {
+      "enabled": false,
+      "max_per_day": 10
+    },
+    "_comment": "v1.0.5.20: 默认关闭 — 启用后会调 LLM API 审查屏幕高频词，每 6h + 启动一次。用户在设置中显式开启后才生效。Empty api_url/api_key/model → inherit from polish.*. review_interval_hours=6 + min_batch_size=8: 距上次审查 ≥6h 且 pending ≥8 才自动触发。sample_logging 默认关；开启后每天最多保存 N 条 OCR 原文到 data/ocr_samples/ 用于事后调参。"
+  },
+  "general": {
+    "hotkey": "grave",
+    "audio_device": "",
+    "auto_startup": false,
+    "minimize_to_tray": false,
+    "start_active": true,
+    "input_mode": "toggle",
+    "trigger_mode": "toggle",
+    "_trigger_mode_comment": "热键触发模式。toggle=按一下开始/再按停止（默认，行为与历史版本完全一致）；hold_to_talk=按住说话（松开上屏）+ 短按/双击进入锁定持续听写，锁定后再按停止。",
+    "auto_check_update": true,
+    "auto_download_update": true,
+    "update_check_interval_hours": 24,
+    "update_prefs": {
+      "skipped_versions": [],
+      "last_check_at": "",
+      "last_failed_count": 0,
+      "backoff_until": null,
+      "last_prompt_per_version": {},
+      "last_successful_update": null
+    }
+  },
+  "vad": {
+    "threshold": 0.15,
+    "min_silence_ms": 1500,
+    "max_speech_ms": 120000,
+    "energy_threshold": 0.003,
+    "noise_filter": true,
+    "screen_ocr": false,
+    "screen_ocr_polish": false,
+    "screen_ocr_use_dml": true,
+    "screen_ocr_force_cpu": false,
+    "soft_split_enabled": true,
+    "soft_split_silence_ms": 500,
+    "soft_split_min_speech_ms": 5000,
+    "polish_terminal_bypass": false,
+    "vad_joint_gate": true,
+    "vad_joint_gate_energy_max": 0.002,
+    "vad_joint_gate_vad_max": 0.7,
+    "energy_gate_vad_exempt": true,
+    "template_blacklist": true,
+    "template_blacklist_extra": [],
+    "conf_gate_enabled": false,
+    "conf_gate_avg_logprob_floor": -1.0,
+    "_comment_anti_hallucination": "反幻觉闸（2026-07-20 三闸 + 2026-07-29 min 轴）。vad_joint_gate=能量过闸但 pre/post-DSP 均值 < vad_joint_gate_energy_max 且整段 Silero 概率峰值 < vad_joint_gate_vad_max 时拒送 ASR（轻杂音编话防线，whisper 收音模式豁免；实测编造段 vad_max 0.36-0.67、真话 ≥0.94）。template_blacklist=近静默(pre-DSP<0.002)且整段恰好等于「谢谢观看」族模板句时丢弃，template_blacklist_extra 可追加自定义整句。conf_gate_enabled=avg 轴置信度闸（平均 token logprob < conf_gate_avg_logprob_floor 且声学弱证据才丢），默认关——实测 -1.0 会误杀真话，保持只遥测。conf_gate_min_enabled=min 轴置信度闸（最差单 token logprob < conf_gate_min_logprob_floor 默认 -3.0 且声学弱证据才丢），默认开——2.5 天实测校准：编造句 min ≤-3.54、真话 min ≥-2.51，回放 14/14 拦 0 误杀；同一判定也抑制 interim 字幕气泡。GPU interim 另有 Silero 佐证闸（整段峰值<0.70 不送解码，微弱音乐带 0.7-0.9 由 min 轴兜底）。energy_gate_vad_exempt=能量闸 VAD 豁免（2026-07-23 系统麦克风电平塌陷防线）：能量低于 energy_threshold 但整段 Silero 峰值≥0.7 且人声占比≥0.5 且时长≥2s 时仍送 ASR，并强制峰值归一化拉起音量；连续 3 段触发会弹麦克风音量异常提示。支持热更新。"
+  },
+  "asr": {
+    "vad": {
+      "min_silence_ms": 800,
+      "threshold": 0.4
+    }
+  },
+  "output": {
+    "typewriter_mode": false,
+    "typewriter_delay_ms": 15,
+    "word_native_enabled": true,
+    "check_elevation": true
+  },
+  "elevation_dialog": {
+    "dont_remind": false
+  },
+  "translation": {
+    "output_mode": "popup"
+  },
+  "audio": {
+    "capture_mode": "standard",
+    "asr_gain_normalize": false,
+    "target_peak_dbfs": -3.0,
+    "max_gain_db": 20.0,
+    "_comment": "麦克风前处理三档模式。standard = 日常默认，近场说话几乎透明；noisy = 嘈杂环境（空调/风扇/键盘），激进 gate 拒噪；whisper = 夜间安静 + 极小声说话，激进 AGC 拉起。详见 core/audio/dsp.py MODE_PRESETS。asr_gain_normalize = 送 ASR 前按段峰值归一化（默认关）：开启后把整段音频统一放大到 target_peak_dbfs（峰值目标，dBFS），单段最多提升 max_gain_db（防止把底噪放成噪声墙）；已够响/削顶的段不动；VAD 与能量门不受影响（仍读原始信号）。支持热更新，改配置即生效。详见 core/audio/gain.py"
+  },
+  "sound": {
+    "enabled": true,
+    "volume": 1.0,
+    "quiet_in_whisper": true,
+    "_comment": "UI 提示音（开录/停录/失败/救援等 wav 音效）。enabled 总开关；volume 音量 0.0~1.0；quiet_in_whisper=true 时 whisper 收音模式自动静音（夜间轻声说话场景不打扰）。wav 资产缺失时回退为原蜂鸣。失败/救援提示音另受 asr_rescue.beep 控制。"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "_readme": [
+    "scripts/privacy_scan.py 的个人标识词表模板。",
+    "复制本文件为 config/privacy_patterns.local.json 后按下述 schema 填入",
+    "本机的个人标识(用户名、账号名、网名、唤醒词、私有盘符路径词等)。",
+    "local 文件被 .gitignore 排除、绝不入库;本模板只放占位说明,",
+    "不要把任何真实个人标识写进模板本身。",
+    "无 local 文件时扫描器降级只跑通用规则并打警告;",
+    "作为发布门使用时加 --require-local,缺词表直接失败。"
+  ],
+  "_schema": {
+    "patterns": [
+      {
+        "label": "规则短名(报告里显示为 local:<label>)",
+        "pattern": "Python 正则;纯文本词直接写字面量即可",
+        "severity": "critical | warning,或分模式 {\"repo\": \"critical\", \"package\": \"critical\"};缺省 critical",
+        "binary": "true(缺省)= 参与 package 模式 exe/pyd/dll/pyc 字符串抽查",
+        "match_path": "true(缺省)= 同时匹配文件相对路径",
+        "scrub": "true = 该词条同时供 release_sanitizer/sync 发布门做盲刷洗与 grep 拦截(旧 txt 词表缺失时的统一源回退)。只给「发布树里绝不该出现」的词条打;网名/账号这类在 README URL、品牌资源里合法出现的检测词条不要打,盲刷洗会毁掉它们",
+        "replacement": "可选,scrub 刷洗时的替换文本(缺省删除);路径类建议用 <user>/<repo> 占位——各 grep 门对 < 开头的段放行",
+        "note": "给未来维护者的一句话说明"
+      }
+    ],
+    "allowlist": [
+      {
+        "path": "posix 相对路径 glob,如 tests/test_foo.py 或 docs/*.md",
+        "rules": ["要豁免的规则 id 数组;省略 = 全部规则"],
+        "reason": "必填:为什么这个出现是合法的"
+      }
+    ],
+    "approved_authors": [
+      "提交身份白名单(可选):'Name <email>' 逐字匹配;配合 --diff-range 使用,",
+      "区间内出现白名单外的 author/committer 记 Critical(防第二身份/野邮箱串仓)"
+    ]
+  },
+  "version": 1,
+  "patterns": [
+    {
+      "label": "example-username",
+      "pattern": "把这里换成真实 Windows 用户名等标识后存为 local 文件",
+      "severity": "critical",
+      "note": "占位示例——模板本身不含真实标识,此条在模板中无实际作用"
+    }
+  ],
+  "allowlist": []
+}
