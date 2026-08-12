@@ -41,12 +41,15 @@ def format_route_decision_line(decision: RouteDecision) -> str:
     cmd = decision.command_id if decision.command_id else "-"
     delivery = decision.detail.get("delivery")
     inv = "1" if decision.detail.get("invocation") else "0"
+    selection_branch = decision.detail.get("selection_branch")
     base = (
         f"{ts} | session={decision.session_id} | stage={decision.stage} | "
         f"reason={decision.reason} | consumed={_fmt_flag(decision.consumed)} | "
         f"inserted={_fmt_flag(decision.inserted)} | cmd={cmd} | "
         f"len={int(decision.text_len)} | inv={inv}"
     )
+    if selection_branch is not None:
+        base = f"{base} | sel={_fmt_flag(bool(selection_branch))}"
     if delivery is not None:
         return f"{base} | delivery={delivery}"
     return base

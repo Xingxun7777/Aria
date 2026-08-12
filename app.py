@@ -2089,6 +2089,13 @@ class AriaApp:
         normal ASR correction may replace same-length homophones, and filler
         cleanup may delete words. The dangerous live failure is content
         completion, e.g. "好像又有。" -> "好像又有问题。".
+
+        Word-order moves are exempted: difflib renders a reordered phrase as
+        a delete + insert pair, so the inserted side is not new content when
+        it already appears verbatim elsewhere in raw. The exemption requires
+        occurrence conservation — the segment must not appear more times in
+        polished than in raw — so copying existing text to a new position
+        (original kept in place) is still rejected.
         """
         if raw == polished or not polished:
             return ""
@@ -2097,6 +2104,9 @@ class AriaApp:
         import re
 
         cjk_re = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+        # Edge punctuation/whitespace ignored when checking whether an added
+        # segment already exists verbatim in raw (moved text exemption).
+        edge_strip = " \t\r\n\u3000，。！？、；：,.!?;:·…—～~“”‘’\"'()（）【】[]{}《》〈〉「」『』"
 
         def _cjk_len(value: str) -> int:
             return len(cjk_re.findall(value or ""))
@@ -2112,6 +2122,22 @@ class AriaApp:
             removed_cjk = _cjk_len(removed)
 
             if added_cjk >= 2 and added_cjk - removed_cjk >= 2:
+                # Moved, not invented: the segment exists verbatim in raw
+                # (live failure: reordering "质量" within the sentence was
+                # rejected as ('' -> '质量', +2 CJK chars)). Occurrence
+                # conservation distinguishes a true move (count equal) from
+                # a copy (polished has more) — copies of negations, quoted
+                # commands etc. into new positions must still be rejected.
+                moved = added.strip(edge_strip)
+                if (
+                    moved
+                    and moved in (raw or "")
+                    and (polished or "").count(moved) <= (raw or "").count(moved)
+                ):
+                    logger.debug(
+                        "content addition exempted (moved text): %r", added
+                    )
+                    continue
                 return (
                     "unsupported content addition "
                     f"({removed!r} -> {added!r}, +{added_cjk - removed_cjk} CJK chars)"
@@ -5370,6 +5396,9 @@ class AriaApp:
     ):
         """Ask AI to review or safely rewrite the latest dictated passage."""
 
+        # Refused parses never reach _execute_recent_voice_request, so the
+        # audit flag must not carry over from a previous selection rewrite.
+        self._recent_voice_used_selection_branch = False
         detector = getattr(self, "wakeword_detector", None)
         active_wakewords = None
         if detector is not None:
@@ -5411,9 +5440,30 @@ class AriaApp:
         rewrite: bool,
         trace_id: str | None = None,
     ) -> bool:
-        """Apply one AI request only to the latest safely tracked dictation."""
+        """Apply one AI request only to the latest safely tracked dictation.
+
+        Product decision (2026-08-12): when the foreground window holds a live
+        text selection, the same wakeword request edits that selection instead
+        — even when the wording references the recent dictation ("刚才/上一
+        句").  The presence of a selection is the single routing switch; with
+        no selection this method keeps its established recent-dictation
+        behavior below.
+        """
 
         from .core.ai.feedback import describe_ai_error, describe_delivery_status
+
+        self._recent_voice_used_selection_branch = False
+        selection_context = self._detect_selection_for_voice_rewrite()
+        if selection_context is not None:
+            detection, probe_target = selection_context
+            self._recent_voice_used_selection_branch = True
+            return self._execute_selection_rewrite_request(
+                detection,
+                probe_target,
+                instruction,
+                rewrite=rewrite,
+                trace_id=trace_id,
+            )
 
         tracker = getattr(self, "_recent_voice_groups", None)
         group_result = tracker.latest(now=time.monotonic()) if tracker else None
@@ -5600,6 +5650,246 @@ class AriaApp:
         )
         return success
 
+    def _detect_selection_for_voice_rewrite(self):
+        """Probe for the live foreground selection a voice rewrite should edit.
+
+        Returns ``(detection, probe_target)`` only when a non-terminal
+        foreground field currently holds a real selection.  Every other
+        outcome (no detector, snapshot failure, terminal surface, probe miss)
+        returns None so the caller keeps the recent-dictation path.  Terminal
+        surfaces are never probed: the sentinel probe's Ctrl+C would reach the
+        shell as SIGINT.  The detector restores the pre-probe clipboard itself
+        on miss/failure paths; on a hit the selection rewrite owns the restore.
+        """
+
+        detector = getattr(self, "selection_detector", None)
+        if detector is None:
+            return None
+        capture_snapshot = getattr(
+            self.output_injector, "capture_target_snapshot", None
+        )
+        if not callable(capture_snapshot):
+            return None
+        try:
+            probe_target = capture_snapshot()
+        except Exception:
+            return None
+        if probe_target is None or not getattr(probe_target, "is_valid", False):
+            return None
+        if self._target_surface_is_terminal(probe_target):
+            _pipeline_log(
+                "SELECTION_VOICE", "Probe skipped: terminal foreground"
+            )
+            return None
+        try:
+            detection = detector.detect(expected_target=probe_target)
+        except Exception:
+            return None
+        selected = str(getattr(detection, "selected_text", "") or "")
+        if not getattr(detection, "has_selection", False) or not selected.strip():
+            return None
+        return detection, probe_target
+
+    def _execute_selection_rewrite_request(
+        self,
+        detection,
+        probe_target,
+        instruction: str,
+        *,
+        rewrite: bool,
+        trace_id: str | None = None,
+    ) -> bool:
+        """Apply one AI request to the live foreground selection.
+
+        Fail-closed by design (2026-08-12): when the surface cannot host a
+        guarded replacement, the request stops with feedback instead of
+        silently rewriting the recent dictation the user is not looking at.
+        The probe left the selection on the clipboard, so every exit restores
+        the pre-probe content.
+        """
+
+        from .core.ai.feedback import describe_ai_error, describe_delivery_status
+
+        selected_text = str(getattr(detection, "selected_text", "") or "")
+        try:
+            processor = getattr(self, "selection_processor", None)
+            if processor is None:
+                self._emit_notice(
+                    "AI 修改服务尚未就绪，本次未改动文字", "error", 3600
+                )
+                return False
+
+            # Lock the native bookmark before the multi-second LLM wait.
+            try:
+                capture = self.output_injector.capture_selection_transaction(
+                    selected_text, probe_target
+                )
+            except Exception:
+                capture = None
+            if (
+                capture is None
+                or not bool(getattr(capture, "success", False))
+                or getattr(capture, "target", None) is None
+            ):
+                reason = str(
+                    getattr(
+                        getattr(capture, "status", None),
+                        "value",
+                        "target_unavailable",
+                    )
+                )
+                self._emit_notice(
+                    "已选中文字，但当前窗口不支持安全改写，本次未改动文字",
+                    "warning",
+                    5200,
+                )
+                if self._bridge and hasattr(self._bridge, "emit_command"):
+                    self._bridge.emit_command("修改选中文字", False)
+                _pipeline_log("SELECTION_VOICE", f"Capture refused: {reason}")
+                return False
+
+            self._emit_notice("正在按要求处理选中的文字…", "info", 2600)
+            result = processor.process_recent_voice(
+                selected_text,
+                str(instruction or "").strip(),
+                rewrite=rewrite,
+                trace_id=trace_id,
+            )
+            if not result.success:
+                self._emit_notice(
+                    describe_ai_error(getattr(result, "error_category", None)),
+                    "error",
+                    3600,
+                )
+                _pipeline_log(
+                    "SELECTION_VOICE",
+                    "AI processing failed: "
+                    f"category={getattr(result, 'error_category', None) or '-'}",
+                )
+                return False
+
+            feedback = str(result.feedback or "").strip()
+            if not rewrite:
+                self._emit_draft(feedback, "selection_voice_advice")
+                self._emit_notice(feedback[:90] or "分析完成", "info", 7000)
+                if self._bridge and hasattr(self._bridge, "emit_command"):
+                    self._bridge.emit_command("分析选中文字", True)
+                _pipeline_log("SELECTION_VOICE", "Advice ready")
+                return True
+
+            revised = str(result.revised_text or "").strip()
+            if not revised:
+                self._emit_notice("AI 没有返回可替换的完整文本", "error", 3600)
+                return False
+
+            with self._voice_edit_mutation_lock:
+                delivery = self.output_injector.replace_captured_selection(
+                    revised, selected_text, capture.target
+                )
+                self._remember_voice_edit_undo(
+                    delivery, selected_text, revised, capture.target
+                )
+            success = bool(getattr(delivery, "success", False))
+            delivery_status = str(
+                getattr(getattr(delivery, "status", None), "value", "unknown")
+            )
+            undo_available = bool(getattr(delivery, "undo_available", False))
+            if success:
+                if delivery_status != "no_change":
+                    self._seed_recent_reference_from_selection(
+                        revised, capture.target, trace_id
+                    )
+                notice = feedback[:76] if feedback else "已按要求修改选中文字"
+                if delivery_status == "no_change":
+                    suffix = "（原文无需改动）"
+                elif undo_available:
+                    suffix = "（选中文字已替换，可 Ctrl+Z 撤销）"
+                else:
+                    suffix = "（选中文字已替换）"
+                self._emit_notice(f"{notice}{suffix}", "success", 7000)
+            else:
+                self._emit_draft(revised, f"selection_voice_{delivery_status}")
+                if bool(getattr(delivery, "partial_possible", False)):
+                    message = describe_delivery_status(
+                        "write_partial",
+                        default=(
+                            "写入状态未确认，请先检查原文；为避免重复输入，未再次写入"
+                        ),
+                    )
+                else:
+                    message = describe_delivery_status(
+                        getattr(delivery, "status", None),
+                        default="原选区或目标已变化，本次未自动替换",
+                    )
+                self._emit_notice(message, "warning", 6000)
+            if self._bridge and hasattr(self._bridge, "emit_command"):
+                self._bridge.emit_command("修改选中文字", success)
+            _pipeline_log(
+                "SELECTION_VOICE",
+                f"Rewrite result: {delivery_status}, success={success}, "
+                f"chars={len(revised)}",
+            )
+            return success
+        finally:
+            # The probe left the selection on the clipboard.  Success,
+            # refusal and failure paths all restore the pre-probe content
+            # (mirrors WakewordExecutor._selection_process).
+            try:
+                self.selection_detector.restore_clipboard_from(detection)
+            except Exception:
+                pass
+
+    def _seed_recent_reference_from_selection(
+        self, revised: str, expected_target, trace_id: str | None
+    ) -> None:
+        """Make the fresh selection rewrite the next "刚才" reference.
+
+        Mirrors the recent-dictation receipt refresh: bind the revised text to
+        its exact post-replace native range, then make it the sole tracked
+        reference (zero-length voice window at the current instant).  When the
+        range cannot be re-verified the tracker is cleared so a stale receipt
+        can never misdirect a follow-up rewrite.
+        """
+
+        tracker = getattr(self, "_recent_voice_groups", None)
+        if tracker is None:
+            return
+        capture = getattr(
+            self.output_injector, "capture_recent_voice_insert", None
+        )
+        receipt = None
+        if callable(capture):
+            try:
+                receipt = capture(revised, expected_target)
+            except Exception:
+                receipt = None
+        if (
+            receipt is not None
+            and bool(getattr(receipt, "success", False))
+            and getattr(receipt, "target", None) is not None
+        ):
+            try:
+                session_id = int(str(trace_id))
+            except (TypeError, ValueError):
+                session_id = 0
+            now = time.monotonic()
+            tracker.clear()
+            tracker.record(
+                revised,
+                receipt.target,
+                session_id=session_id,
+                voice_start=now,
+                voice_end=now,
+                inserted_at=now,
+            )
+            _pipeline_log(
+                "SELECTION_VOICE",
+                "Selection rewrite recorded as recent reference: "
+                f"chars={len(revised)}",
+            )
+        else:
+            tracker.clear()
+
     def _try_execute_wakeword_ai_fallback(
         self, question: str, *, trace_id: str | None = None
     ) -> bool:
@@ -5610,6 +5900,7 @@ class AriaApp:
         tracked voice group is eligible for replacement.
         """
 
+        self._recent_voice_used_selection_branch = False
         question = str(question or "").strip()
         if not question:
             self._emit_notice("请在唤醒词后继续说你的要求", "info", 2600)
@@ -5978,6 +6269,9 @@ class AriaApp:
                     getattr(_rv_parsed, "reason_code", None)
                     or "recent_voice_command"
                 )
+                _rv_detail = {}
+                if getattr(self, "_recent_voice_used_selection_branch", False):
+                    _rv_detail["selection_branch"] = 1
                 return self._emit_route_decision(
                     RouteDecision(
                         session_id=session_id,
@@ -5988,6 +6282,7 @@ class AriaApp:
                         final_text="[命令] recent_voice",
                         command_id="recent_voice",
                         text_len=text_len,
+                        detail=_rv_detail,
                     )
                 )
 
@@ -6031,6 +6326,9 @@ class AriaApp:
                 _route_command_text,
                 trace_id=str(session_id),
             )
+            _fallback_detail = {"invocation": 1}
+            if getattr(self, "_recent_voice_used_selection_branch", False):
+                _fallback_detail["selection_branch"] = 1
             return self._emit_route_decision(
                 RouteDecision(
                     session_id=session_id,
@@ -6041,7 +6339,7 @@ class AriaApp:
                     final_text="[命令] wakeword_ai",
                     command_id="wakeword_ai",
                     text_len=text_len,
-                    detail={"invocation": 1},
+                    detail=_fallback_detail,
                 )
             )
 
@@ -10095,6 +10393,63 @@ class AriaApp:
                                 )
                                 screen_text_for_polish = ""
 
+                        # v14 (M3): recent dictation history → 【最近输入】
+                        # evidence block. newest day file only, so the read is
+                        # cheap; any failure degrades to "no history" — never
+                        # block the injection pipeline. Records are written
+                        # post-injection (below), so recent() cannot contain
+                        # the utterance being polished right now.
+                        _recent_polish_texts = []
+                        try:
+                            if self.history_store and getattr(
+                                getattr(_snap_polisher, "config", None),
+                                "recent_context",
+                                True,
+                            ):
+                                from datetime import datetime as _dt
+                                from datetime import timedelta as _td
+
+                                # R11: over-fetch (limit=10) then filter down
+                                # to 3 so filtered records don't eat the
+                                # quota; explicit 24h window (max_days=2
+                                # covers the midnight crossover) keeps stale
+                                # sessions out of 【最近输入】 — the design
+                                # intent is "just said", not "last month".
+                                _recent_cutoff = _dt.now() - _td(hours=24)
+                                for _rec in self.history_store.recent(
+                                    RecordType.ASR, limit=10, max_days=2
+                                ):
+                                    if len(_recent_polish_texts) >= 3:
+                                        break
+                                    try:
+                                        if (
+                                            _dt.fromisoformat(_rec.timestamp)
+                                            < _recent_cutoff
+                                        ):
+                                            # newest-first: everything after
+                                            # this is older still.
+                                            break
+                                    except (ValueError, TypeError):
+                                        continue
+                                    _rec_text = (
+                                        _rec.output_text or _rec.input_text or ""
+                                    ).strip()
+                                    if not _rec_text or _rec_text.startswith(
+                                        ("[命令]", "[唤醒词]")
+                                    ):
+                                        continue
+                                    if _rec.metadata.get("recoverable") is False:
+                                        continue
+                                    _recent_polish_texts.append(_rec_text[:120])
+                                # recent() is newest-first; the prompt block
+                                # reads top-down chronologically.
+                                _recent_polish_texts.reverse()
+                        except Exception as _e:
+                            _pipeline_log(
+                                "POST", f"Recent-context fetch failed: {_e}"
+                            )
+                            _recent_polish_texts = []
+
                         before_polish = text
                         # Pre-flight: pick output mode. Typewriter targets may
                         # use the streaming API for transport, but insertion is
@@ -10137,12 +10492,15 @@ class AriaApp:
                                     else {}
                                 )
                                 _accumulated = ""
+                                _stream_debug_sink = {}
                                 try:
                                     for _chunk in _snap_polisher.polish_stream(
                                         text,
                                         screen_context=screen_ctx_str,
                                         screen_text=screen_text_for_polish,
                                         force_loose=_force_loose_polish,
+                                        recent_texts=_recent_polish_texts,
+                                        debug_sink=_stream_debug_sink,
                                     ):
                                         if not _chunk:
                                             continue
@@ -10190,6 +10548,10 @@ class AriaApp:
                                         ),
                                         "streamed": True,
                                     }
+                                    # R10: merge the v14 evidence exposed by
+                                    # polish_stream (pipeline_version /
+                                    # pre_normalize_applied / pre_llm_text).
+                                    polish_debug.update(_stream_debug_sink)
 
                             if polish_debug is None:
                                 # Clipboard target OR streaming aborted before first chunk
@@ -10198,6 +10560,7 @@ class AriaApp:
                                     screen_context=screen_ctx_str,
                                     screen_text=screen_text_for_polish,
                                     force_loose=_force_loose_polish,
+                                    recent_texts=_recent_polish_texts,
                                 )
                                 text = polish_debug["output_text"]
                         except Exception as polish_err:
@@ -10221,17 +10584,30 @@ class AriaApp:
                         finally:
                             _polish_hint_timer.cancel()
 
+                        # R8: guard baseline = layer-0 product (pre_llm_text).
+                        # On the v14 path the polisher's own failure states all
+                        # fall back to the normalized text; the app-level
+                        # guards must compare against (and fall back to) the
+                        # same baseline, otherwise a rejection silently drops
+                        # the deterministic digit conversions AND the moved-
+                        # text exemption breaks ("512" doesn't exist in the
+                        # raw "五幺二" transcript). On the legacy path
+                        # pre_llm_text == raw text, so nothing changes.
+                        _guard_baseline = before_polish
+                        if polish_debug and polish_debug.get("pre_llm_text"):
+                            _guard_baseline = polish_debug["pre_llm_text"]
+
                         # === LENGTH SAFETY NET ===
                         # Reject polish output that's much longer than ASR raw
                         # input — defense against OCR/screen-context bleed-in
                         # on short / noise-induced inputs (e.g. ambient noise
                         # transcribed as "嗯。" → polish writes a 90-char
                         # paragraph from screen context). When triggered we
-                        # fall back to the raw ASR text so the user types what
-                        # they actually said (or just "嗯。") instead of an
-                        # invented paragraph.
+                        # fall back to the guard baseline so the user types
+                        # what they actually said (keeping layer-0 fixes)
+                        # instead of an invented paragraph.
                         if text and before_polish:
-                            _raw_len = len(before_polish.strip())
+                            _raw_len = len(_guard_baseline.strip())
                             _polished_len = len(text.strip())
                             # Two-tier rejection:
                             #   - very short input (≤3 chars): polished output
@@ -10246,35 +10622,41 @@ class AriaApp:
                                     "POST",
                                     f"Polish output rejected (length "
                                     f"{_raw_len}->{_polished_len}): "
-                                    f"'{before_polish[:30]}' -> "
-                                    f"'{text[:60]}' (using raw)",
+                                    f"'{_guard_baseline[:30]}' -> "
+                                    f"'{text[:60]}' (using baseline)",
                                 )
-                                text = before_polish
                                 if polish_debug:
-                                    polish_debug["changed"] = False
-                                    polish_debug["output_text"] = before_polish
+                                    polish_debug.setdefault("llm_output", text)
+                                    polish_debug["changed"] = (
+                                        _guard_baseline != before_polish
+                                    )
+                                    polish_debug["output_text"] = _guard_baseline
                                     polish_debug["rejected_reason"] = "length_explosion"
+                                text = _guard_baseline
 
                         if text and before_polish:
                             _addition_rejection = (
                                 self._polish_content_addition_rejection(
-                                    before_polish, text
+                                    _guard_baseline, text
                                 )
                             )
                             if _addition_rejection:
                                 _pipeline_log(
                                     "POST",
                                     f"Polish output rejected ({_addition_rejection}): "
-                                    f"'{before_polish[:40]}' -> '{text[:40]}' "
-                                    "(using raw)",
+                                    f"'{_guard_baseline[:40]}' -> '{text[:40]}' "
+                                    "(using baseline)",
                                 )
-                                text = before_polish
                                 if polish_debug:
-                                    polish_debug["changed"] = False
-                                    polish_debug["output_text"] = before_polish
+                                    polish_debug.setdefault("llm_output", text)
+                                    polish_debug["changed"] = (
+                                        _guard_baseline != before_polish
+                                    )
+                                    polish_debug["output_text"] = _guard_baseline
                                     polish_debug["rejected_reason"] = (
                                         _addition_rejection
                                     )
+                                text = _guard_baseline
 
                         # Log Polish debug info
                         debug.log_polish(
@@ -10290,6 +10672,23 @@ class AriaApp:
                             api_time_ms=polish_debug.get("api_time_ms", 0),
                             error=polish_debug.get("error", ""),
                             http_status=polish_debug.get("http_status", 0),
+                            pipeline_version=polish_debug.get(
+                                "pipeline_version", ""
+                            ),
+                            pre_normalize_applied=polish_debug.get(
+                                "pre_normalize_applied", []
+                            ),
+                            l2_number_fallback=polish_debug.get(
+                                "l2_number_fallback", False
+                            ),
+                            prompt_cache_hit_tokens=polish_debug.get(
+                                "prompt_cache_hit_tokens"
+                            ),
+                            pre_llm_text=polish_debug.get("pre_llm_text", ""),
+                            llm_output=polish_debug.get("llm_output", ""),
+                            rejected_reason=polish_debug.get(
+                                "rejected_reason", ""
+                            ),
                         )
                         api_status = polish_debug.get("api_status")
                         self._emit_api_status(
@@ -10412,7 +10811,15 @@ class AriaApp:
                     if text:
                         write_text = text
                         if polish_debug and polish_debug.get("changed", False):
-                            raw_input = polish_debug.get("input_text") or text
+                            # R8: the conservative fallback for the buffer is
+                            # the layer-0 product, not raw ASR — deterministic
+                            # digit conversions are not "LLM guesses" and the
+                            # corrected spelling should bias the next call.
+                            raw_input = (
+                                polish_debug.get("pre_llm_text")
+                                or polish_debug.get("input_text")
+                                or text
+                            )
                             evidence_pool = screen_text_for_polish or ""
                             if (
                                 self.hotword_manager

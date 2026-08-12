@@ -8,5 +8,5 @@ Core modules:
 - config: Configuration templates and runtime config
 """
 
-__version__ = "1.6.6"
+__version__ = "1.6.8"
 __author__ = "Aria Project"

@@ -213,6 +213,20 @@ class PolishDebugInfo:
     error: str = ""
     http_status: int = 0
 
+    # v14 pipeline observability
+    pipeline_version: str = ""  # "v14" / "legacy" ("" = pre-v14 record)
+    pre_normalize_applied: list = field(default_factory=list)
+    l2_number_fallback: bool = False
+    # Provider prompt-cache hit size (DeepSeek usage.prompt_cache_hit_tokens);
+    # None when the provider doesn't report it.
+    prompt_cache_hit_tokens: Optional[int] = None
+    # Fallback forensics (R10): the layer-0 baseline the guards compared
+    # against, the LLM output that got rejected (L2 or app-level guard), and
+    # why the app-level guard rejected it. Empty when nothing was rejected.
+    pre_llm_text: str = ""
+    llm_output: str = ""
+    rejected_reason: str = ""
+
 
 @dataclass
 class DiagnosticsSummary:
@@ -420,6 +434,13 @@ class DebugSession:
         api_time_ms: float = 0.0,
         error: str = "",
         http_status: int = 0,
+        pipeline_version: str = "",
+        pre_normalize_applied: Optional[list] = None,
+        l2_number_fallback: bool = False,
+        prompt_cache_hit_tokens: Optional[int] = None,
+        pre_llm_text: str = "",
+        llm_output: str = "",
+        rejected_reason: str = "",
     ) -> None:
         """Log AI Polish information."""
         if not self.enabled:
@@ -440,6 +461,13 @@ class DebugSession:
             api_time_ms=api_time_ms,
             error=error,
             http_status=http_status,
+            pipeline_version=pipeline_version,
+            pre_normalize_applied=list(pre_normalize_applied or []),
+            l2_number_fallback=l2_number_fallback,
+            prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+            pre_llm_text=pre_llm_text,
+            llm_output=llm_output,
+            rejected_reason=rejected_reason,
         )
 
     def log_error(self, error: str) -> None:

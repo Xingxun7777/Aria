@@ -4,7 +4,7 @@
 
 **本地语音识别 · 本地屏幕 OCR 上下文 · 热词纠错 · 可选 AI 润色 · CPU / GPU 双运行形态**
 
-[![Version](https://img.shields.io/badge/version-1.6.6-blue.svg)](https://github.com/Xingxun7777/Aria/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.6.8-blue.svg)](https://github.com/Xingxun7777/Aria/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#系统要求)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
@@ -104,8 +104,8 @@ OCR 在 Aria 中不是附属截图功能，而是与 ASR、热词、润色并列
 
 | 文件 | 用途 |
 |---|---|
-| `Aria-v1.6.6-Windows.zip` | 唯一的新安装包；CPU 解压即用，包内含 GPU 一键安装器 |
-| `Aria-source-1.6.6.zip` | 应用内自动更新载荷；普通新安装不需要下载 |
+| `Aria-v1.6.8-Windows.zip` | 唯一的新安装包；CPU 解压即用，包内含 GPU 一键安装器 |
+| `Aria-source-1.6.8.zip` | 应用内自动更新载荷；普通新安装不需要下载 |
 
 [前往最新 Release](https://github.com/Xingxun7777/Aria/releases/latest)
 
@@ -120,7 +120,7 @@ OCR 在 Aria 中不是附属截图功能，而是与 ASR、热词、润色并列
 
 ## 快速开始
 
-1. 下载 `Aria-v1.6.6-Windows.zip`，完整解压到普通可写目录；不要在压缩包预览窗口内直接运行。
+1. 下载 `Aria-v1.6.8-Windows.zip`，完整解压到普通可写目录；不要在压缩包预览窗口内直接运行。
 2. 双击 `Aria.exe`，默认先以 CPU 模式启动。首次运行如遇 Windows SmartScreen 提示「已保护你的电脑」，点「更多信息 → 仍要运行」即可——这是未签名开源程序的正常提示，仅首次出现，此后的应用内更新不会再弹。
 3. NVIDIA GPU 用户可在悬浮窗右键菜单点击“GPU 加速”，按提示完成安装并自动切换。
 4. 按反引号键 `` ` `` 开始录音，正常说话——每说完一句稍作停顿，文字自动上屏，中途不用按任何键；不再输入时再按一次关闭。

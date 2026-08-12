@@ -134,6 +134,12 @@ class HotWordConfig:
                     "prewarm": polish_data.get("prewarm", True),
                     # PERF-2: 短文本（<10 有效字且无句首口水词）跳过云润色
                     "skip_short_text": polish_data.get("skip_short_text", True),
+                    # v14 润色管线总开关（回滚闸）与会话历史注入开关。
+                    # 缺省即默认值；保存侧合并式回写（R9），回滚设置可持久化。
+                    "pipeline_v14": polish_data.get("polish_pipeline_v14", True),
+                    "recent_context": polish_data.get(
+                        "polish_recent_context", True
+                    ),
                 }
                 # Allow optional prompt_template overrides from config.
                 # v5.0: TWO independent templates — loose (default) and
@@ -263,20 +269,36 @@ class HotWordConfig:
 
         # Save quality mode (API) polish config if present
         if self.polish_config:
-            polish_save = {
-                "enabled": self.polish_config.enabled,
-                "api_url": self.polish_config.api_url,
-                # At-rest encryption (in-memory config holds plaintext)
-                "api_key": protect_secret(self.polish_config.api_key),
-                "model": self.polish_config.model,
-                "timeout": self.polish_config.timeout,
-                # 拼音辅助同音字纠错开关——不写回会在下次保存时抹掉用户手动开启的值
-                "pinyin_hint": self.polish_config.pinyin_hint,
-                # PERF-1/PERF-2 开关——同理必须写回，否则保存会抹掉用户关闭的值
-                "prewarm": self.polish_config.prewarm,
-                "skip_short_text": self.polish_config.skip_short_text,
-            }
-            # 保存智能轮询配置（仅当有备用 API 时）
+            # R9: merge-update the existing polish block instead of replacing
+            # it wholesale — a fixed-whitelist rebuild silently drops keys the
+            # loader understands but this writer doesn't (the v14 rollback
+            # switches, custom prompt templates, future compat keys), turning
+            # the user's rollback setting back on at the next load.
+            existing_polish = data.get("polish")
+            polish_save = (
+                dict(existing_polish) if isinstance(existing_polish, dict) else {}
+            )
+            polish_save.update(
+                {
+                    "enabled": self.polish_config.enabled,
+                    "api_url": self.polish_config.api_url,
+                    # At-rest encryption (in-memory config holds plaintext)
+                    "api_key": protect_secret(self.polish_config.api_key),
+                    "model": self.polish_config.model,
+                    "timeout": self.polish_config.timeout,
+                    # 拼音辅助同音字纠错开关——不写回会在下次保存时抹掉用户手动开启的值
+                    "pinyin_hint": self.polish_config.pinyin_hint,
+                    # PERF-1/PERF-2 开关——同理必须写回，否则保存会抹掉用户关闭的值
+                    "prewarm": self.polish_config.prewarm,
+                    "skip_short_text": self.polish_config.skip_short_text,
+                    # v14 回滚双开关——显式持久化（R9；旧「只读不回写」策略作废，
+                    # 整块替换会让用户的回滚设置在下次加载时静默失效）
+                    "polish_pipeline_v14": self.polish_config.pipeline_v14,
+                    "polish_recent_context": self.polish_config.recent_context,
+                }
+            )
+            # 保存智能轮询配置（仅当有备用 API 时）；备用清空时移除旧键，
+            # 保持与整块替换时代相同的清除语义。
             if self.polish_config.api_url_backup:
                 polish_save["api_url_backup"] = self.polish_config.api_url_backup
                 polish_save["api_key_backup"] = protect_secret(
@@ -287,6 +309,15 @@ class HotWordConfig:
                 polish_save["switch_after_slow_count"] = (
                     self.polish_config.switch_after_slow_count
                 )
+            else:
+                for _backup_key in (
+                    "api_url_backup",
+                    "api_key_backup",
+                    "model_backup",
+                    "slow_threshold_ms",
+                    "switch_after_slow_count",
+                ):
+                    polish_save.pop(_backup_key, None)
             data["polish"] = polish_save
 
         # Save fast mode (local) polish config if present
