@@ -148,7 +148,7 @@
   },
   "output": {
     "typewriter_mode": false,
-    "typewriter_delay_ms": 15,
+    "typewriter_delay_ms": 5,
     "word_native_enabled": true,
     "check_elevation": true
   },

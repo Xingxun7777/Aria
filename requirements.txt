@@ -70,7 +70,6 @@ platformdirs==4.5.1
 pooch==1.9.0
 protobuf==6.33.5
 psutil==7.2.2
-PyAudio==0.2.14
 pycparser==3.0
 pycryptodome==3.23.0
 pydantic==2.12.5

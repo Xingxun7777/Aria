@@ -346,6 +346,28 @@
       ],
       "response": "正在打开目录..."
     },
+    "paste_last_transcript": {
+      "action": "paste_last_transcript",
+      "value": null,
+      "triggers": [
+        "上屏",
+        "上屏一下",
+        "上屏一遍",
+        "重新上屏",
+        "再上屏一遍",
+        "再上屏一次",
+        "上屏刚才",
+        "上屏刚刚",
+        "上屏上一句",
+        "上屏刚才的话",
+        "上屏刚才那句",
+        "上屏刚才说的",
+        "刚才的话上屏",
+        "重新输入一遍",
+        "再输入一遍"
+      ],
+      "response": "重新上屏上一句"
+    },
     "deep_sleep_on": {
       "action": "set_deep_sleep",
       "value": true,

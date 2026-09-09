@@ -1119,6 +1119,11 @@ class Qwen3ASREngine(ASREngine):
                 # speech; track when it alone fired so the retry can protect a
                 # coherent original instead of swapping in a degenerate retry.
                 leakage_is_speed_only = False
+                # A speed flag corroborated by a long verbatim run from the
+                # injected recent transcript is no longer a weak signal.  Keep
+                # this separate from ``leakage_is_speed_only`` so the existing
+                # low-signal policy and retry-failure fallback stay intact.
+                speed_only_recent_echo = False
                 if text:
                     # Trigger 0: context echo — the output contains a long
                     # verbatim run of the hotword/domain context injected on
@@ -1166,6 +1171,14 @@ class Qwen3ASREngine(ASREngine):
                                 f"({len(text)} chars / {audio_duration_s:.2f}s)"
                             )
                             leakage_is_speed_only = True
+                            if recent_ctx_used and find_context_echo(
+                                text, recent_ctx_used
+                            ):
+                                speed_only_recent_echo = True
+                                leakage_reason += (
+                                    "; corroborated by recent_context echo "
+                                    f"(>={CONTEXT_ECHO_MIN_RUN} normalized chars)"
+                                )
 
                     # Trigger 2: output matches hotword_context.
                     # Energy-gated (< 0.015): at clear-speech energy the model has
@@ -1309,15 +1322,20 @@ class Qwen3ASREngine(ASREngine):
                         # flagged this, a coherent original that the retry comes
                         # back far shorter on means the retry lost context biasing
                         # and degenerated — keep the original real speech instead
-                        # of swapping in the shorter (often garbage) retry.  The
-                        # protection requires the retry to have actually HEARD
-                        # something (>=2 chars) or to have crashed outright; a
-                        # clean retry that heard nothing is handled below as a
-                        # confirmed context echo.
+                        # of swapping in the shorter (often garbage) retry.
+                        #
+                        # Do NOT apply that protection when the impossible-rate
+                        # output also copied a long verbatim run from recent_ctx:
+                        # field noise then turns a 1-3 second transient into the
+                        # previous 100-500 character dictation.  A successful
+                        # context-free retry is the acoustic decode in that case.
+                        # Retry infrastructure failure still keeps the original;
+                        # it supplies no trustworthy second-decode evidence.
                         elif (
                             leakage_is_speed_only
                             and len(text) >= 30
                             and (len(retry_text) >= 2 or retry_attempt_failed)
+                            and (retry_attempt_failed or not speed_only_recent_echo)
                             and len(retry_text) < len(text) * 0.5
                         ):
                             _qwen3_log(

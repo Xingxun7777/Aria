@@ -7,7 +7,7 @@ Detect and capture selected text via clipboard.
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aria.system.output import OutputInjector
@@ -24,6 +24,12 @@ class SelectionResult:
     # so callers can put back non-text content too. original_clipboard keeps
     # the legacy text-only view (None when the clipboard held e.g. an image).
     original_clipboard_formats: Optional[Dict[int, bytes]] = None
+    # File items the Ctrl+C probe copied instead of text (Explorer, desktop,
+    # VS Code / Cursor file tree). has_selection deliberately stays text-only
+    # so text commands (translate, AI, voice rewrite routing) keep their
+    # behavior; open_path / open_directory consume this list. The detector
+    # has already restored the pre-probe clipboard when this is set.
+    selected_files: Optional[List[str]] = None
 
 
 class SelectionDetector:
@@ -37,6 +43,19 @@ class SelectionDetector:
             process(result.selected_text)
     """
 
+    # Upper bound on how long detect() waits for the target app to publish
+    # the Ctrl+C result.  Native Win32 controls update the clipboard within a
+    # few milliseconds, but Chromium/Electron hosts (Cursor, VS Code, browsers)
+    # route the copy through renderer->browser IPC and, with a GPU ASR decode
+    # running at the same time, routinely need far more than the former fixed
+    # 50 ms wait.  The probe then read its own sentinel back and reported "no
+    # selection" although text WAS selected (field logs 2026-09-05/06:
+    # every open_directory / open_path in Cursor failed this way).  Polling
+    # below returns as soon as the copy lands, so only a genuine miss pays
+    # the full budget.
+    DEFAULT_COPY_TIMEOUT_MS = 800
+    COPY_POLL_INTERVAL_MS = 10
+
     def __init__(self, output_injector: "OutputInjector"):
         """
         Initialize detector.
@@ -48,7 +67,7 @@ class SelectionDetector:
 
     def detect(
         self,
-        copy_delay_ms: int = 50,
+        copy_delay_ms: Optional[int] = None,
         expected_target=None,
     ) -> SelectionResult:
         """
@@ -58,12 +77,18 @@ class SelectionDetector:
         1. Read current clipboard (backup)
         2. Put a unique sentinel into the clipboard
         3. Send Ctrl+C to copy selection
-        4. Wait for clipboard update
+        4. Poll the clipboard until the sentinel is replaced or the budget
+           runs out
         5. If the sentinel was replaced by non-empty text, return it as the
-           current selection
+           current selection; if it was replaced by a file list (file items
+           copied from Explorer or the Cursor/VS Code tree), report those
+           paths in selected_files with has_selection=False
 
         Args:
-            copy_delay_ms: Delay after Ctrl+C to wait for clipboard update
+            copy_delay_ms: Maximum time (ms) to wait for the target app to
+                publish the copied text.  The probe returns as soon as the
+                clipboard changes; a miss costs the whole budget.  None uses
+                DEFAULT_COPY_TIMEOUT_MS.
             expected_target: Optional content-free target snapshot.  When
                 supplied, the focus identity is rechecked at the Ctrl+C
                 SendInput edge instead of trusting a prior Ctrl+A/selection.
@@ -71,6 +96,8 @@ class SelectionDetector:
         Returns:
             SelectionResult with detection status and text
         """
+        if copy_delay_ms is None:
+            copy_delay_ms = self.DEFAULT_COPY_TIMEOUT_MS
         # 1. Backup current clipboard.
         # Keep the legacy text backup for callers that restore after they have
         # processed the selection.  If available, also keep a full-format
@@ -122,24 +149,47 @@ class SelectionDetector:
                 original_clipboard_formats=original_clipboard_all_formats,
             )
 
-        # 3. Wait for clipboard update
-        time.sleep(copy_delay_ms / 1000.0)
-
-        # 4. Read new clipboard content
-        new_clipboard = self.output_injector._get_clipboard_text()
-
-        # 5. Check if selection exists.
+        # 3+4. Poll for the clipboard update.  A read that still shows the
+        # sentinel (or fails because the target holds the clipboard open while
+        # writing) only means "not yet"; a slow Electron copy landing at 300 ms
+        # must count as a selection, not as a miss.
         # With the sentinel path, selected text may legitimately equal the
         # user's previous clipboard.  The old "clipboard changed" heuristic
         # incorrectly treated that as no selection.
-        if sentinel_set:
-            has_selection = self._is_valid_selection_after_sentinel(
-                sentinel, new_clipboard
-            )
-        else:
-            # Fallback for clipboard implementations that cannot write a
-            # sentinel; preserves the legacy behavior.
-            has_selection = self._is_valid_selection(original_clipboard, new_clipboard)
+        deadline = time.monotonic() + max(0, copy_delay_ms) / 1000.0
+        selected_files = None
+        read_file_list = getattr(self.output_injector, "_get_clipboard_file_list", None)
+        while True:
+            new_clipboard = self.output_injector._get_clipboard_text()
+            if sentinel_set:
+                has_selection = self._is_valid_selection_after_sentinel(
+                    sentinel, new_clipboard
+                )
+            else:
+                # Fallback for clipboard implementations that cannot write a
+                # sentinel; preserves the legacy behavior.
+                has_selection = self._is_valid_selection(
+                    original_clipboard, new_clipboard
+                )
+            if has_selection:
+                break
+            # File-item selections (Explorer, Cursor/VS Code file tree) copy a
+            # file list and NO text: the sentinel text vanishes and nothing
+            # replaces it. Only trusted when we know the sentinel wiped any
+            # pre-existing file list, otherwise the user's old clipboard files
+            # would masquerade as a selection.
+            if sentinel_set and new_clipboard is None and callable(read_file_list):
+                try:
+                    files = read_file_list()
+                except Exception:
+                    files = None
+                if files:
+                    selected_files = list(files)
+                    break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(self.COPY_POLL_INTERVAL_MS / 1000.0, remaining))
 
         if has_selection:
             return SelectionResult(
@@ -157,6 +207,7 @@ class SelectionDetector:
                 has_selection=False,
                 original_clipboard=original_clipboard,
                 original_clipboard_formats=original_clipboard_all_formats,
+                selected_files=selected_files,
             )
 
     def _restore_probe_clipboard(

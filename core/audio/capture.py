@@ -22,6 +22,57 @@ from ..logging import get_audio_logger
 logger = get_audio_logger()
 
 
+# PortAudio is process-global.  Deep-sleep wake and stalled-stream recovery
+# must therefore serialize terminate/initialize with stream open/close calls.
+_PORTAUDIO_BACKEND_LOCK = threading.RLock()
+
+
+def _reset_portaudio_backend(reason: str) -> bool:
+    """Reinitialize the pinned sounddevice/PortAudio backend while no stream is open.
+
+    A long-lived Windows MME/WASAPI device can keep returning a nominally
+    started stream after the endpoint has gone stale.  Closing and reopening
+    that stream is not always sufficient; a process-global PortAudio reset is
+    the narrowest recovery short of restarting Aria.  sounddevice 0.5.5 is
+    pinned by this project and exposes these lifecycle helpers.
+    """
+    try:
+        import sounddevice as sd
+
+        initialize = getattr(sd, "_initialize", None)
+        terminate = getattr(sd, "_terminate", None)
+        if not callable(initialize) or not callable(terminate):
+            logger.warning(
+                "PortAudio reset unavailable (%s): sounddevice lifecycle API missing",
+                reason,
+            )
+            return False
+
+        with _PORTAUDIO_BACKEND_LOCK:
+            depth = int(getattr(sd, "_initialized", 1) or 1)
+            depth = max(1, depth)
+            try:
+                for _ in range(depth):
+                    terminate()
+                for _ in range(depth):
+                    initialize()
+            except Exception:
+                # Do not leave sounddevice partially terminated if one of the
+                # lifecycle calls fails.  Restore its prior initialization
+                # depth best-effort, then report the original reset failure.
+                current = int(getattr(sd, "_initialized", 0) or 0)
+                while current < depth:
+                    initialize()
+                    current += 1
+                raise
+
+        logger.info("PortAudio backend reset complete (%s)", reason)
+        return True
+    except Exception as exc:
+        logger.error("PortAudio backend reset failed (%s): %s", reason, exc)
+        return False
+
+
 @dataclass
 class AudioConfig:
     """Audio capture configuration."""
@@ -110,6 +161,21 @@ class AudioCapture:
         self._level_stop_event = threading.Event()
         self._level_thread: Optional[threading.Thread] = None
         self._level_dispatch_hz = 30.0
+
+        # Stream-health telemetry.  ``InputStream.start()`` returning does not
+        # prove that Windows is actually delivering frames after a long idle;
+        # the first real callback is the readiness gate.
+        self._callback_event = threading.Event()
+        self._last_callback_monotonic = 0.0
+        self._callback_count = 0
+        self._last_callback_status = ""
+        self._start_callback_timeout_s = 1.0
+        self._stop_abort_after_callback_gap_s = 2.0
+        # A clean PortAudio stream close is not enough on the field Windows
+        # endpoint: an explicit pause followed by start can reopen a nominally
+        # active stream that only carries silence.  Mark normal stop->start as
+        # a backend lifecycle boundary; initial startup stays fast.
+        self._backend_refresh_required = False
 
         # Statistics
         self._total_samples = 0
@@ -210,9 +276,14 @@ class AudioCapture:
         """Callback from sounddevice stream."""
         if status:
             logger.warning(f"Audio stream status: {status}")
+            self._last_callback_status = str(status)
 
         if self._state != CaptureState.RECORDING:
             return
+
+        self._last_callback_monotonic = time.monotonic()
+        self._callback_count += 1
+        self._callback_event.set()
 
         # Convert to numpy array
         audio = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
@@ -260,56 +331,197 @@ class AudioCapture:
             except queue.Full:
                 pass  # Drop chunk silently if queue full
 
+    def _prepare_fresh_start_locked(self) -> None:
+        if self._vad:
+            self._vad.reset()
+
+        while not self._chunk_queue.empty():
+            self._chunk_queue.get_nowait()
+        while not self._speech_queue.empty():
+            self._speech_queue.get_nowait()
+
+        self._total_samples = 0
+        self._speech_samples = 0
+        self._latest_level = 0.0
+        self._last_callback_monotonic = 0.0
+        self._callback_count = 0
+        self._last_callback_status = ""
+        self._callback_event.clear()
+
+        if self._on_audio_level:
+            self._start_level_dispatcher()
+        else:
+            self._stop_level_dispatcher()
+
+    def _close_stream_locked(self, *, abort: bool) -> None:
+        stream = self._stream
+        self._stream = None
+        if stream is None:
+            return
+        with _PORTAUDIO_BACKEND_LOCK:
+            try:
+                if abort:
+                    stream.abort(ignore_errors=True)
+                else:
+                    stream.stop(ignore_errors=True)
+            finally:
+                stream.close(ignore_errors=True)
+
+    def _open_verified_stream_locked(self) -> bool:
+        import sounddevice as sd
+
+        self._callback_event.clear()
+        self._state = CaptureState.RECORDING
+        with _PORTAUDIO_BACKEND_LOCK:
+            self._stream = sd.InputStream(
+                device=self.config.device_id,
+                samplerate=self.config.sample_rate,
+                channels=self.config.channels,
+                dtype=self.config.dtype,
+                blocksize=self.config.chunk_size,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
+
+        if self._callback_event.wait(self._start_callback_timeout_s):
+            return True
+
+        logger.error(
+            "Audio stream opened but delivered no callback within %.2fs",
+            self._start_callback_timeout_s,
+        )
+        self._state = CaptureState.STOPPING
+        self._close_stream_locked(abort=True)
+        self._state = CaptureState.IDLE
+        return False
+
+    def _publish_zero_level(self) -> None:
+        self._latest_level = 0.0
+        self._level_event.clear()
+        callback = self._on_audio_level
+        if callback:
+            try:
+                callback(0.0)
+            except Exception as exc:
+                logger.debug(f"Audio level reset callback failed: {exc}")
+
     def start(self) -> bool:
-        """Start audio capture."""
+        """Start capture and require proof that the input callback is alive."""
         with self._lock:
             if self._state != CaptureState.IDLE:
                 logger.warning("Capture already started")
                 return False
 
-            try:
-                import sounddevice as sd
-
-                # Reset VAD state
-                if self._vad:
-                    self._vad.reset()
-
-                # Clear queues
-                while not self._chunk_queue.empty():
-                    self._chunk_queue.get_nowait()
-                while not self._speech_queue.empty():
-                    self._speech_queue.get_nowait()
-
-                # Reset stats
-                self._total_samples = 0
-                self._speech_samples = 0
-                self._latest_level = 0.0
-
-                if self._on_audio_level:
-                    self._start_level_dispatcher()
-                else:
-                    self._stop_level_dispatcher()
-
-                # Open stream
-                self._stream = sd.InputStream(
-                    device=self.config.device_id,
-                    samplerate=self.config.sample_rate,
-                    channels=self.config.channels,
-                    dtype=self.config.dtype,
-                    blocksize=self.config.chunk_size,
-                    callback=self._audio_callback,
+            if self._backend_refresh_required:
+                refreshed = _reset_portaudio_backend("explicit_pause_resume")
+                self._backend_refresh_required = not refreshed
+                logger.info(
+                    "Pause/resume PortAudio refresh: %s",
+                    "complete" if refreshed else "failed; continuing with start gate",
                 )
 
-                self._stream.start()
-                self._state = CaptureState.RECORDING
+            self._prepare_fresh_start_locked()
+            for attempt in range(2):
+                try:
+                    if attempt:
+                        if not _reset_portaudio_backend("start_no_callback"):
+                            break
+                        self._callback_event.clear()
+                    if self._open_verified_stream_locked():
+                        logger.info(
+                            "Audio capture started (device=%s, callbacks=%s)",
+                            self.config.device_id,
+                            self._callback_count,
+                        )
+                        return True
+                except Exception as exc:
+                    logger.error("Audio start attempt %s failed: %s", attempt + 1, exc)
+                    self._state = CaptureState.STOPPING
+                    try:
+                        self._close_stream_locked(abort=True)
+                    except Exception:
+                        logger.debug("Failed to close rejected audio stream", exc_info=True)
+                    self._state = CaptureState.IDLE
 
-                logger.info(f"Audio capture started (device={self.config.device_id})")
-                return True
+            self._stop_level_dispatcher()
+            self._state = CaptureState.IDLE
+            self._publish_zero_level()
+            return False
 
-            except Exception as e:
-                self._stop_level_dispatcher()
-                logger.error(f"Failed to start capture: {e}")
+    def reset_backend(self, reason: str = "manual") -> bool:
+        """Reset PortAudio while capture is idle (used on deep-sleep wake)."""
+        with self._lock:
+            if self._state != CaptureState.IDLE or self._stream is not None:
+                logger.warning("PortAudio reset refused while capture is active (%s)", reason)
                 return False
+            refreshed = _reset_portaudio_backend(reason)
+            if refreshed:
+                self._backend_refresh_required = False
+            return refreshed
+
+    def health_snapshot(self) -> dict:
+        """Return a lock-consistent, non-sensitive stream health snapshot."""
+        with self._lock:
+            stream = self._stream
+            active = False
+            stopped = True
+            if stream is not None:
+                try:
+                    active = bool(stream.active)
+                    stopped = bool(stream.stopped)
+                except Exception:
+                    active = False
+                    stopped = False
+            age_s = None
+            if self._last_callback_monotonic > 0:
+                age_s = max(0.0, time.monotonic() - self._last_callback_monotonic)
+            return {
+                "state": self._state.name,
+                "active": active,
+                "stopped": stopped,
+                "callback_age_s": age_s,
+                "callback_count": self._callback_count,
+                "total_samples": self._total_samples,
+                "last_status": self._last_callback_status,
+                "backend_refresh_required": self._backend_refresh_required,
+            }
+
+    def recover_stream(self, reason: str = "stalled") -> bool:
+        """Abort a bad input stream, reset PortAudio, and resume this session."""
+        with self._lock:
+            if self._state != CaptureState.RECORDING:
+                return False
+
+            self._state = CaptureState.STOPPING
+            try:
+                self._close_stream_locked(abort=True)
+            except Exception as exc:
+                logger.error("Audio abort failed during recovery (%s): %s", reason, exc)
+                self._state = CaptureState.IDLE
+                self._stop_level_dispatcher()
+                self._publish_zero_level()
+                return False
+
+            backend_ok = _reset_portaudio_backend(reason)
+            self._backend_refresh_required = not backend_ok
+            self._last_callback_monotonic = 0.0
+            self._callback_event.clear()
+            try:
+                if self._open_verified_stream_locked():
+                    self._publish_zero_level()
+                    logger.info(
+                        "Audio stream recovered (%s, backend_reset=%s)",
+                        reason,
+                        backend_ok,
+                    )
+                    return True
+            except Exception as exc:
+                logger.error("Audio reopen failed during recovery (%s): %s", reason, exc)
+
+            self._state = CaptureState.IDLE
+            self._stop_level_dispatcher()
+            self._publish_zero_level()
+            return False
 
     def stop(self) -> Optional[np.ndarray]:
         """
@@ -326,15 +538,28 @@ class AudioCapture:
         with self._lock:
             if self._state == CaptureState.IDLE:
                 self._stop_level_dispatcher()
+                self._publish_zero_level()
                 return None
 
+            callback_gap_s = None
+            if self._last_callback_monotonic > 0:
+                callback_gap_s = time.monotonic() - self._last_callback_monotonic
+            abort_stalled_stream = (
+                callback_gap_s is not None
+                and callback_gap_s > self._stop_abort_after_callback_gap_s
+            )
             self._state = CaptureState.STOPPING
 
-            # Close stream first to stop new callbacks
-            if self._stream:
-                self._stream.stop()
-                self._stream.close()
-                self._stream = None
+            # Close stream first to stop new callbacks.  Normal user stop keeps
+            # graceful PortAudio drain semantics.  A callback-stalled input
+            # stream is aborted so stop cannot hang for hours inside PortAudio.
+            if abort_stalled_stream:
+                logger.warning(
+                    "Aborting stalled audio stream on stop (callback gap %.1fs)",
+                    callback_gap_s,
+                )
+            self._close_stream_locked(abort=abort_stalled_stream)
+            self._backend_refresh_required = True
 
             # Snapshot in-flight VAD segment telemetry BEFORE draining buffers
             # below (observation only). Safe: the stream is closed, so no
@@ -403,6 +628,7 @@ class AudioCapture:
                     break
 
             self._stop_level_dispatcher()
+            self._publish_zero_level()
 
             self._state = CaptureState.IDLE
 

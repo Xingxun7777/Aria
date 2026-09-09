@@ -74,6 +74,10 @@ debug_audio_*.wav
 *.wav.tmp
 
 # === Test Artifacts ===
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 _test_*
 test_paths.txt
 
@@ -94,3 +98,5 @@ _*.html
 *.db
 *.sqlite
 *.sqlite3
+
+memory/

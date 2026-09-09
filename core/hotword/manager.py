@@ -911,26 +911,6 @@ class HotWordManager:
 
         return context
 
-    def _get_example_sentences(self) -> List[str]:
-        """
-        Load example sentences from config file.
-
-        WARNING: Example sentences cause HALLUCINATION in Qwen3-ASR!
-        When audio is short/ambiguous, the model outputs example sentences
-        verbatim instead of actual speech. This feature is DISABLED.
-
-        Symptom observed in early debug logs:
-        - Short (< 2s) audio caused the model to regurgitate the entire
-          example_sentences block verbatim as transcription
-        - Root cause: Context biasing was too aggressive with complete sentences
-
-        Returns:
-            Empty list (feature disabled to prevent hallucination)
-        """
-        # DISABLED: Example sentences cause hallucination
-        # See docstring for details. Do not re-enable without fixing.
-        return []
-
     def _estimate_tokens(self, text: str) -> int:
         """
         Estimate token count for Qwen3-ASR context.

@@ -75,6 +75,9 @@ class WakewordExecutor:
         self._exec_count = 0
         self._pending_following_text: Optional[str] = None
         self._pending_command_text: Optional[str] = None
+        # ASR session of the command utterance (set by the final-path caller);
+        # lets text-delivering handlers bind to that session's target snapshot.
+        self._pending_session_id: Optional[int] = None
 
         # Action -> Method mapping
         self._action_map: Dict[str, Callable[[Any], bool]] = {
@@ -94,6 +97,7 @@ class WakewordExecutor:
             "open_path": self._open_path,
             "open_directory": self._open_directory,
             "take_screenshot": self._take_screenshot,
+            "paste_last_transcript": self._paste_last_transcript,
         }
 
     def execute(
@@ -168,6 +172,43 @@ class WakewordExecutor:
             return False
         finally:
             self._pending_following_text = None
+            self._pending_session_id = None
+
+    def _paste_last_transcript(self, _value) -> bool:
+        """Re-inject the latest dictation at the caret ("上屏" / "重新上屏").
+
+        Recovery for a sentence that missed its target because focus moved.
+        The app owns the transcript state and the guarded insert (clipboard
+        backup/restore, target check, no auto-send); this handler only maps
+        the outcome to user feedback. The command utterance itself is never
+        the "last transcript": consumed commands are not remembered. The
+        legacy keyboard command "粘贴" (Ctrl+V) is deliberately left alone.
+        """
+        from aria.system.transcript_recovery import (
+            RecoveryStatus,
+            describe_voice_repaste,
+        )
+
+        repaste = getattr(self.app, "repaste_last_transcript", None)
+        if not callable(repaste):
+            _debug("[REPASTE] app.repaste_last_transcript unavailable")
+            if self.bridge and hasattr(self.bridge, "emit_error"):
+                self.bridge.emit_error("输入通道未就绪，无法重新上屏")
+            return False
+
+        status = repaste(session_id=self._pending_session_id)
+        _debug(
+            f"[REPASTE] status={getattr(status, 'value', status)}, "
+            f"session={self._pending_session_id}"
+        )
+        message, level = describe_voice_repaste(status)
+        if status == RecoveryStatus.INSERTED:
+            if self.bridge and hasattr(self.bridge, "emit_notice"):
+                self.bridge.emit_notice(message, level, 1600)
+            return True
+        if self.bridge and hasattr(self.bridge, "emit_error"):
+            self.bridge.emit_error(message)
+        return False
 
     def _set_auto_send(self, enabled: bool) -> bool:
         """Set auto-send mode and notify UI."""
@@ -632,24 +673,31 @@ class WakewordExecutor:
             return False
 
         detection = self.app.selection_detector.detect()
-        if not detection.has_selection or not detection.selected_text:
+        selected_files = list(getattr(detection, "selected_files", None) or [])
+        if selected_files:
+            # File item(s) selected in Explorer / the Cursor file tree: the
+            # probe copied a file list, not text. The detector already put the
+            # clipboard back.
+            target = selected_files[0]
+            _debug(f"[OPEN_PATH] File item selected: {target}")
+        elif not detection.has_selection or not detection.selected_text:
             _debug("[OPEN_PATH] No text selected")
             if self.bridge and hasattr(self.bridge, "emit_error"):
                 self.bridge.emit_error("未检测到选中文本，请先选中路径")
             return False
+        else:
+            self.app.selection_detector.restore_clipboard_from(detection)
 
-        self.app.selection_detector.restore_clipboard_from(detection)
+            raw = detection.selected_text.strip()
+            _debug(f"[OPEN_PATH] Raw: '{raw[:100]}'")
 
-        raw = detection.selected_text.strip()
-        _debug(f"[OPEN_PATH] Raw: '{raw[:100]}'")
+            # === Extract path from messy text ===
+            target = self._extract_and_resolve_path(raw)
 
-        # === Extract path from messy text ===
-        target = self._extract_and_resolve_path(raw)
-
-        if not target:
-            if self.bridge and hasattr(self.bridge, "emit_error"):
-                self.bridge.emit_error("未识别到有效路径")
-            return False
+            if not target:
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("未识别到有效路径")
+                return False
 
         # === Open ===
         _debug(f"[OPEN_PATH] Opening: {target}")
@@ -674,10 +722,11 @@ class WakewordExecutor:
             return False
 
     def _open_directory(self, _value) -> bool:
-        """Open the containing directory of a selected file/path.
+        """Open the containing directory of the selected file/path.
 
-        If a file is selected, opens Explorer with the file highlighted.
-        If a directory is selected, opens it directly.
+        Accepts selected path text (terminal, editor, chat) as well as file
+        items selected in Explorer or the Cursor/VS Code file tree.
+        A file opens its parent folder; a directory opens itself.
         If nothing is selected, reports an error instead of falling back to the
         Aria project root.
         """
@@ -692,27 +741,34 @@ class WakewordExecutor:
             return False
 
         detection = self.app.selection_detector.detect()
+        selected_files = list(getattr(detection, "selected_files", None) or [])
 
-        # No selection → do not guess.  Opening the Aria install/repo root here
-        # makes a missed selection look like a successful "open directory"
-        # command and sends the user to the wrong folder.
-        if not detection.has_selection or not detection.selected_text:
+        if selected_files:
+            # File item(s) selected in Explorer / the Cursor file tree: the
+            # probe copied a file list, not text. The detector already put the
+            # clipboard back.
+            target = selected_files[0]
+            _debug(f"[OPEN_DIR] File item selected: {target}")
+        elif not detection.has_selection or not detection.selected_text:
+            # No selection → do not guess.  Opening the Aria install/repo root
+            # here makes a missed selection look like a successful "open
+            # directory" command and sends the user to the wrong folder.
             _debug("[OPEN_DIR] No selection")
             if self.bridge and hasattr(self.bridge, "emit_error"):
                 self.bridge.emit_error("未检测到选中文本，请先选中文件或路径")
             return False
+        else:
+            self.app.selection_detector.restore_clipboard_from(detection)
 
-        self.app.selection_detector.restore_clipboard_from(detection)
+            raw = detection.selected_text.strip()
+            _debug(f"[OPEN_DIR] Raw: '{raw[:100]}'")
 
-        raw = detection.selected_text.strip()
-        _debug(f"[OPEN_DIR] Raw: '{raw[:100]}'")
+            target = self._extract_and_resolve_path(raw)
 
-        target = self._extract_and_resolve_path(raw)
-
-        if not target:
-            if self.bridge and hasattr(self.bridge, "emit_error"):
-                self.bridge.emit_error("未识别到有效路径")
-            return False
+            if not target:
+                if self.bridge and hasattr(self.bridge, "emit_error"):
+                    self.bridge.emit_error("未识别到有效路径")
+                return False
 
         _debug(f"[OPEN_DIR] Locating: {target}")
         try:

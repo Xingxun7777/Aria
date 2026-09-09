@@ -16,10 +16,12 @@ extra handling for game inputs that ignore standard paste shortcuts.
 import ctypes
 from collections import deque
 from ctypes import wintypes
+import struct
 import threading
 import time
-from typing import Dict, Optional, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field, replace
+from urllib.parse import unquote, urlsplit
 
 from ..core.logging import get_system_logger
 from .target_surface import (
@@ -34,6 +36,12 @@ from .target_surface import (
 )
 
 logger = get_system_logger()
+
+# Keep typewriter input fast enough for normal dictation while retaining the
+# per-character target guard and event ordering. The settings UI already uses
+# 5 ms as its supported lower bound; 0-2 ms is intentionally not the default
+# because slower target applications may lose or redirect queued key events.
+DEFAULT_TYPEWRITER_DELAY_MS = 5
 
 # ============================================================================
 # Windows API declarations (MUST be at top - before any functions that use them)
@@ -523,6 +531,77 @@ try:
 except Exception:
     _ARIA_MARKER_FORMAT = 0
 
+# VS Code / Cursor file tree: Ctrl+C on a file item runs writeResources(),
+# which puts ONLY this private buffer format on the clipboard (newline-joined
+# file:// URIs) and no text at all. Registering the same name yields the same
+# format id, so the selection probe can recognize a file-item selection that
+# would otherwise look like "nothing copied".
+try:
+    _VSCODE_FILE_LIST_FORMAT = int(
+        user32.RegisterClipboardFormatW("code/file-list") or 0
+    )
+except Exception:
+    _VSCODE_FILE_LIST_FORMAT = 0
+
+# Raw-byte cap for file-list formats read by the selection probe. A few
+# thousand selected files is far beyond any voice-command use.
+MAX_FILE_LIST_BYTES = 1024 * 1024
+
+
+def parse_hdrop_file_list(data: bytes) -> List[str]:
+    """Decode a CF_HDROP payload (DROPFILES header + double-NUL string list).
+
+    Explorer, the desktop and most native file managers publish this format
+    for copied file items. Returns [] for malformed data instead of raising.
+    """
+    if not data or len(data) < 20:
+        return []
+    try:
+        offset, _x, _y, _non_client, wide = struct.unpack_from("<IiiII", data, 0)
+    except struct.error:
+        return []
+    if offset < 20 or offset >= len(data):
+        return []
+    body = data[offset:]
+    try:
+        text = body.decode("utf-16-le" if wide else "mbcs", errors="ignore")
+    except LookupError:
+        text = body.decode("latin-1", errors="ignore")
+    return [item for item in text.split("\x00") if item]
+
+
+def file_uri_to_local_path(uri: str) -> Optional[str]:
+    """Turn a file:// URI (VS Code style, e.g. file:///g%3A/dir/a.png) into a
+    Windows path. Non-file schemes (untitled:, vscode-remote:) return None."""
+    uri = (uri or "").strip()
+    if not uri:
+        return None
+    parts = urlsplit(uri)
+    if parts.scheme.lower() != "file":
+        return None
+    path = unquote(parts.path)
+    host = parts.netloc
+    if host and host.lower() != "localhost":
+        # file://server/share/dir -> \\server\share\dir
+        return "\\\\" + host + path.replace("/", "\\")
+    if len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return path.replace("/", "\\") or None
+
+
+def parse_vscode_file_list(data: bytes) -> List[str]:
+    """Decode the `code/file-list` buffer written by the VS Code / Cursor
+    explorer: UTF-8 file:// URIs separated by newlines."""
+    if not data:
+        return []
+    text = data.decode("utf-8", errors="ignore").split("\x00", 1)[0]
+    paths = []
+    for line in text.splitlines():
+        local = file_uri_to_local_path(line)
+        if local:
+            paths.append(local)
+    return paths
+
 # Window class names that support EM_REPLACESEL (standard text controls).
 # For these controls, EM_REPLACESEL goes through the native text rendering
 # pipeline (including font linking for CJK), avoiding the white-box issue
@@ -592,7 +671,7 @@ class OutputConfig:
 
     # Layer 2: Typewriter mode settings
     typewriter_mode: bool = True  # Use character-by-character input (SendInput UNICODE)
-    typewriter_delay_ms: int = 15  # Delay between characters (fixed, not random)
+    typewriter_delay_ms: int = DEFAULT_TYPEWRITER_DELAY_MS
 
     # Native Word COM delivery is enabled after the real isolated-document
     # matrix proved formatting, revisions and single-step undo. Explicit false
@@ -3095,6 +3174,50 @@ class OutputInjector:
             if lock_acquired:
                 self._clipboard_lock.release()
 
+    def _get_clipboard_file_list(self) -> Optional[List[str]]:
+        """Return the file paths on the clipboard when it holds a file-item
+        copy (CF_HDROP from Explorer & co., or the VS Code / Cursor explorer's
+        `code/file-list` buffer). None when no file list is present."""
+        lock_acquired = False
+        try:
+            if self._clipboard_lock:
+                self._clipboard_lock.acquire()
+                lock_acquired = True
+            if not self._open_clipboard_with_retry():
+                return None
+            try:
+                for fmt, parser in (
+                    (CF_HDROP, parse_hdrop_file_list),
+                    (_VSCODE_FILE_LIST_FORMAT, parse_vscode_file_list),
+                ):
+                    if not fmt or not user32.IsClipboardFormatAvailable(fmt):
+                        continue
+                    handle = user32.GetClipboardData(fmt)
+                    if not handle:
+                        continue
+                    size = kernel32.GlobalSize(handle)
+                    if size <= 0 or size > MAX_FILE_LIST_BYTES:
+                        continue
+                    ptr = kernel32.GlobalLock(handle)
+                    if not ptr:
+                        continue
+                    try:
+                        data = ctypes.string_at(ptr, size)
+                    finally:
+                        kernel32.GlobalUnlock(handle)
+                    paths = parser(data)
+                    if paths:
+                        return paths
+                return None
+            finally:
+                user32.CloseClipboard()
+        except Exception as e:
+            logger.error(f"Failed to read clipboard file list: {e}")
+            return None
+        finally:
+            if lock_acquired:
+                self._clipboard_lock.release()
+
     def _verify_clipboard_text(self, expected: str) -> bool:
         """Read the clipboard back and confirm it holds exactly `expected`.
 
@@ -3594,32 +3717,6 @@ class OutputInjector:
             logger.error(
                 f"Failed to cleanup stuck keys: {cleanup_result}/{len(cleanup_keys)}"
             )
-
-    def _send_vk_key(self, vk_code: int) -> bool:
-        """Send a single virtual key press (down + up)."""
-        inputs = (INPUT * 2)()
-
-        # Determine if this is an extended key
-        extended_flag = KEYEVENTF_EXTENDEDKEY if vk_code in EXTENDED_VK_CODES else 0
-
-        # Key down
-        inputs[0].type = INPUT_KEYBOARD
-        inputs[0].union.ki.wVk = vk_code
-        inputs[0].union.ki.wScan = 0
-        inputs[0].union.ki.dwFlags = extended_flag
-        inputs[0].union.ki.time = 0
-        inputs[0].union.ki.dwExtraInfo = 0
-
-        # Key up
-        inputs[1].type = INPUT_KEYBOARD
-        inputs[1].union.ki.wVk = vk_code
-        inputs[1].union.ki.wScan = 0
-        inputs[1].union.ki.dwFlags = KEYEVENTF_KEYUP | extended_flag
-        inputs[1].union.ki.time = 0
-        inputs[1].union.ki.dwExtraInfo = 0
-
-        result = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
-        return result == 2
 
     def _get_focused_control(self) -> Optional[int]:
         """

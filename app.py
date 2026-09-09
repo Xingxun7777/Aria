@@ -24,6 +24,7 @@ import math
 from dataclasses import dataclass, replace as dataclass_replace
 from enum import Enum, auto
 from pathlib import Path
+from typing import Callable
 
 # Fix Windows console UTF-8 encoding (skip if no console, e.g. pythonw.exe)
 # NOTE: Use reconfigure() instead of creating a new TextIOWrapper.
@@ -384,7 +385,11 @@ from .core.trigger import (
     TriggerStateMachine,
 )
 from .system.hotkey import HotkeyManager
-from .system.output import OutputInjector, OutputConfig
+from .system.output import (
+    DEFAULT_TYPEWRITER_DELAY_MS,
+    OutputConfig,
+    OutputInjector,
+)
 from .system.target_surface import (
     SurfaceKind,
     TargetSnapshot,
@@ -890,6 +895,10 @@ class AriaApp:
 
         # Disabled mode: hotkey toggles back to enabled (for elevation dialog)
         self._is_disabled = False
+        # The popup enable switch is also the user's pause/resume control.
+        # Remember whether disabling actually stopped an active session so an
+        # enable can resume it without auto-starting from an already-idle state.
+        self._resume_recording_on_enable = False
 
         # Config file watcher (hot-reload)
         self._config_path = get_config_path("hotwords.json")
@@ -918,6 +927,8 @@ class AriaApp:
         # Audio stream health monitoring
         self._last_audio_callback_time: float = 0.0
         self._audio_stale_threshold_s: float = 5.0  # No audio for 5s = stream dead
+        self._audio_watchdog_poll_s: float = 1.0
+        self._audio_watchdog_generation: int = 0
 
         # Window-change OCR refresh during continuous recording
         self._ocr_watcher_thread: threading.Thread = None
@@ -1033,6 +1044,69 @@ class AriaApp:
         except Exception:
             logger.debug("Could not load last transcript from history", exc_info=True)
             return ""
+
+    def repaste_last_transcript(
+        self,
+        session_id: int | None = None,
+        *,
+        current_process_foreground: Callable[[], bool] | None = None,
+    ):
+        """Re-inject the latest dictation at the caret (voice command "上屏").
+
+        Recovers a sentence that missed its target (focus moved, paste refused)
+        without re-dictating it. The paste shares the popup's guarded recovery
+        path: an Aria-owned foreground is refused, the clipboard round-trips
+        through OutputInjector's full-format backup/restore, and no auto-send
+        follows. When ``session_id`` names the command utterance, the insert is
+        bound to the target captured when that utterance ended, so a focus
+        change after speaking fails closed exactly like ordinary dictation.
+        A successful re-paste is tracked as the newest recent dictation so
+        "修改刚才那句" follows the text to where it actually landed.
+        Returns the RecoveryStatus for UI feedback.
+        """
+        from .system import transcript_recovery as recovery
+
+        text = recovery.resolve_last_transcript(self)
+        if not text:
+            return recovery.RecoveryStatus.NO_TEXT
+
+        expected_target = None
+        if session_id is not None:
+            with self._session_lock:
+                expected_target = getattr(
+                    self, "_session_output_targets", {}
+                ).get(session_id)
+
+        outcome = recovery.paste_recovery_outcome(
+            self,
+            text,
+            expected_target=expected_target,
+            current_process_foreground=(
+                current_process_foreground
+                or recovery.foreground_belongs_to_current_process
+            ),
+        )
+        if outcome.status != recovery.RecoveryStatus.INSERTED:
+            _pipeline_log(
+                "REPASTE",
+                f"Last transcript not re-pasted: {outcome.status.value} "
+                f"(chars={len(text)}, bound_target={expected_target is not None})",
+            )
+            return outcome.status
+
+        # Same bookkeeping as a successful ordinary insert: a late cloud rescue
+        # of the original utterance must not paste it a second time, and the
+        # recent-voice tracker should point at the re-pasted copy.
+        with self._rescue_insert_lock:
+            self._last_success_insert_at = time.time()
+        self._record_recent_voice_insert(
+            text,
+            outcome.target,
+            session_id if session_id is not None else self._session_count,
+            audio_seconds=0.0,
+        )
+        _pipeline_log("REPASTE", f"Last transcript re-pasted: chars={len(text)}")
+        return outcome.status
 
     def _maybe_auto_send_after_insert(
         self,
@@ -1178,6 +1252,13 @@ class AriaApp:
             _log(f"{action} sleeping mode")
         elif force_emit:
             _log(f"Re-sync UI: sleeping={sleeping}")
+
+        if changed and not sleeping:
+            audio_ok = self._refresh_audio_after_pause("light_sleep_wake")
+            _log(
+                "Light-sleep audio refresh "
+                + ("complete" if audio_ok else "failed")
+            )
 
         # Emit UI signals if changed or forced
         if not bridge or not (changed or force_emit):
@@ -1472,6 +1553,16 @@ class AriaApp:
                 if hasattr(self.asr_engine, "trim_runtime_cache"):
                     self.asr_engine.trim_runtime_cache("deep_sleep_warmup")
             print("[DEEP_SLEEP] Step 2/4: OK — warmup complete")
+
+            # A long-idle Windows audio endpoint can leave PortAudio able to
+            # open a nominal stream that no longer carries microphone frames.
+            # Reinitialize the process-global backend before declaring wake
+            # complete.  AudioCapture.start() has a second callback-level gate.
+            audio_backend_ready = self._reset_audio_after_deep_sleep()
+            print(
+                "[DEEP_SLEEP] Audio backend refresh: "
+                f"{'OK' if audio_backend_ready else 'deferred to start fallback'}"
+            )
 
             reload_ms = (_time.time() - reload_start) * 1000
             print(f"[DEEP_SLEEP] Step 3/4: Engine ready ({reload_ms:.0f}ms)")
@@ -2811,7 +2902,9 @@ class AriaApp:
             # Create config with values from file (or defaults)
             config = OutputConfig(
                 typewriter_mode=output_cfg.get("typewriter_mode", False),
-                typewriter_delay_ms=output_cfg.get("typewriter_delay_ms", 15),
+                typewriter_delay_ms=output_cfg.get(
+                    "typewriter_delay_ms", DEFAULT_TYPEWRITER_DELAY_MS
+                ),
                 word_native_enabled=output_cfg.get("word_native_enabled", True),
                 terminal_profile=output_cfg.get("terminal_profile", "safe"),
                 terminal_chunking_enabled=output_cfg.get(
@@ -6041,7 +6134,7 @@ class AriaApp:
                 if self._wakeword_result_is_explicit_ai_chat(wakeword_result):
                     success, cmd_id, response = (
                         self._execute_final_wakeword_result(
-                            wakeword_result, text
+                            wakeword_result, text, session_id
                         )
                     )
                     return self._emit_route_decision(
@@ -6075,7 +6168,7 @@ class AriaApp:
                 _deferred_wakeword_result = wakeword_result
             elif wakeword_result:
                 success, cmd_id, response = self._execute_final_wakeword_result(
-                    wakeword_result, text
+                    wakeword_result, text, session_id
                 )
                 return self._emit_route_decision(
                     RouteDecision(
@@ -6293,7 +6386,7 @@ class AriaApp:
                 _deferred_wakeword_result
             ):
                 success, cmd_id, response = self._execute_final_wakeword_result(
-                    _deferred_wakeword_result, text
+                    _deferred_wakeword_result, text, session_id
                 )
                 return self._emit_route_decision(
                     RouteDecision(
@@ -11051,6 +11144,57 @@ class AriaApp:
         self._last_audio_callback_time = time.time()
         self._emit_level(level)
 
+    def _reset_audio_after_deep_sleep(self) -> bool:
+        """Refresh an idle PortAudio backend before wake auto-starts capture."""
+        capture = getattr(self, "audio_capture", None)
+        if capture is None:
+            return True
+        try:
+            ok = bool(capture.reset_backend("deep_sleep_wake"))
+        except Exception as exc:
+            _pipeline_log("AUDIO", f"Deep-sleep backend reset error: {exc}")
+            return False
+        _pipeline_log(
+            "AUDIO",
+            "Deep-sleep backend reset " + ("complete" if ok else "not completed"),
+        )
+        return ok
+
+    def _refresh_audio_after_pause(self, reason: str) -> bool:
+        """Rebuild the active/idle audio backend at an explicit resume edge."""
+        capture = getattr(self, "audio_capture", None)
+        if capture is None:
+            return True
+
+        was_recording = bool(getattr(capture, "is_recording", False))
+        try:
+            if was_recording:
+                ok = bool(capture.recover_stream(reason))
+            else:
+                ok = bool(capture.reset_backend(reason))
+        except Exception as exc:
+            _pipeline_log("AUDIO", f"Pause/resume audio refresh error ({reason}): {exc}")
+            ok = False
+
+        _pipeline_log(
+            "AUDIO",
+            f"Pause/resume audio refresh ({reason}, active={was_recording}): "
+            + ("complete" if ok else "failed"),
+        )
+        self._emit_level(0.0)
+        if ok:
+            self._last_audio_callback_time = time.time()
+            return True
+
+        if was_recording:
+            self._audio_watchdog_generation = (
+                getattr(self, "_audio_watchdog_generation", 0) + 1
+            )
+            self.state = AppState.IDLE
+            self._emit_state("IDLE")
+            self._emit_error("麦克风恢复失败，请再打开一次语音输入")
+        return False
+
     def _on_hotkey(self) -> None:
         """Called when hotkey is pressed - NON-BLOCKING.
 
@@ -11291,7 +11435,7 @@ class AriaApp:
         if self._is_disabled:
             print("[HOTKEY] Re-enabling from disabled state")
             _pipeline_log("HOTKEY", "Re-enabling from disabled state")
-            self._is_disabled = False
+            self.set_enabled(True)
             try:
                 if self._bridge:
                     self._bridge.emit_setting_changed("enabled", True)
@@ -11330,7 +11474,7 @@ class AriaApp:
         if self._is_disabled:
             print("[HOTKEY] Re-enabling from disabled state")
             _pipeline_log("HOTKEY", "Re-enabling from disabled state")
-            self._is_disabled = False
+            self.set_enabled(True)
             # Notify UI to update toggle
             try:
                 if self._bridge:
@@ -11461,51 +11605,103 @@ class AriaApp:
             self._emit_state("IDLE")
             return
         self._last_audio_callback_time = time.time()
-        self._start_audio_watchdog()
+        self._audio_watchdog_generation = (
+            getattr(self, "_audio_watchdog_generation", 0) + 1
+        )
+        self._start_audio_watchdog(self._audio_watchdog_generation)
         _pipeline_log("RECORD", "Audio capture started")
 
-    def _start_audio_watchdog(self) -> None:
+    def _start_audio_watchdog(self, generation: int | None = None) -> None:
         """Start watchdog that detects audio stream death during recording."""
+        if generation is None:
+            generation = self._audio_watchdog_generation
         self._audio_watchdog_thread = threading.Thread(
-            target=self._audio_watchdog_loop, daemon=True, name="audio-watchdog"
+            target=self._audio_watchdog_loop,
+            args=(generation,),
+            daemon=True,
+            name=f"audio-watchdog-{generation}",
         )
         self._audio_watchdog_thread.start()
 
-    def _audio_watchdog_loop(self) -> None:
-        """Periodically check if audio stream is still alive."""
-        while self.state == AppState.RECORDING and not self._stop_event.is_set():
-            self._stop_event.wait(3.0)  # Check every 3 seconds
-            if self.state != AppState.RECORDING:
-                break
-            if self._last_audio_callback_time <= 0:
-                continue
-            stale_s = time.time() - self._last_audio_callback_time
-            if stale_s > self._audio_stale_threshold_s:
-                print(
-                    f"[WATCHDOG] Audio stream dead ({stale_s:.1f}s silent), restarting..."
-                )
-                _pipeline_log(
-                    "WATCHDOG",
-                    f"Audio stream stale ({stale_s:.1f}s), restarting capture",
-                )
+    def _recover_audio_capture(self, generation: int, health: dict) -> bool:
+        """Recover only the recording generation that observed the failure."""
+        if generation != self._audio_watchdog_generation:
+            return False
+        if self.state != AppState.RECORDING:
+            return False
+
+        age = health.get("callback_age_s")
+        if not health.get("active"):
+            reason = "inactive"
+        elif age is None:
+            reason = "no_callback"
+        else:
+            reason = f"stale_{age:.1f}s"
+        recovered = False
+        try:
+            recovered = bool(self.audio_capture.recover_stream(reason))
+        except Exception as exc:
+            _pipeline_log("WATCHDOG", f"Audio recovery error: {exc}")
+
+        if generation != self._audio_watchdog_generation:
+            if recovered:
                 try:
                     self.audio_capture.stop()
-                    if self.audio_capture._vad:
-                        self.audio_capture._vad.reset()
-                    if self.audio_capture.start():
-                        self._last_audio_callback_time = time.time()
-                        print("[WATCHDOG] Audio capture restarted OK")
-                        _pipeline_log("WATCHDOG", "Audio capture restarted OK")
-                    else:
-                        print("[WATCHDOG] Audio restart FAILED")
-                        _pipeline_log("WATCHDOG", "Audio restart failed")
-                except Exception as e:
-                    print(f"[WATCHDOG] Audio restart error: {e}")
-                    _pipeline_log("WATCHDOG", f"Audio restart error: {e}")
+                except Exception:
+                    pass
+            return False
+
+        self._emit_level(0.0)
+        if recovered:
+            self._last_audio_callback_time = time.time()
+            _pipeline_log("WATCHDOG", "Audio capture recovered with backend reset")
+            return True
+
+        self._audio_watchdog_generation = (
+            getattr(self, "_audio_watchdog_generation", 0) + 1
+        )
+        self.state = AppState.IDLE
+        self._emit_state("IDLE")
+        self._emit_error("麦克风连接异常，请再按一次录音键重试")
+        _pipeline_log("WATCHDOG", "Audio recovery failed; recording cancelled")
+        return False
+
+    def _audio_watchdog_loop(self, generation: int) -> None:
+        """Check the real PortAudio callback heartbeat for one recording."""
+        while not self._stop_event.is_set():
+            if generation != self._audio_watchdog_generation:
+                break
+            if self.state != AppState.RECORDING:
+                break
+            if self._stop_event.wait(self._audio_watchdog_poll_s):
+                break
+            try:
+                health = self.audio_capture.health_snapshot()
+            except Exception as exc:
+                _pipeline_log("WATCHDOG", f"Audio health snapshot error: {exc}")
+                continue
+            age = health.get("callback_age_s")
+            inactive = not bool(health.get("active"))
+            stale = age is not None and age > self._audio_stale_threshold_s
+            if not inactive and not stale:
+                continue
+
+            _pipeline_log(
+                "WATCHDOG",
+                "Audio stream unhealthy: "
+                f"active={health.get('active')}, stopped={health.get('stopped')}, "
+                f"callback_age={age}, callbacks={health.get('callback_count')}, "
+                f"samples={health.get('total_samples')}; resetting backend",
+            )
+            if not self._recover_audio_capture(generation, health):
+                break
 
     def _stop_recording(self) -> None:
         """Stop recording."""
         _pipeline_log("RECORD", ">>> _stop_recording called")
+        self._audio_watchdog_generation = (
+            getattr(self, "_audio_watchdog_generation", 0) + 1
+        )
 
         # Stop streaming ASR timer first
         self._stop_interim_timer()
@@ -11601,116 +11797,6 @@ class AriaApp:
     # =========================================================================
     # Selection Mode Methods
     # =========================================================================
-
-    def _try_enter_selection_mode(self) -> bool:
-        """
-        Try to enter selection mode by detecting selected text.
-
-        Returns:
-            True if entered selection mode, False otherwise (no selection)
-        """
-        # Debug logging to file
-        debug_file = Path(__file__).parent / "DebugLog" / "selection_debug.log"
-
-        def dbg(msg):
-            with open(debug_file, "a", encoding="utf-8") as f:
-                f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
-
-        dbg("[SELECTION] Trying to detect selected text...")
-        if not self.selection_detector:
-            dbg("[SELECTION] No detector available!")
-            return False
-
-        try:
-            selection_start_target = self.output_injector.capture_target_snapshot()
-        except Exception:
-            selection_start_target = None
-
-        # Detect selection (sends Ctrl+C and checks clipboard)
-        result = self.selection_detector.detect()
-        dbg(
-            f"[SELECTION] Detection result: has_selection={result.has_selection}, "
-            f"selected_chars={len(result.selected_text or '')}, "
-            f"original_clipboard_chars={len(result.original_clipboard or '')}, "
-            f"original_format_count={len(getattr(result, 'original_clipboard_formats', None) or {})}"
-        )
-
-        if result.has_selection and result.selected_text:
-            try:
-                capture = self.output_injector.capture_selection_transaction(
-                    result.selected_text,
-                    selection_start_target,
-                )
-            except Exception:
-                capture = None
-            recording_started = False
-            # Lock for thread-safe state modification
-            with self._lock:
-                # Store selection info
-                self._selection_mode = True
-                self._selected_text = result.selected_text
-                self._selection_target = (
-                    capture.target
-                    if capture is not None and capture.success
-                    else None
-                )
-                self._selection_capture_reason = str(
-                    getattr(
-                        getattr(capture, "status", None),
-                        "value",
-                        "target_unavailable",
-                    )
-                )
-                self._original_clipboard = result.original_clipboard
-                self._original_clipboard_formats = getattr(
-                    result, "original_clipboard_formats", None
-                )
-
-                # Enter selection listening mode (silent, seamless experience)
-                self.state = AppState.SELECTION_LISTENING
-                self._emit_state("SELECTION_LISTENING")
-
-                # Same cue as normal recording start
-                self._play_sound("start_recording")
-
-                print(f"[SELECTION] Text selected ({len(self._selected_text)} chars)")
-
-                # Start recording for command
-                self._session_count += 1
-                self.state = AppState.RECORDING
-                self._emit_state("RECORDING")
-                recording_started = bool(self.audio_capture.start())
-
-            if not recording_started:
-                logger.error("Failed to start audio capture for selection mode")
-                self._emit_error("麦克风启动失败，请检查音频设备")
-                self._cleanup_selection_mode()
-                return False
-
-            return True
-
-        return False
-
-    def _stop_selection_recording(self) -> None:
-        """Stop recording in selection mode and process the command."""
-        # Same cue as normal recording stop
-        self._play_sound("stop_recording")
-        print("[SELECTION] Recording stopped, processing command...")
-
-        self.state = AppState.SELECTION_PROCESSING
-        self._emit_state("SELECTION_PROCESSING")
-
-        # Stop capture and get audio
-        final_audio = self.audio_capture.stop()
-
-        if final_audio is None or len(final_audio) < 4000:  # < 0.25s
-            print("[SELECTION] Recording too short, canceling")
-            self._cancel_selection_mode()
-            return
-
-        # Queue for ASR (will be processed by _asr_worker_selection)
-        # For now, process synchronously to keep it simple
-        self._process_selection_audio(final_audio)
 
     def _process_selection_audio(self, audio) -> None:
         """Process audio in selection mode - transcribe and execute command."""
@@ -12755,16 +12841,54 @@ class AriaApp:
             enabled: True to enable, False to disable
         """
         if enabled:
+            resume_recording = bool(
+                getattr(self, "_resume_recording_on_enable", False)
+            )
+            self._resume_recording_on_enable = False
             self._is_disabled = False
-            if not self._running:
+            if not getattr(self, "_running", True):
                 # Not running at all, full start
                 self.start()
+            elif resume_recording:
+                with self._lock:
+                    can_resume = (
+                        self.state == AppState.IDLE
+                        and getattr(self, "_sleep_mode", SleepMode.AWAKE)
+                        != SleepMode.DEEP
+                    )
+                if can_resume:
+                    action = (
+                        "wake_start_locked"
+                        if getattr(self, "_trigger_mode", "toggle")
+                        == "hold_to_talk"
+                        else "toggle"
+                    )
+                    try:
+                        self._hotkey_action_queue.put_nowait(action)
+                        _pipeline_log(
+                            "CONTROL",
+                            f"Enable toggle resuming paused recording ({action})",
+                        )
+                    except queue.Full:
+                        _pipeline_log(
+                            "CONTROL",
+                            "Enable toggle resume dropped: action queue full",
+                        )
             print("[Aria] Enabled")
             logger.info("Aria enabled")
         else:
             if self._running:
-                # Set disabled flag but keep hotkey listening (to allow re-enable)
+                with self._lock:
+                    was_recording = self.state == AppState.RECORDING
+                # Set disabled first, but keep hotkey listening so either the
+                # popup switch or hotkey can resume the session.
                 self._is_disabled = True
+                self._resume_recording_on_enable = was_recording
+                if was_recording:
+                    _pipeline_log(
+                        "CONTROL", "Enable toggle pausing active recording"
+                    )
+                    self._stop_recording()
                 print("[Aria] Disabled (press hotkey to re-enable)")
                 logger.info("Aria disabled (hotkey can re-enable)")
 
@@ -13106,8 +13230,15 @@ class AriaApp:
         normalized = re.sub(r"[\s，。！？、,.!?：:；;‘’“”\"'（）()]+", "", normalized)
         return any(term in normalized for term in cls._EXPLICIT_AI_CHAT_TERMS)
 
-    def _execute_final_wakeword_result(self, wakeword_result, raw_text: str):
-        """Execute one final-ASR wakeword result and publish its UI receipt."""
+    def _execute_final_wakeword_result(
+        self, wakeword_result, raw_text: str, session_id: int | None = None
+    ):
+        """Execute one final-ASR wakeword result and publish its UI receipt.
+
+        ``session_id`` identifies the command utterance so handlers that
+        deliver text (re-paste) can bind to the target captured at its
+        commit boundary instead of whatever is in the foreground now.
+        """
 
         (
             cmd_id,
@@ -13118,6 +13249,7 @@ class AriaApp:
             command_text,
         ) = wakeword_result
         self.wakeword_executor._pending_command_text = command_text
+        self.wakeword_executor._pending_session_id = session_id
         success = self.wakeword_executor.execute(
             cmd_id, action, value, response, following_text
         )

@@ -63,6 +63,7 @@ from aria.core.hotword import (
     POLISH_PROMPT_STRUCTURED,
 )
 from aria.core.utils.phonetic import get_matcher
+from aria.system.output import DEFAULT_TYPEWRITER_DELAY_MS
 
 
 CUSTOM_INSTRUCTION_ID_ROLE = Qt.UserRole + 10
@@ -3428,7 +3429,7 @@ class SettingsWindow(QMainWindow):
             "  - 不会触发富文本编辑器的粘贴对话框\n"
             "  - 不会误按快捷键（只发送纯文字）\n\n"
             "缺点：\n"
-            "  - 速度较慢（100字约1.5秒 vs 剪贴板瞬间完成）\n"
+            "  - 逐字输出（默认100字约0.5秒，仍慢于剪贴板瞬间完成）\n"
             "  - 换行会变为空格（防止在聊天框误触发送）\n"
             "  - 在代码编辑器中会触发自动补全\n"
             "  - 不适用于 DirectInput 游戏"
@@ -3451,7 +3452,7 @@ class SettingsWindow(QMainWindow):
         typewriter_delay_label.setStyleSheet("margin-left: 20px;")
         self.typewriter_delay = QSpinBox()
         self.typewriter_delay.setRange(5, 100)
-        self.typewriter_delay.setValue(15)
+        self.typewriter_delay.setValue(DEFAULT_TYPEWRITER_DELAY_MS)
         self.typewriter_delay.setSuffix(" ms")
         self.typewriter_delay.setToolTip("打字机模式下每个字符之间的间隔时间")
         typewriter_delay_layout.addWidget(typewriter_delay_label)
@@ -3773,7 +3774,9 @@ class SettingsWindow(QMainWindow):
         # === Output settings ===
         output_cfg = self.config.get("output", {})
         self.chk_typewriter_mode.setChecked(output_cfg.get("typewriter_mode", False))
-        self.typewriter_delay.setValue(output_cfg.get("typewriter_delay_ms", 15))
+        self.typewriter_delay.setValue(
+            output_cfg.get("typewriter_delay_ms", DEFAULT_TYPEWRITER_DELAY_MS)
+        )
         self.chk_elevation_check.setChecked(output_cfg.get("check_elevation", True))
 
         # === Translation settings ===

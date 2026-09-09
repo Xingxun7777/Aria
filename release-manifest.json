@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "version": "1.6.8",
-  "released_at": "2026-08-12T22:37:17.233846Z",
+  "version": "1.7.0",
+  "released_at": "2026-09-09T09:36:57.851888Z",
   "update_scope": "python_only",
   "critical": false,
-  "notes_summary": "修复润色结果偶尔不生效的问题；中文数字改为本地确定性转换更稳；润色提示词升级，长段口述清理更干净；支持选中文本语音改写",
+  "notes_summary": "新增「上屏」语音命令找回没落到位的上一句；资源管理器与 Cursor/VS Code 文件树里选中文件后可直接说打开目录；修复 Cursor 等应用里选中文字识别不到的问题",
   "assets": {
     "main_zip": {
-      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.6.8/Aria-source-1.6.8.zip",
+      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.7.0/Aria-source-1.7.0.zip",
       "mirrors": [
-        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.6.8/Aria-source-1.6.8.zip",
-        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.6.8/Aria-source-1.6.8.zip"
+        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.7.0/Aria-source-1.7.0.zip",
+        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.7.0/Aria-source-1.7.0.zip"
       ],
-      "size": 2905091,
-      "sha256": "1ce5e3872e4ea8e5fd0af515730b30531895d8e114f243d95b80c63bdbbfec96"
+      "size": 2914085,
+      "sha256": "f85c366ec6579783528684e455e187d566e2a2bb3255e979b3f5fcdb4db519ca"
     }
   },
   "min_compatible_from": "1.0.5.31"
