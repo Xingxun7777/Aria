@@ -49,8 +49,10 @@ RELOAD_FAILED_RETRY_S = 60.0
 # hallucination guard for the second-pass engine).
 CLOUD_TEXT_MAX_CHARS = 500
 
-# Filler-only outputs from the cloud pass are dropped outright (same set as
-# the worker's post-ASR noise filter, minus meaningful words).
+# Filler-only outputs from the cloud pass are dropped outright. Legacy exact
+# set kept for callers/tests that import it; the acceptance check below now
+# shares the worker's post-ASR gate (acoustic_policy.is_filler_only_text) so
+# the cloud pass cannot re-introduce a cough the local pass already refused.
 CLOUD_FILLER_ONLY = {
     "嗯", "啊", "哦", "呃", "额", "噢", "唔", "嘶", "哼", "啧",
     "嗯嗯", "啊啊", "哦哦", "呃呃", "嗯哼", "嗯啊", "嘶嘶",
@@ -270,6 +272,10 @@ def sanitize_cloud_rescue_text(text: str) -> tuple[str, str]:
     # collapse to a non-filler ("谢谢" -> "谢") are unaffected.
     collapsed = re.sub(r"(.)\1+", r"\1", stripped)
     if stripped in CLOUD_FILLER_ONLY or collapsed in CLOUD_FILLER_ONLY:
+        return "junk", cleaned
+    from .acoustic_policy import is_filler_only_text
+
+    if is_filler_only_text(cleaned):
         return "junk", cleaned
     if len(cleaned) > CLOUD_TEXT_MAX_CHARS:
         return "too_long", cleaned

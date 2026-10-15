@@ -53,6 +53,27 @@ class WakewordDetector:
     )
     _INVOCATION_LEAD_IN_SEPARATORS = " \t\r\n，,、。.!！？?：:；;"
 
+    # Prefix-free mode (popup toggle, ``prefix_free_commands`` in
+    # wakeword.json) runs a command when the utterance OPENS with one of its
+    # triggers, with no wakeword.  Only deterministic, cheap-to-misfire
+    # actions qualify.  A replay of local dictation history showed that
+    # such matches of other commands are everyday dictation: set_sleeping
+    # owns 继续/开始, open_path owns 打开文件, and so on.
+    # Custom instructions and capture_following commands never qualify.
+    _PREFIX_FREE_ACTIONS = frozenset(
+        {
+            "paste_last_transcript",
+            "keyboard_shortcut",
+            "take_screenshot",
+            "set_auto_send",
+        }
+    )
+    # The trigger must open the utterance, but noise right after it often
+    # decodes as a few stray characters ("上屏座"); those are tolerated and
+    # dropped.  Longer tails are dictation that merely starts with a command
+    # word ("保存的时候……", "撤销恢复……") and must not be swallowed.
+    _PREFIX_FREE_MAX_TRAILING_CHARS = 3
+
     # Fallback whitelist for "打开XX" natural phrases that aren't in the
     # explicit trigger list and aren't custom instructions either.
     # Only generic SELECTED-FILE-TYPE words are accepted here — app names
@@ -159,6 +180,7 @@ class WakewordDetector:
         self.keyboard_commands: Dict[str, Any] = {}
         self.custom_instructions: list[Dict[str, Any]] = []
         self.cooldown_ms = 500
+        self.prefix_free_commands = False
 
         self._matcher: PinyinMatcher = get_matcher()
 
@@ -215,6 +237,7 @@ class WakewordDetector:
                 custom_entries
             )
             self.cooldown_ms = config.get("cooldown_ms", 500)
+            self.prefix_free_commands = config.get("prefix_free_commands") is True
 
             print(
                 f"[WAKEWORD] Loaded: '{self.wakeword}' "
@@ -734,6 +757,81 @@ class WakewordDetector:
             return (cmd_id, action, value, response, following_text, command_text)
 
         print(f"[WAKEWORD] Unknown command: '{command_text}'")
+        return None
+
+    def detect_prefix_free(
+        self, text: str, max_trailing_chars: Optional[int] = None
+    ) -> Optional[Tuple[str, str, Any, str, Optional[str], str]]:
+        """Match an utterance that opens with an eligible command, no wakeword.
+
+        Returns the same tuple shape as ``detect`` (``following_text`` is
+        always None; trailing characters are discarded as noise).  After
+        punctuation, whitespace and a short leading hesitation are removed,
+        the utterance must start with a trigger, spelled exactly or with the
+        same pinyin ("上平" for "上屏"), followed by at most
+        ``max_trailing_chars`` characters (default
+        ``_PREFIX_FREE_MAX_TRAILING_CHARS``).  ``上屏座`` fires while
+        ``把这句上屏`` or ``我想上屏`` stays ordinary dictation.
+        """
+        if not self.enabled or not self.prefix_free_commands or not text:
+            return None
+        if max_trailing_chars is None:
+            max_trailing_chars = self._PREFIX_FREE_MAX_TRAILING_CHARS
+
+        utterance = self._normalize_for_match(text)
+        for _ in range(3):
+            match = self._INVOCATION_LEAD_IN_FILLER_RE.match(utterance)
+            if match is None:
+                break
+            utterance = utterance[match.end() :]
+        if len(utterance) < 2:
+            return None
+
+        candidates = []
+        for cmd_id, cmd_config in self._iter_command_configs():
+            if (
+                cmd_config.get("action") not in self._PREFIX_FREE_ACTIONS
+                or cmd_config.get("custom_instruction")
+                or cmd_config.get("capture_following")
+            ):
+                continue
+            for trigger in cmd_config.get("triggers", []):
+                trigger_normalized = self._normalize_for_match(str(trigger))
+                if len(trigger_normalized) >= 2:
+                    candidates.append(
+                        (trigger_normalized, cmd_id, cmd_config, str(trigger))
+                    )
+        # Longest trigger first, so "上屏一下吧" resolves via "上屏一下".
+        candidates.sort(key=lambda candidate: len(candidate[0]), reverse=True)
+
+        # Exact characters win over a same-pinyin match.
+        for phonetic in (False, True):
+            for trigger_normalized, cmd_id, cmd_config, trigger in candidates:
+                trailing = len(utterance) - len(trigger_normalized)
+                if trailing < 0 or trailing > max_trailing_chars:
+                    continue
+                head = utterance[: len(trigger_normalized)]
+                if phonetic:
+                    if self._matcher.to_pinyin(head) != self._matcher.to_pinyin(
+                        trigger_normalized
+                    ):
+                        continue
+                elif head != trigger_normalized:
+                    continue
+                action = cmd_config.get("action")
+                print(
+                    f"[WAKEWORD] Prefix-free: -> {cmd_id} ({action}) "
+                    f"[trigger: '{trigger}', phonetic={phonetic}, "
+                    f"trailing={trailing}]"
+                )
+                return (
+                    cmd_id,
+                    action,
+                    cmd_config.get("value"),
+                    cmd_config.get("response", ""),
+                    None,
+                    trigger,
+                )
         return None
 
     def _extract_following_text(self, command_text: str, trigger: str) -> Optional[str]:

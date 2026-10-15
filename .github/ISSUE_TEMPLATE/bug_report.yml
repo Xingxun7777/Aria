@@ -1,0 +1,162 @@
+name: Bug 报告
+description: 报告一个问题或错误
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交 Bug 报告！请尽量填写以下信息，方便快速定位问题。
+
+  - type: input
+    id: aria-version
+    attributes:
+      label: Aria 版本
+      description: 在托盘右键菜单或设置面板查看，例如 1.7.1
+      placeholder: "1.7.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-type
+    attributes:
+      label: 安装方式
+      options:
+        - "便携包（Releases 下载的 Aria-v*-Windows.zip）"
+        - "应用内自动更新后"
+        - "源码运行"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os-version
+    attributes:
+      label: 操作系统
+      options:
+        - "Windows 11"
+        - "Windows 10"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: asr-engine
+    attributes:
+      label: 识别引擎
+      description: 悬浮窗右键菜单可见；没装 GPU 加速就是 CPU 标准版
+      options:
+        - "CPU 标准版（qwen3_sherpa，默认）"
+        - "GPU 加速（qwen3_llamacpp）"
+        - "源码 PyTorch（qwen3）"
+        - "FunASR"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gpu-info
+    attributes:
+      label: 显卡
+      description: 运行 nvidia-smi 或在任务管理器查看
+      options:
+        - "NVIDIA RTX 50 系列"
+        - "NVIDIA RTX 40 系列"
+        - "NVIDIA RTX 30 系列"
+        - "NVIDIA RTX 20 系列 / GTX 16 系列"
+        - "NVIDIA GTX 10 系列及更旧"
+        - "无 NVIDIA 显卡（CPU 模式）"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scenario
+    attributes:
+      label: 出问题的场景
+      options:
+        - "普通听写（按反引号说话出字）"
+        - "语音修改（小助手 + 要求）"
+        - "语音指令（截图 / 提醒 / 打开程序等）"
+        - "AI 润色 / 翻译 / 总结"
+        - "GPU 加速安装或切换"
+        - "自动更新"
+        - "启动 / 托盘 / 悬浮窗"
+        - "其他"
+    validations:
+      required: true
+
+  - type: input
+    id: target-app
+    attributes:
+      label: 目标程序
+      description: 文字要输入到哪个程序里出的问题，例如 微信 / Word / 终端 / 浏览器
+      placeholder: "微信 PC 版"
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 简要描述遇到的问题
+      placeholder: 按反引号开始录音后，说话结束没有输出文字...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 按顺序列出复现步骤
+      placeholder: |
+        1. 打开 Aria
+        2. 光标放到记事本，按 ` 键开始录音
+        3. 说一句话，停顿 2 秒
+        4. 没有文字输出
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 识别结果应该输入到当前窗口
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      placeholder: 悬浮窗动画结束后没有任何反应，也没有错误提示
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志输出
+      description: |
+        重启 Aria 后复现问题，并写下当时看到的错误提示；也可以附上安装目录 `DebugLog/` 下当天的日志片段。
+        提交前请删去个人内容和 API Key。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、改过的配置、特殊环境（虚拟机、远程桌面、多显示器等）
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已使用最新版本测试
+          required: true
+        - label: 已搜索现有 Issues 未找到重复
+          required: true

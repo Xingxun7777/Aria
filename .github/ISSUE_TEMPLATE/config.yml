@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 三分钟上手与语音修改用法
+    url: https://github.com/Xingxun7777/Aria#三分钟上手
+    about: README 里的安装步骤、录音方式和「小助手」改字用法
+  - name: 配置参考文档
+    url: https://github.com/Xingxun7777/Aria/blob/main/docs/CONFIGURATION.md
+    about: 查看完整配置说明（热词、VAD、ASR 引擎等）
+  - name: 数据与隐私说明
+    url: https://github.com/Xingxun7777/Aria/blob/main/docs/PRIVACY_DATA.md
+    about: 哪些功能会联网、默认开关和关闭方式

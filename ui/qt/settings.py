@@ -63,7 +63,7 @@ from aria.core.hotword import (
     POLISH_PROMPT_STRUCTURED,
 )
 from aria.core.utils.phonetic import get_matcher
-from aria.system.output import DEFAULT_TYPEWRITER_DELAY_MS
+from aria.system.output import DEFAULT_TYPEWRITER_DELAY_MS, DEFAULT_TYPEWRITER_MODE
 
 
 CUSTOM_INSTRUCTION_ID_ROLE = Qt.UserRole + 10
@@ -154,6 +154,34 @@ CUSTOM_INSTRUCTION_PRESETS = [
     },
 ]
 
+
+
+_MISSING = object()
+
+
+def merge_window_edits(base: dict, ours: dict, disk: dict) -> dict:
+    """Apply only the keys the settings window changed onto the latest disk config.
+
+    ``base`` is what the window loaded, ``ours`` what it would save, ``disk``
+    the file now.  Values changed elsewhere since loading (popup mic gain,
+    capture mode, backend setters) are kept unless the window edited them.
+    """
+    import copy
+
+    merged = copy.deepcopy(disk)
+    for key in set(base) | set(ours):
+        b = base.get(key, _MISSING)
+        o = ours.get(key, _MISSING)
+        if b == o:
+            continue
+        d = merged.get(key, _MISSING)
+        if isinstance(b, dict) and isinstance(o, dict) and isinstance(d, dict):
+            merged[key] = merge_window_edits(b, o, d)
+        elif o is _MISSING:
+            merged.pop(key, None)
+        else:
+            merged[key] = copy.deepcopy(o)
+    return merged
 
 class TableLineEditDelegate(QStyledItemDelegate):
     """Make QTableWidget's inline text editor tall enough to read while typing.
@@ -3437,8 +3465,8 @@ class SettingsWindow(QMainWindow):
         output_layout.addWidget(self.chk_typewriter_mode)
 
         typewriter_hint = QLabel(
-            "关闭 = 剪贴板模式（快速，适合日常）  |  "
-            "开启 = 打字机模式（兼容性强，适合远程桌面）"
+            "开启 = 打字机模式（默认，逐字输入，不占用剪贴板）  |  "
+            "关闭 = 剪贴板模式（Ctrl+V 整段粘贴）"
         )
         typewriter_hint.setWordWrap(True)
         typewriter_hint.setStyleSheet(
@@ -3528,6 +3556,9 @@ class SettingsWindow(QMainWindow):
         except Exception as e:
             print(f"Failed to load config: {e}")
             return
+        import copy
+
+        self._config_baseline = copy.deepcopy(self.config)
 
         # === General tab ===
         general = self.config.get("general", {})
@@ -3773,7 +3804,9 @@ class SettingsWindow(QMainWindow):
 
         # === Output settings ===
         output_cfg = self.config.get("output", {})
-        self.chk_typewriter_mode.setChecked(output_cfg.get("typewriter_mode", False))
+        self.chk_typewriter_mode.setChecked(
+            output_cfg.get("typewriter_mode", DEFAULT_TYPEWRITER_MODE)
+        )
         self.typewriter_delay.setValue(
             output_cfg.get("typewriter_delay_ms", DEFAULT_TYPEWRITER_DELAY_MS)
         )
@@ -4492,12 +4525,26 @@ class SettingsWindow(QMainWindow):
         try:
             import os
 
+            import copy
+
+            # Merge onto the current file so settings changed outside this
+            # window since it loaded are not rolled back by its stale copy.
+            baseline = getattr(self, "_config_baseline", None)
+            if baseline is not None and self.config_path.exists():
+                try:
+                    with open(self.config_path, "r", encoding="utf-8") as f:
+                        disk_config = json.load(f)
+                    self.config = merge_window_edits(baseline, self.config, disk_config)
+                except Exception as e:
+                    print(f"Settings merge skipped, saving window copy: {e}")
+
             tmp_path = str(self.config_path) + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, str(self.config_path))
+            self._config_baseline = copy.deepcopy(self.config)
 
             # Only show modal message if restart is truly needed. ASR engine/model
             # settings are hot-reloaded by the backend after settingsSaved.
@@ -4939,6 +4986,31 @@ class SettingsWindow(QMainWindow):
             self.radio_fast.setChecked(True)
         else:
             self.radio_quality.setChecked(True)
+        self._refresh_config_baseline()
+
+    def _refresh_config_baseline(self) -> None:
+        """Adopt the current file as the save baseline after an external change.
+
+        Called after popup mirrors update a widget: the widget now shows the
+        file's value, so re-selecting the old value in this window counts as
+        an edit.  Widgets are left untouched (they may hold unsaved edits).
+        """
+        import copy
+
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        self.config = data
+        self._config_baseline = copy.deepcopy(data)
+
+    def showEvent(self, event):
+        # Re-read the file each time the window is opened so its widgets and
+        # save baseline reflect settings changed elsewhere since startup.
+        if not event.spontaneous():
+            self.load_config()
+        super().showEvent(event)
 
     def get_polish_mode(self) -> str:
         """Get current polish mode selection."""
@@ -4992,6 +5064,7 @@ class SettingsWindow(QMainWindow):
         # Mirror to underlying checkboxes too so a subsequent 保存 stays
         # coherent without requiring the user to re-toggle the radio.
         self._apply_ocr_mode_to_flags(mode)
+        self._refresh_config_baseline()
 
     def get_ocr_mode(self) -> str:
         if not hasattr(self, "radio_ocr_off"):

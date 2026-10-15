@@ -73,6 +73,23 @@ def _reset_portaudio_backend(reason: str) -> bool:
         return False
 
 
+def resolve_input_device(sd, device_name: Optional[str]) -> Optional[tuple]:
+    """Return (index, name, hostapi) of the first input device matching name.
+
+    Exact or partial match in enumeration order (partial covers MME's
+    31-char name truncation).  None when the name is empty or not present.
+    """
+    if not device_name:
+        return None
+    for index, device in enumerate(sd.query_devices()):
+        if device["max_input_channels"] <= 0:
+            continue
+        name = device["name"]
+        if name == device_name or device_name in name or name in device_name:
+            return index, name, device.get("hostapi")
+    return None
+
+
 @dataclass
 class AudioConfig:
     """Audio capture configuration."""
@@ -82,6 +99,10 @@ class AudioConfig:
     dtype: str = "float32"  # Audio format
     chunk_duration_ms: int = 32  # Chunk size (matches VAD optimal)
     device_id: Optional[int] = None  # None = default device
+    # Configured input device name.  When set, it is resolved to a PortAudio
+    # index before every stream open: indices are only valid for one
+    # PortAudio initialization and shift after a backend reset.
+    device_name: Optional[str] = None
     enable_vad: bool = True  # Enable VAD filtering
     vad_config: Optional[VADConfig] = None
 
@@ -176,6 +197,8 @@ class AudioCapture:
         # active stream that only carries silence.  Mark normal stop->start as
         # a backend lifecycle boundary; initial startup stays fast.
         self._backend_refresh_required = False
+        # Device the current/last stream was opened on (diagnostics).
+        self._opened_device: Optional[dict] = None
 
         # Statistics
         self._total_samples = 0
@@ -373,8 +396,26 @@ class AudioCapture:
         self._callback_event.clear()
         self._state = CaptureState.RECORDING
         with _PORTAUDIO_BACKEND_LOCK:
+            device = self.config.device_id
+            info = {"index": device, "name": None, "hostapi": None}
+            if self.config.device_name:
+                resolved = resolve_input_device(sd, self.config.device_name)
+                if resolved is None:
+                    # Same fallback as startup resolution: system default.
+                    device = None
+                    info = {"index": None, "name": None, "hostapi": None,
+                            "missing": self.config.device_name}
+                    logger.warning(
+                        "Configured input device not found, using system default: %s",
+                        self.config.device_name,
+                    )
+                else:
+                    device = resolved[0]
+                    info = {"index": resolved[0], "name": resolved[1],
+                            "hostapi": resolved[2]}
+            self._opened_device = info
             self._stream = sd.InputStream(
-                device=self.config.device_id,
+                device=device,
                 samplerate=self.config.sample_rate,
                 channels=self.config.channels,
                 dtype=self.config.dtype,
@@ -430,7 +471,7 @@ class AudioCapture:
                     if self._open_verified_stream_locked():
                         logger.info(
                             "Audio capture started (device=%s, callbacks=%s)",
-                            self.config.device_id,
+                            self._opened_device,
                             self._callback_count,
                         )
                         return True
@@ -484,6 +525,7 @@ class AudioCapture:
                 "total_samples": self._total_samples,
                 "last_status": self._last_callback_status,
                 "backend_refresh_required": self._backend_refresh_required,
+                "device": dict(self._opened_device) if self._opened_device else None,
             }
 
     def recover_stream(self, reason: str = "stalled") -> bool:

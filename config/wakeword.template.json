@@ -12,6 +12,7 @@
     "小溪"
   ],
   "cooldown_ms": 500,
+  "prefix_free_commands": false,
   "retired_command_ids": [
     "selection_polish",
     "selection_expand",

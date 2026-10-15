@@ -332,6 +332,7 @@ class PopupMenu(QWidget):
     deepSleepToggled = Signal(bool)
     streamingToggled = Signal(bool)
     translateModeChanged = Signal(str)  # "popup" or "clipboard"
+    prefixFreeToggled = Signal(bool)  # short commands without the wakeword
     outputModeChanged = Signal(str)  # text output: "clipboard" or "typewriter"
     apiSwitchBackRequested = Signal()
     deepseekSetupRequested = Signal()
@@ -378,7 +379,7 @@ class PopupMenu(QWidget):
         # cross-engine switch) or "none" (degraded, card disabled).
         self._asr_switch_kind = "device"
         self._mic_input_gain = 1.0
-        self._current_output_mode = "clipboard"
+        self._current_output_mode = "typewriter"
         self._translate_mode = "popup"
         self._api_status = {}
         self._mic_gain_emit_timer: QTimer | None = None
@@ -664,9 +665,9 @@ class PopupMenu(QWidget):
         cl.addSpacing(8)
 
         # ── Output Mode (how recognized text lands in the target app) ──
-        # clipboard  = Ctrl+V paste — fast, default
-        # typewriter = per-character SendInput — keeps the clipboard
+        # typewriter = per-character SendInput — default; keeps the clipboard
         #              untouched; for remote desktop / apps where paste fails
+        # clipboard  = Ctrl+V paste — whole-block paste
         # Pure config flip (output.typewriter_mode), no assets and no async
         # reload — so unlike the ASR card these buttons are never disabled.
         output_section = QLabel("输出方式")
@@ -681,12 +682,12 @@ class PopupMenu(QWidget):
             (
                 "clipboard",
                 "剪贴板",
-                "剪贴板模式（Ctrl+V 粘贴）：速度快，适合日常使用",
+                "剪贴板模式（Ctrl+V 粘贴）：整段粘贴上屏",
             ),
             (
                 "typewriter",
                 "打字机",
-                "打字机模式（逐字输入）：不占用剪贴板，适合远程桌面等粘贴不生效的场景",
+                "打字机模式（逐字输入）：默认方式，不占用剪贴板",
             ),
         ]
 
@@ -733,6 +734,15 @@ class PopupMenu(QWidget):
         self.translate_toggle.setChecked(True, emit=False)  # Default: popup mode ON
         cl.addSpacing(4)
         self._add_toggle_row(cl, "实时字幕", self._on_streaming_toggled, "streaming")
+        cl.addSpacing(4)
+        self._add_toggle_row(
+            cl, "免唤醒词", self._on_prefix_free_toggled, "prefix_free"
+        )
+        self.prefix_free_toggle.setToolTip(
+            "开启后，一开口就说「上屏」「发送」「截图」等短指令即可执行，"
+            "不用先说唤醒词；指令前面不能有别的话，后面最多跟几个杂字，"
+            "其他指令仍需唤醒词"
+        )
         cl.addSpacing(4)
         self._add_toggle_row(cl, "锁定位置", self._on_lock_toggled, "lock")
         cl.addSpacing(8)
@@ -941,6 +951,9 @@ class PopupMenu(QWidget):
         mode = "popup" if checked else "clipboard"
         self._translate_mode = mode
         self.translateModeChanged.emit(mode)
+
+    def _on_prefix_free_toggled(self, enabled):
+        self.prefixFreeToggled.emit(enabled)
 
     def _on_lock_toggled(self, locked):
         self._is_locked = locked
@@ -1272,6 +1285,9 @@ class PopupMenu(QWidget):
 
     def setStreaming(self, enabled):
         self.streaming_toggle.setChecked(enabled, emit=False)
+
+    def setPrefixFree(self, enabled):
+        self.prefix_free_toggle.setChecked(bool(enabled), emit=False)
 
     def setTranslateMode(self, mode):
         self._translate_mode = mode

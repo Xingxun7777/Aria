@@ -387,6 +387,7 @@ from .core.trigger import (
 from .system.hotkey import HotkeyManager
 from .system.output import (
     DEFAULT_TYPEWRITER_DELAY_MS,
+    DEFAULT_TYPEWRITER_MODE,
     OutputConfig,
     OutputInjector,
 )
@@ -574,7 +575,9 @@ class AriaApp:
     _GPU_INTERIM_MAX_AUDIO_S = 10.0
     _CPU_INTERIM_TIMEOUT_S = 4.0
     _GPU_INTERIM_TIMEOUT_S = 10.0
-    _FAST_WAKEWORD_ACTIONS = frozenset({"open_path", "open_directory"})
+    _FAST_WAKEWORD_ACTIONS = frozenset(
+        {"open_path", "open_directory", "paste_last_transcript"}
+    )
     # Independent selected-text tools (translation, summary, reply, explicit
     # chat) keep their dedicated UI, but a more specific recent-voice request
     # gets first refusal before they run.  Preset editing commands such as
@@ -899,6 +902,11 @@ class AriaApp:
         # Remember whether disabling actually stopped an active session so an
         # enable can resume it without auto-starting from an already-idle state.
         self._resume_recording_on_enable = False
+        # Deferred starts belong to the control state that requested them.
+        # A later pause/stop invalidates them before they can reopen the mic.
+        self._recording_resume_generation = 0
+        self._recording_resume_pending = False
+        self._deep_sleep_wake_generation: int | None = None
 
         # Config file watcher (hot-reload)
         self._config_path = get_config_path("hotwords.json")
@@ -1226,6 +1234,8 @@ class AriaApp:
                        (useful for wakeword to re-sync UI if it got out of sync)
         """
         with self._lock:
+            if sleeping:
+                self._cancel_recording_resume()
             # Ignore if in deep sleep (audio is off, wakeword can't work)
             if self._sleep_mode == SleepMode.DEEP:
                 print("[SLEEPING] Ignored: currently in deep sleep mode")
@@ -1259,6 +1269,8 @@ class AriaApp:
                 "Light-sleep audio refresh "
                 + ("complete" if audio_ok else "failed")
             )
+            if audio_ok and self.state == AppState.IDLE:
+                self._queue_recording_resume("light_sleep_wake")
 
         # Emit UI signals if changed or forced
         if not bridge or not (changed or force_emit):
@@ -1283,10 +1295,10 @@ class AriaApp:
                 # When waking up, check if we're currently recording
                 # If so, restore to RECORDING state (user still has hotkey pressed)
                 if self.state == AppState.RECORDING:
-                    bridge.emit_state("RECORDING")
+                    self._emit_state("RECORDING")
                     _log("emit_state('RECORDING') called OK (wake during recording)")
                 else:
-                    bridge.emit_state("IDLE")
+                    self._emit_state("IDLE")
             _log(
                 f"emit_state({'SLEEPING' if sleeping else 'IDLE/RECORDING'}) called OK"
             )
@@ -1383,6 +1395,7 @@ class AriaApp:
         self._cancel_auto_deep_sleep_timer()
         # Atomic: check + stop active operations + set DEEP flag in single lock
         with self._lock:
+            self._cancel_recording_resume()
             if self._sleep_mode == SleepMode.DEEP:
                 print("[DEEP_SLEEP] Already in deep sleep, ignoring")
                 return
@@ -1510,8 +1523,14 @@ class AriaApp:
                 if self._sleep_mode != SleepMode.DEEP:
                     print("[DEEP_SLEEP] Not in deep sleep, ignoring wake request")
                     return
+            # This explicit wake enables the app now. A later disable must
+            # remain authoritative when the background load finishes.
+            with self._lock:
+                self._is_disabled = False
+                generation = getattr(self, "_recording_resume_generation", 0)
+                self._deep_sleep_wake_generation = generation
             if self._reload_thread and self._reload_thread.is_alive():
-                print("[DEEP_SLEEP] Already reloading, ignoring duplicate request")
+                _pipeline_log("DEEP_SLEEP", "Current loader accepted the latest wake request")
                 return
 
             print("[DEEP_SLEEP] Waking up — reloading engine...")
@@ -1522,12 +1541,14 @@ class AriaApp:
                 bridge.emit_state("LOADING")
 
             self._reload_thread = threading.Thread(
-                target=self._reload_engine, daemon=True
+                target=self._reload_engine, args=(generation,), daemon=True
             )
             self._reload_thread.start()
 
-    def _reload_engine(self) -> None:
+    def _reload_engine(self, resume_generation: int | None = None) -> None:
         """Reload ASR engine from deep sleep (runs on background thread)."""
+        if resume_generation is None:
+            resume_generation = getattr(self, "_recording_resume_generation", 0)
         try:
             import numpy as _np
             import time as _time
@@ -1569,40 +1590,44 @@ class AriaApp:
 
             # Step 3: Restore awake state
             with self._lock:
-                self._sleep_mode = SleepMode.AWAKE
+                latest_wake = getattr(self, "_deep_sleep_wake_generation", None)
+                if latest_wake is not None:
+                    resume_generation = latest_wake
+                cancelled = (
+                    resume_generation != getattr(self, "_recording_resume_generation", 0)
+                    or getattr(self, "_is_disabled", False)
+                    or not getattr(self, "_running", True)
+                )
+                if not cancelled:
+                    self._sleep_mode = SleepMode.AWAKE
+            if cancelled:
+                # Loading does not grant permission to undo a newer pause.
+                with self._asr_lock:
+                    if hasattr(self.asr_engine, "unload"):
+                        self.asr_engine.unload()
+                _pipeline_log("DEEP_SLEEP", "Wake cancelled by a newer control action")
+                self._emit_state("DEEP_SLEEPING")
+                return
             print("[DEEP_SLEEP] Step 3/4: OK — sleep_mode=AWAKE")
 
             # Step 4: Ensure app is fully enabled + notify UI
-            with self._lock:
-                self._is_disabled = False
             bridge = self._bridge
             print(
                 f"[DEEP_SLEEP] Step 4/4: Emitting IDLE... bridge={bridge is not None}"
             )
             if bridge:
-                bridge.emit_state("IDLE")
+                bridge.emit_setting_changed("sleeping", False)
+                self._emit_state("IDLE")
                 bridge.emit_setting_changed("deep_sleeping", False)
-                bridge.emit_setting_changed("enabled", True)
-            print("[DEEP_SLEEP] Step 4/4: OK — wake complete, app enabled")
+                bridge.emit_setting_changed("enabled", not self._is_disabled)
+            print("[DEEP_SLEEP] Step 4/4: OK — wake complete")
 
             # PERF-1: cold polish calls concentrate on "the first sentence
             # after hours idle" — deep-sleep wake is exactly that moment.
             # Prewarm runs on its own thread and never blocks the first ASR.
             self._schedule_polish_prewarm(delay_s=1.0, reason="deep_sleep_wake")
 
-            # Auto-start recording: user woke the engine = they want to use voice
-            # F11 is a toggle (ON/OFF), not push-to-talk. Wake = resume listening.
-            # hold_to_talk needs the dedicated wake action: a bare "toggle"
-            # would start recording behind the trigger state machine's back,
-            # leaving it in idle so no later press could ever stop the session.
-            try:
-                if getattr(self, "_trigger_mode", "toggle") == "hold_to_talk":
-                    self._hotkey_action_queue.put_nowait("wake_start_locked")
-                else:
-                    self._hotkey_action_queue.put_nowait("toggle")
-                print("[DEEP_SLEEP] Auto-starting recording (F11 ON)")
-            except queue.Full:
-                pass
+            self._queue_recording_resume("deep_sleep_wake", resume_generation)
 
         except Exception as e:
             import traceback
@@ -1641,6 +1666,16 @@ class AriaApp:
 
     def _emit_state(self, state: str) -> None:
         """Emit state change to UI bridge if available."""
+        if state in {"IDLE", "RECORDING", "TRANSCRIBING"} and getattr(
+            self, "_running", True
+        ):
+            sleep_mode = getattr(self, "_sleep_mode", SleepMode.AWAKE)
+            if getattr(self, "_is_disabled", False):
+                state = "IDLE"
+            elif sleep_mode == SleepMode.LIGHT:
+                state = "SLEEPING"
+            elif sleep_mode == SleepMode.DEEP:
+                state = "DEEP_SLEEPING"
         _pipeline_log("STATE", f"emit_state('{state}') internal={self.state.name}")
         if self._bridge:
             self._bridge.emit_state(state)
@@ -1659,6 +1694,9 @@ class AriaApp:
         - no keyboard shortcuts / send / screenshot / shell/custom launch;
         - command text must be an exact configured trigger, or a detector-
           accepted open-path fallback like "打开网页".
+        Re-paste ("上屏") qualifies: it goes through the guarded recovery
+        paste (Aria-owned foreground refused, clipboard restored, no
+        auto-send) and an unwanted paste is one undo away.
         """
         if not wakeword_result or not self.wakeword_detector:
             return False
@@ -1720,6 +1758,18 @@ class AriaApp:
             return True
 
         wakeword_result = self.wakeword_detector.detect(text)
+        if (
+            not wakeword_result
+            and getattr(self, "_sleep_mode", None) != SleepMode.LIGHT
+        ):
+            # Prefix-free toggle: the interim may be the start of a longer
+            # sentence, so it must be the trigger alone. Noisy tails such as
+            # "上屏座" are still handled by the final path.
+            detect_prefix_free = getattr(
+                self.wakeword_detector, "detect_prefix_free", None
+            )
+            if callable(detect_prefix_free):
+                wakeword_result = detect_prefix_free(text, max_trailing_chars=0)
         if not self._wakeword_result_is_fast_safe(wakeword_result):
             return False
 
@@ -1811,13 +1861,24 @@ class AriaApp:
     def _fast_wakeword_final_is_still_command(
         self, text: str, fast_cmd_id: str
     ) -> bool:
-        """Return True if final ASR text is still the same command-only wakeword."""
+        """Return True if final ASR text still resolves to the fast command.
+
+        A longer final for the same command ("打开文件看看", "上屏座") is
+        still that command; letting it through would run the side effect a
+        second time.
+        """
         if not text:
             return True
         if not fast_cmd_id or not self.wakeword_detector:
             return False
         try:
             wakeword_result = self.wakeword_detector.detect(text)
+            if not wakeword_result:
+                detect_prefix_free = getattr(
+                    self.wakeword_detector, "detect_prefix_free", None
+                )
+                if callable(detect_prefix_free):
+                    wakeword_result = detect_prefix_free(text)
         except Exception:
             return False
         if not wakeword_result:
@@ -1826,9 +1887,7 @@ class AriaApp:
             cmd_id = str(wakeword_result[0])
         except Exception:
             return False
-        return cmd_id == str(fast_cmd_id) and self._wakeword_result_is_fast_safe(
-            wakeword_result
-        )
+        return cmd_id == str(fast_cmd_id)
 
     def _emit_level(self, level: float) -> None:
         """Emit audio level to UI bridge if available."""
@@ -2901,7 +2960,9 @@ class AriaApp:
 
             # Create config with values from file (or defaults)
             config = OutputConfig(
-                typewriter_mode=output_cfg.get("typewriter_mode", False),
+                typewriter_mode=output_cfg.get(
+                    "typewriter_mode", DEFAULT_TYPEWRITER_MODE
+                ),
                 typewriter_delay_ms=output_cfg.get(
                     "typewriter_delay_ms", DEFAULT_TYPEWRITER_DELAY_MS
                 ),
@@ -3728,7 +3789,6 @@ class AriaApp:
             engine_type, new_engine = self._create_asr_engine_from_config(asr_cfg)
             with self._lock:
                 deep_sleeping = self._sleep_mode == SleepMode.DEEP
-                state_before = self.state
 
             _pipeline_log(
                 "ASR",
@@ -3766,7 +3826,7 @@ class AriaApp:
             self._emit_asr_status()
             if self._bridge and not deep_sleeping:
                 try:
-                    self._bridge.emit_state(state_before.name)
+                    self._emit_state(self.state.name)
                 except Exception:
                     pass
         except Exception as exc:
@@ -4929,6 +4989,35 @@ class AriaApp:
             append_failure_record(row)
         except Exception as exc:
             logger.warning(f"hallucination-drop telemetry write failed: {exc}")
+
+    def _record_filler_only_drop(
+        self, *, session_id, kind: str, text: str, duration_s: float
+    ) -> None:
+        """Telemetry row for a filler-only utterance the post-ASR text gate
+        swallowed (哎 / 咳 / 哈… rendered from a cough or sigh).
+
+        Same sink as the noise-gate / hallucination drops so one file answers
+        "what did Aria refuse to type". The filler core itself is recorded:
+        it is by definition a vocalization from a fixed character class, never
+        dictation content. Best-effort: must never raise into the worker.
+        """
+        try:
+            from .core.asr.acoustic_policy import filler_only_core
+            from .core.asr.failure_log import append_failure_record
+
+            append_failure_record(
+                {
+                    "event": "filler_only_drop",
+                    "session_id": session_id,
+                    "kind": kind,
+                    "audio_duration_s": round(float(duration_s), 2),
+                    "text_len": len(text or ""),
+                    "filler": filler_only_core(text)[:12],
+                    "capture_mode": str(getattr(self, "_capture_mode", "standard")),
+                }
+            )
+        except Exception as exc:
+            logger.warning(f"filler-only telemetry write failed: {exc}")
 
     def _record_asr_rescue_outcome(self, session_id, outcome: str, detail: str = "") -> None:
         try:
@@ -6204,6 +6293,46 @@ class AriaApp:
                 )
             )
 
+        # === Prefix-free commands (popup toggle) ===
+        # With the toggle on, an utterance that opens with an eligible short
+        # command (上屏 / 发送 / 截图 ...) plus at most a few stray characters
+        # runs without the wakeword. The interim fast path only accepts the
+        # trigger alone; this final check also tolerates the noisy tail.
+        # Utterances that carried a wakeword were routed above or reach the
+        # wakeword AI fallback below, so they never take this path.
+        if (
+            text
+            and not _route_invocation
+            and self.wakeword_detector
+            and self.wakeword_executor
+        ):
+            _detect_prefix_free = getattr(
+                self.wakeword_detector, "detect_prefix_free", None
+            )
+            prefix_free_result = (
+                _detect_prefix_free(text) if callable(_detect_prefix_free) else None
+            )
+            if prefix_free_result:
+                success, cmd_id, response = self._execute_final_wakeword_result(
+                    prefix_free_result, text, session_id
+                )
+                return self._emit_route_decision(
+                    RouteDecision(
+                        session_id=session_id,
+                        stage="prefix_free",
+                        reason=str(cmd_id or "prefix_free"),
+                        consumed=True,
+                        inserted=success,
+                        # Same receipt prefix as wakeword commands so history
+                        # recovery ("上屏") and recent context skip it.
+                        final_text=(
+                            f"[唤醒词] {response}" if response else f"[唤醒词] {cmd_id}"
+                        ),
+                        command_id=str(cmd_id or "") or None,
+                        text_len=text_len,
+                    )
+                )
+
         # === Layer 0: Voice Command Detection (BEFORE any processing) ===
         # Check raw ASR text for commands to achieve lowest latency.
         # Tail fallback: command detector requires the text
@@ -7354,6 +7483,7 @@ class AriaApp:
             channels=1,
             enable_vad=True,
             device_id=audio_device_id,  # Use configured device
+            device_name=audio_device_name or None,  # Re-resolved on each open
             vad_config=VADConfig(
                 threshold=vad_threshold,
                 min_speech_ms=vad_min_speech,
@@ -8498,31 +8628,9 @@ class AriaApp:
             # Final ASR path (_asr_worker) already has equivalent filters;
             # interim was the remaining source of bubble pollution.
             if text_to_emit:
-                import re as _re
+                from .core.asr.acoustic_policy import is_filler_only_text
 
-                _filler_set = {
-                    "嗯",
-                    "啊",
-                    "哦",
-                    "呃",
-                    "额",
-                    "噢",
-                    "唔",
-                    "嘶",
-                    "哼",
-                    "啧",
-                    "就",
-                    "嗯嗯",
-                    "啊啊",
-                    "哦哦",
-                    "呃呃",
-                    "嗯哼",
-                    "嗯啊",
-                    "嘶嘶",
-                    "咚咚",
-                }
-                _stripped = _re.sub(r"[，。！？、,\.!\?\s]", "", text_to_emit)
-                if _stripped in _filler_set:
+                if is_filler_only_text(text_to_emit):
                     _pipeline_log(
                         "STREAM", f"Interim suppressed (filler): '{text_to_emit}'"
                     )
@@ -9899,35 +10007,23 @@ class AriaApp:
                         text = ""
 
                 # Post-ASR noise text filter: drop filler-only outputs
-                # Safe: only drops known filler sounds, never meaningful words like 好的/行/可以
+                # (coughs / sighs / laughs the decoder rendered as 哎/咳/哈…).
+                # Safe: never drops meaningful words like 好的/行/可以/继续 —
+                # see core.asr.acoustic_policy.is_filler_only_text.
                 if text and self._noise_filter_enabled:
-                    _filler_set = {
-                        "嗯",
-                        "啊",
-                        "哦",
-                        "呃",
-                        "额",
-                        "噢",
-                        "唔",
-                        "嘶",
-                        "哼",
-                        "啧",
-                        "就",
-                        "嗯嗯",
-                        "啊啊",
-                        "哦哦",
-                        "呃呃",
-                        "嗯哼",
-                        "嗯啊",
-                        "嘶嘶",
-                        "咚咚",
-                    }
                     import re
 
-                    _stripped = re.sub(r"[，。！？、,\.!\?\s]", "", text)
-                    if _stripped in _filler_set:
+                    from .core.asr.acoustic_policy import is_filler_only_text
+
+                    if is_filler_only_text(text):
                         print(f"[NOISE] Filtered filler text: '{text}'")
                         _pipeline_log("NOISE", f"Filtered: '{text}'")
+                        self._record_filler_only_drop(
+                            session_id=session_id,
+                            kind=kind,
+                            text=text,
+                            duration_s=(len(audio) / 16000.0) if audio is not None else 0.0,
+                        )
                         text = ""
 
                 # Short audio + single char = likely noise (random ASR artifact)
@@ -11358,6 +11454,8 @@ class AriaApp:
             self._handle_hotkey_action()
         elif action == "wake_start_locked":
             self._handle_wake_start_locked()
+        elif isinstance(action, tuple) and action[0] == "resume_recording":
+            self._handle_resume_recording(action[1])
         else:
             kind, t_ms = action
             self._handle_trigger_event(kind, t_ms)
@@ -11370,6 +11468,14 @@ class AriaApp:
         (start_recording / toggle_lock / stop_and_commit) surfaces here with
         the machine's new state available as self._trigger_sm.state.
         """
+        # A manual wake takes precedence over an old held/locked state.
+        # Otherwise a wake press can be mistaken for stop-and-commit.
+        if kind == "press" and self._sleep_mode == SleepMode.LIGHT:
+            self.set_sleeping(False)
+            if self.state == AppState.RECORDING:
+                self._trigger_sm.sync_external_start(t_ms)
+                return
+            self._trigger_sm.reset()
         action = self._trigger_sm.on_event(kind, t_ms)
         _pipeline_log(
             "HOTKEY",
@@ -11397,34 +11503,71 @@ class AriaApp:
             # visuals (accent ring) belong to the UI lane (spec 1-D).
             self._play_sound("lock")
 
-    def _handle_wake_start_locked(self) -> None:
-        """Deep-sleep wake auto-start for hold_to_talk mode.
-
-        Starts a recording session down the legacy toggle path, then syncs
-        the trigger state machine to LOCKED so the wake-started session
-        behaves like a locked dictation: the next press stops and commits.
-        If the start did not happen (disabled / state raced away), reset the
-        machine instead so the next press is a fresh start.
-        """
-        with self._lock:
-            if self.state == AppState.RECORDING:
-                # A press already started a session while this wake action
-                # sat in the queue; the machine is consistent — running the
-                # toggle path now would wrongly STOP that session.
-                _pipeline_log("HOTKEY", "Wake auto-start skipped: already recording")
-                return
-        self._handle_hotkey_action()
-        with self._lock:
-            recording = self.state == AppState.RECORDING
-        if recording:
-            self._trigger_sm.sync_external_start(time.monotonic() * 1000.0)
-        else:
-            self._trigger_sm.reset()
-        _pipeline_log(
-            "HOTKEY",
-            f"Wake auto-start (hold_to_talk): recording={recording}, "
-            f"sm_state={self._trigger_sm.state}",
+    def _cancel_recording_resume(self) -> None:
+        """Invalidate deferred starts without disturbing queued user input."""
+        self._recording_resume_generation = (
+            getattr(self, "_recording_resume_generation", 0) + 1
         )
+        self._recording_resume_pending = False
+
+    def _queue_recording_resume(
+        self, reason: str, generation: int | None = None
+    ) -> None:
+        """Queue an idempotent start tied to the current pause/resume state."""
+        with self._lock:
+            current = getattr(self, "_recording_resume_generation", 0)
+            if generation is None:
+                generation = current
+            if (
+                generation != current
+                or getattr(self, "_is_disabled", False)
+                or getattr(self, "_sleep_mode", SleepMode.AWAKE) != SleepMode.AWAKE
+                or not getattr(self, "_running", True)
+            ):
+                return
+            if getattr(self, "_recording_resume_pending", False):
+                return
+            self._recording_resume_pending = True
+        try:
+            self._hotkey_action_queue.put_nowait(("resume_recording", generation))
+            _pipeline_log(
+                "CONTROL",
+                f"Recording resume queued ({reason}, generation={generation})",
+            )
+        except queue.Full:
+            if generation == getattr(self, "_recording_resume_generation", 0):
+                self._recording_resume_pending = False
+            _pipeline_log("CONTROL", f"Recording resume queue full ({reason})")
+            self._emit_error("录音恢复未完成，请再按一次录音键")
+
+    def _handle_resume_recording(self, generation: int | None = None) -> None:
+        """Start once; never toggle off or override a newer pause."""
+        with self._lock:
+            if (
+                (
+                    generation is not None
+                    and generation != getattr(self, "_recording_resume_generation", 0)
+                )
+                or getattr(self, "_is_disabled", False)
+                or getattr(self, "_sleep_mode", SleepMode.AWAKE) != SleepMode.AWAKE
+                or not getattr(self, "_running", True)
+            ):
+                _pipeline_log("CONTROL", "Discarded stale recording resume")
+                return
+            self._recording_resume_pending = False
+            started = self.state == AppState.IDLE
+            if started:
+                self._start_recording()
+            recording = self.state == AppState.RECORDING
+        if getattr(self, "_trigger_mode", "toggle") == "hold_to_talk":
+            if recording and (started or self._trigger_sm.state == "idle"):
+                self._trigger_sm.sync_external_start(time.monotonic() * 1000.0)
+            elif not recording:
+                self._trigger_sm.reset()
+
+    def _handle_wake_start_locked(self) -> None:
+        """Compatibility entry for already queued hold-to-talk wake actions."""
+        self._handle_resume_recording()
 
     def _trigger_start_recording(self) -> bool:
         """Start recording for the hold-to-talk path; True if it started.
@@ -11453,14 +11596,15 @@ class AriaApp:
             self.set_deep_sleep(False)
             return False
         if sleep_mode == SleepMode.LIGHT:
-            print("[HOTKEY] Pressed in light sleep - wakeword detection enabled")
-            _pipeline_log("HOTKEY", "In light sleep, wakeword detection enabled")
+            self.set_sleeping(False)
+            if self.state == AppState.RECORDING:
+                return True
 
         with self._lock:
             if self.state == AppState.IDLE:
                 _pipeline_log("HOTKEY", "Trigger: starting recording...")
                 self._start_recording()
-                return True
+                return self.state == AppState.RECORDING
         _pipeline_log(
             "HOTKEY", f"Trigger start ignored (state={self.state.name})"
         )
@@ -11495,9 +11639,12 @@ class AriaApp:
             )  # Non-blocking: spawns _reload_thread (auto-starts recording)
             return
         if sleep_mode == SleepMode.LIGHT:
-            # Light sleep: allow recording for wakeword detection
-            print("[HOTKEY] Pressed in light sleep - wakeword detection enabled")
-            _pipeline_log("HOTKEY", "In light sleep, wakeword detection enabled")
+            self.set_sleeping(False)
+            _pipeline_log("HOTKEY", "Manual resume exited light sleep")
+            if self.state == AppState.RECORDING:
+                if getattr(self, "_trigger_mode", "toggle") == "hold_to_talk":
+                    self._trigger_sm.sync_external_start(time.monotonic() * 1000.0)
+                return
 
         worker_alive = self._asr_thread.is_alive() if self._asr_thread else False
         print(
@@ -11516,10 +11663,17 @@ class AriaApp:
                 # Normal recording start
                 _pipeline_log("HOTKEY", "Starting recording...")
                 self._start_recording()
+                if (
+                    self.state == AppState.RECORDING
+                    and getattr(self, "_trigger_mode", "toggle") == "hold_to_talk"
+                ):
+                    self._trigger_sm.sync_external_start(time.monotonic() * 1000.0)
             elif self.state == AppState.RECORDING:
                 # Stop recording (toggle mode)
                 _pipeline_log("HOTKEY", "Stopping recording...")
                 self._stop_recording()
+                if getattr(self, "_trigger_mode", "toggle") == "hold_to_talk":
+                    self._trigger_sm.reset()
             else:
                 print(
                     f"[HOTKEY] Ignored! state={self.state.name} (only IDLE/RECORDING accepted)"
@@ -11609,7 +11763,25 @@ class AriaApp:
             getattr(self, "_audio_watchdog_generation", 0) + 1
         )
         self._start_audio_watchdog(self._audio_watchdog_generation)
-        _pipeline_log("RECORD", "Audio capture started")
+        device = None
+        try:
+            device = self.audio_capture.health_snapshot().get("device")
+        except Exception:
+            pass
+        if device and device.get("missing"):
+            _pipeline_log(
+                "RECORD",
+                "Audio capture started on system default; configured device "
+                f"not found: {device.get('missing')}",
+            )
+        elif device and device.get("name"):
+            _pipeline_log(
+                "RECORD",
+                f"Audio capture started (device={device.get('index')} "
+                f"'{device.get('name')}', hostapi={device.get('hostapi')})",
+            )
+        else:
+            _pipeline_log("RECORD", "Audio capture started")
 
     def _start_audio_watchdog(self, generation: int | None = None) -> None:
         """Start watchdog that detects audio stream death during recording."""
@@ -11675,6 +11847,12 @@ class AriaApp:
                 break
             if self._stop_event.wait(self._audio_watchdog_poll_s):
                 break
+            # A stop during the wait closes the stream on purpose; do not
+            # report that closed stream as unhealthy.
+            if generation != self._audio_watchdog_generation:
+                break
+            if self.state != AppState.RECORDING:
+                break
             try:
                 health = self.audio_capture.health_snapshot()
             except Exception as exc:
@@ -11698,6 +11876,7 @@ class AriaApp:
 
     def _stop_recording(self) -> None:
         """Stop recording."""
+        self._cancel_recording_resume()
         _pipeline_log("RECORD", ">>> _stop_recording called")
         self._audio_watchdog_generation = (
             getattr(self, "_audio_watchdog_generation", 0) + 1
@@ -12091,6 +12270,7 @@ class AriaApp:
         if not self._running:
             return
 
+        self._cancel_recording_resume()
         print("\nStopping AriaApp...")
 
         # Stop streaming ASR timer first (prevent stale callbacks)
@@ -12846,44 +13026,32 @@ class AriaApp:
             )
             self._resume_recording_on_enable = False
             self._is_disabled = False
+            sleep_mode = getattr(self, "_sleep_mode", SleepMode.AWAKE)
             if not getattr(self, "_running", True):
                 # Not running at all, full start
                 self.start()
+            elif sleep_mode == SleepMode.DEEP:
+                self.set_deep_sleep(False)
+            elif sleep_mode == SleepMode.LIGHT:
+                self.set_sleeping(False)
             elif resume_recording:
-                with self._lock:
-                    can_resume = (
-                        self.state == AppState.IDLE
-                        and getattr(self, "_sleep_mode", SleepMode.AWAKE)
-                        != SleepMode.DEEP
-                    )
-                if can_resume:
-                    action = (
-                        "wake_start_locked"
-                        if getattr(self, "_trigger_mode", "toggle")
-                        == "hold_to_talk"
-                        else "toggle"
-                    )
-                    try:
-                        self._hotkey_action_queue.put_nowait(action)
-                        _pipeline_log(
-                            "CONTROL",
-                            f"Enable toggle resuming paused recording ({action})",
-                        )
-                    except queue.Full:
-                        _pipeline_log(
-                            "CONTROL",
-                            "Enable toggle resume dropped: action queue full",
-                        )
+                self._queue_recording_resume("enabled")
             print("[Aria] Enabled")
             logger.info("Aria enabled")
         else:
+            pending_resume = bool(getattr(self, "_recording_resume_pending", False))
+            self._cancel_recording_resume()
             if self._running:
                 with self._lock:
                     was_recording = self.state == AppState.RECORDING
                 # Set disabled first, but keep hotkey listening so either the
                 # popup switch or hotkey can resume the session.
                 self._is_disabled = True
-                self._resume_recording_on_enable = was_recording
+                self._resume_recording_on_enable = (
+                    was_recording
+                    or pending_resume
+                    or bool(getattr(self, "_resume_recording_on_enable", False))
+                )
                 if was_recording:
                     _pipeline_log(
                         "CONTROL", "Enable toggle pausing active recording"
@@ -14471,11 +14639,49 @@ class AriaApp:
             output_block = cfg.get("output", {}) or {}
             return (
                 "typewriter"
-                if bool(output_block.get("typewriter_mode", False))
+                if bool(output_block.get("typewriter_mode", DEFAULT_TYPEWRITER_MODE))
                 else "clipboard"
             )
         except Exception:
-            return "clipboard"
+            return "typewriter" if DEFAULT_TYPEWRITER_MODE else "clipboard"
+
+    # ── Prefix-free commands (popup toggle) ──
+    #
+    # Stored in wakeword.json next to the commands it gates. The settings
+    # page re-reads that file on save and only rewrites its own keys, so an
+    # open settings window cannot roll this switch back.
+    def set_prefix_free_commands(self, enabled: bool) -> bool:
+        """Let eligible short commands (上屏/发送/截图...) skip the wakeword."""
+        enabled = bool(enabled)
+        detector = getattr(self, "wakeword_detector", None)
+        if detector is not None:
+            detector.prefix_free_commands = enabled
+
+        wakeword_path = get_config_path("wakeword.json")
+        try:
+            created = not wakeword_path.exists()
+            cfg = {"enabled": True, "wakeword": "小助手", "commands": {}}
+            if not created:
+                with open(wakeword_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            cfg["prefix_free_commands"] = enabled
+            tmp = wakeword_path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.replace(tmp, wakeword_path)
+            if created and detector is not None:
+                # A missing file left the detector disabled; load the new one.
+                detector.reload(str(wakeword_path))
+        except Exception as exc:
+            logger.warning(f"set_prefix_free_commands: failed to persist: {exc}")
+
+        print(f"[WAKEWORD] prefix_free_commands -> {enabled}")
+        return enabled
+
+    def get_prefix_free_commands(self) -> bool:
+        detector = getattr(self, "wakeword_detector", None)
+        return bool(getattr(detector, "prefix_free_commands", False))
 
     def set_wakeword(self, wakeword: str) -> None:
         """

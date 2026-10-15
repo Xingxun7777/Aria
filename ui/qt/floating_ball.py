@@ -308,6 +308,7 @@ class FloatingBall(QWidget):
     micInputGainChanged = Signal(float)  # From popup menu: software mic gain
     deepSleepToggled = Signal(bool)  # From popup menu: deep sleep toggle
     translateModeChanged = Signal(str)  # From popup menu: "popup" or "clipboard"
+    prefixFreeToggled = Signal(bool)  # From popup menu: commands without wakeword
     outputModeChanged = Signal(str)  # From popup menu: "clipboard" or "typewriter"
     apiSwitchBackRequested = Signal()  # From popup menu: switch Polish API to primary
     deepseekSetupRequested = Signal()  # Open the guided DeepSeek API setup dialog
@@ -888,6 +889,7 @@ class FloatingBall(QWidget):
         self._popup_menu.translateModeChanged.connect(
             self._on_menu_translate_mode_changed
         )
+        self._popup_menu.prefixFreeToggled.connect(self._on_menu_prefix_free_toggled)
         self._popup_menu.apiSwitchBackRequested.connect(
             self._on_menu_api_switch_back_requested
         )
@@ -962,6 +964,10 @@ class FloatingBall(QWidget):
     def _on_menu_translate_mode_changed(self, mode):
         """Handle translate mode change from popup menu."""
         self.translateModeChanged.emit(mode)
+
+    def _on_menu_prefix_free_toggled(self, enabled):
+        """Handle the wakeword-free command toggle from popup menu."""
+        self.prefixFreeToggled.emit(enabled)
 
     def _on_menu_api_switch_back_requested(self):
         """Handle primary API switch request from popup menu."""
@@ -2388,6 +2394,11 @@ class FloatingBall(QWidget):
         """
         if self._popup_menu:
             self._popup_menu.setTranslateMode(mode)
+
+    def set_prefix_free_commands(self, enabled: bool) -> None:
+        """Set the wakeword-free command toggle on popup menu (no signal emission)."""
+        if self._popup_menu:
+            self._popup_menu.setPrefixFree(enabled)
 
     def set_api_status(self, status_payload) -> None:
         """Set API failover status on popup menu."""

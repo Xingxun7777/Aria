@@ -42,6 +42,7 @@ logger = get_system_logger()
 # 5 ms as its supported lower bound; 0-2 ms is intentionally not the default
 # because slower target applications may lose or redirect queued key events.
 DEFAULT_TYPEWRITER_DELAY_MS = 5
+DEFAULT_TYPEWRITER_MODE = True
 
 # ============================================================================
 # Windows API declarations (MUST be at top - before any functions that use them)
@@ -670,7 +671,7 @@ class OutputConfig:
     restore_delay_ms: int = 100  # Delay before restoring clipboard
 
     # Layer 2: Typewriter mode settings
-    typewriter_mode: bool = True  # Use character-by-character input (SendInput UNICODE)
+    typewriter_mode: bool = DEFAULT_TYPEWRITER_MODE  # SendInput UNICODE; factory default
     typewriter_delay_ms: int = DEFAULT_TYPEWRITER_DELAY_MS
 
     # Native Word COM delivery is enabled after the real isolated-document

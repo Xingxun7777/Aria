@@ -41,6 +41,7 @@ from .transcript_recovery import (
     resolve_last_transcript,
 )
 from core.history.models import RecordType
+from aria.system.output import DEFAULT_TYPEWRITER_MODE
 
 # Debug log for main.py
 _DEBUG_LOG = Path(__file__).parent.parent.parent / "DebugLog" / "wakeword_debug.log"
@@ -81,6 +82,9 @@ def _sync_settings_output_mode(settings, mode: str) -> None:
     if checkbox is None:
         return
     checkbox.setChecked(mode == "typewriter")
+    refresh = getattr(settings, "_refresh_config_baseline", None)
+    if callable(refresh):
+        refresh()
 
 
 def main(*, on_ui_ready=None):
@@ -2081,6 +2085,27 @@ def main(*, on_ui_ready=None):
 
     ball.translateModeChanged.connect(on_translate_mode_changed)
 
+    # Wakeword-free short commands (上屏/发送/截图...). The backend flips the
+    # live detector flag and persists it in wakeword.json.
+    def on_prefix_free_toggled(enabled):
+        _log(f"[Aria] Prefix-free commands toggled: {enabled}")
+        if not backend or not hasattr(backend, "set_prefix_free_commands"):
+            return
+        try:
+            applied = backend.set_prefix_free_commands(enabled)
+            ball.set_prefix_free_commands(applied)
+            if applied:
+                show_quiet_notice(
+                    "免唤醒词已开启：直接说「上屏」「发送」即可", "success", 2400
+                )
+            else:
+                show_quiet_notice("免唤醒词已关闭", "success", 1800)
+        except Exception as exc:
+            _log(f"[Aria] Prefix-free toggle failed: {exc}")
+            show_quiet_notice(f"切换免唤醒词失败: {exc}", "warning", 2400)
+
+    ball.prefixFreeToggled.connect(on_prefix_free_toggled)
+
     # Load and sync initial translate mode
     try:
         import json
@@ -2121,6 +2146,11 @@ def main(*, on_ui_ready=None):
         initial_output_mode = backend.get_output_mode()
         ball.set_output_mode(initial_output_mode)
         _log(f"[Aria] Initial output mode: {initial_output_mode}")
+
+    if hasattr(backend, "get_prefix_free_commands"):
+        initial_prefix_free = backend.get_prefix_free_commands()
+        ball.set_prefix_free_commands(initial_prefix_free)
+        _log(f"[Aria] Initial prefix-free commands: {initial_prefix_free}")
 
     # Set simple popup subtitle; avoid technical model names for normal users.
     def _get_engine_display_name() -> str:
@@ -2272,7 +2302,9 @@ def main(*, on_ui_ready=None):
         # output.typewriter_mode checkbox (same config key both ways).
         output_cfg = config.get("output", {}) or {}
         ball.set_output_mode(
-            "typewriter" if output_cfg.get("typewriter_mode") else "clipboard"
+            "typewriter"
+            if output_cfg.get("typewriter_mode", DEFAULT_TYPEWRITER_MODE)
+            else "clipboard"
         )
 
     settings.settingsSaved.connect(on_settings_saved)

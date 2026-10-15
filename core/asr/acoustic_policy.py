@@ -579,3 +579,59 @@ def find_context_echo(
         if window in c:
             return window
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Post-ASR filler-only text gate (shared by the final worker, the interim
+# caption path and the cloud-rescue acceptance check)
+# ---------------------------------------------------------------------------
+
+# Legacy exact-match set (byte-identical to the two app.py copies and
+# rescue_policy.CLOUD_FILLER_ONLY before 1.7.1). "就" stays for parity.
+FILLER_ONLY_LEGACY_TEXTS = frozenset(
+    {
+        "嗯", "啊", "哦", "呃", "额", "噢", "唔", "嘶", "哼", "啧", "就",
+        "嗯嗯", "啊啊", "哦哦", "呃呃", "嗯哼", "嗯啊", "嘶嘶", "咚咚",
+    }
+)
+
+# Interjection / vocalization characters. A whole utterance made only of
+# these (after punctuation strip, up to FILLER_ONLY_MAX_CORE_CHARS) is a
+# cough, sigh, laugh or door slam the decoder rendered as text, not speech.
+# 2026-09-15/16 field data (1.7.0 personal GPU build, 158 committed
+# utterances): 19 (12%) were pure interjections — 哎 x5, 哎呀 x2, 咳 x2, 唉,
+# 呵呵, 噗, 哦哎 — mostly "recovered" by the leakage retry path and then typed
+# into the foreground window. Apr–Jul 2026 history ran at 2.6–4.1%.
+# Never add meaningful short words here (好/行/对/是/继续/开始/好的/我来/喂).
+FILLER_ONLY_CHARS = frozenset(
+    "嗯啊哦呃额噢唔嘶哼啧"
+    "哎唉咳哈呵嘿嘘噗砰咚呸诶欸哟呀咦喔嗨"
+)
+FILLER_ONLY_MAX_CORE_CHARS = 6
+
+_FILLER_PUNCT_RE = re.compile(r"[，。！？、,\.!\?;；:：~～…\s]+")
+
+
+def filler_only_core(text: str) -> str:
+    """Strip punctuation / whitespace so only the spoken characters remain."""
+    return _FILLER_PUNCT_RE.sub("", text or "")
+
+
+def is_filler_only_text(text: str) -> bool:
+    """True when ``text`` carries no dictation content, only vocalizations.
+
+    Empty input returns False — callers already treat empty as "no speech".
+    Repeats collapse first so "嗯嗯嗯" / "咳咳" / "哈哈哈" match; any real
+    word character (好/对/继续/喂/门…) anywhere in the core keeps the text.
+    """
+    core = filler_only_core(text)
+    if not core:
+        return False
+    if core in FILLER_ONLY_LEGACY_TEXTS:
+        return True
+    if len(core) > FILLER_ONLY_MAX_CORE_CHARS:
+        return False
+    collapsed = re.sub(r"(.)\1+", r"\1", core)
+    if collapsed in FILLER_ONLY_LEGACY_TEXTS:
+        return True
+    return all(ch in FILLER_ONLY_CHARS for ch in core)

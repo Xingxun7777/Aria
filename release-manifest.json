@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "version": "1.7.0",
-  "released_at": "2026-09-09T09:36:57.851888Z",
+  "version": "1.7.1",
+  "released_at": "2026-10-15T08:08:11.340861Z",
   "update_scope": "python_only",
   "critical": false,
-  "notes_summary": "新增「上屏」语音命令找回没落到位的上一句；资源管理器与 Cursor/VS Code 文件树里选中文件后可直接说打开目录；修复 Cursor 等应用里选中文字识别不到的问题",
+  "notes_summary": "修复暂停或休眠恢复后录不到声音、话被吞掉；悬浮球里调过的音量等设置不再被设置页保存改回；咳嗽、叹气等语气声不再上屏；更新检查与 GPU 加速安装在直连不可用时自动改走同源接口或镜像",
   "assets": {
     "main_zip": {
-      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.7.0/Aria-source-1.7.0.zip",
+      "url": "https://github.com/Xingxun7777/Aria/releases/download/v1.7.1/Aria-source-1.7.1.zip",
       "mirrors": [
-        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.7.0/Aria-source-1.7.0.zip",
-        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.7.0/Aria-source-1.7.0.zip"
+        "https://ghfast.top/https://github.com/Xingxun7777/Aria/releases/download/v1.7.1/Aria-source-1.7.1.zip",
+        "https://gh-proxy.com/https://github.com/Xingxun7777/Aria/releases/download/v1.7.1/Aria-source-1.7.1.zip"
       ],
-      "size": 2914085,
-      "sha256": "f85c366ec6579783528684e455e187d566e2a2bb3255e979b3f5fcdb4db519ca"
+      "size": 2930319,
+      "sha256": "4d446a5b142f005b4b61d33e8950cdcd89f07da88ba32a3f8f4711f7f8f67198"
     }
   },
   "min_compatible_from": "1.0.5.31"

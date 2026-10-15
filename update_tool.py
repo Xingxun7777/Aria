@@ -41,6 +41,23 @@ LOCK_PATH = INSTALL_ROOT / ".update.lock"
 OFFICIAL_MANIFEST_URL = (
     "https://raw.githubusercontent.com/Xingxun7777/Aria/main/release-manifest.json"
 )
+# Same-origin fallbacks only. The manifest names the zip URL and its SHA256, so
+# whoever serves it decides what the updater installs — third-party proxies
+# (ghfast/gh-proxy/jsDelivr) are acceptable for the hash-verified zip below but
+# never for the manifest itself. raw.githubusercontent.com is the GitHub host
+# most often unreachable on mainland networks; api.github.com usually stays
+# reachable and serves the same committed file (raw media type, no redirect).
+MANIFEST_SOURCES = [
+    (OFFICIAL_MANIFEST_URL, {}),
+    (
+        "https://api.github.com/repos/Xingxun7777/Aria/contents/"
+        "release-manifest.json?ref=main",
+        {
+            "Accept": "application/vnd.github.raw+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    ),
+]
 
 ZIP_MIRROR_PREFIXES = [
     "",  # direct (official)
@@ -225,28 +242,41 @@ def clear_update_state() -> None:
 
 
 def _fetch_manifest() -> dict | None:
-    """Load manifest from official raw only. Fallback to .manifest_cache.json if < 7d old."""
+    """Load manifest from GitHub-owned hosts only (raw, then api.github.com).
+
+    Fallback to .manifest_cache.json if < 7d old.
+    """
     ctx = ssl.create_default_context()
-    try:
-        req = urllib.request.Request(
-            OFFICIAL_MANIFEST_URL,
-            headers={"User-Agent": "Aria-UpdateCheck/2.0"},
-        )
-        with urllib.request.urlopen(
-            req, timeout=MANIFEST_CACHE_FETCH_TIMEOUT, context=ctx
-        ) as resp:
-            data = resp.read()
-        text = data.decode("utf-8", errors="replace")
-        manifest = json.loads(text)
-        # Only cache valid manifests
-        if manifest.get("version") and manifest.get("assets", {}).get("main_zip"):
+    for url, extra_headers in MANIFEST_SOURCES:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Aria-UpdateCheck/2.0", **extra_headers},
+            )
+            with urllib.request.urlopen(
+                req, timeout=MANIFEST_CACHE_FETCH_TIMEOUT, context=ctx
+            ) as resp:
+                data = resp.read()
+            text = data.decode("utf-8", errors="replace")
+            manifest = json.loads(text)
+        except (
+            urllib.error.URLError,
+            json.JSONDecodeError,
+            OSError,
+            TimeoutError,
+            ValueError,
+        ):
+            continue
+        # Only accept and cache valid manifests
+        if not isinstance(manifest, dict):
+            continue
+        assets = manifest.get("assets")
+        if manifest.get("version") and isinstance(assets, dict) and assets.get("main_zip"):
             try:
                 _atomic_write(MANIFEST_CACHE, text)
             except OSError:
                 pass
             return manifest
-    except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
-        pass
     # Fallback: last-known-good cache
     if MANIFEST_CACHE.exists():
         try:

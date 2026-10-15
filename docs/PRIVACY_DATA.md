@@ -70,13 +70,13 @@
 
 ### 4. 自动更新
 
-Aria 会从 GitHub 获取 `release-manifest.json`，并在有新版本时下载经过大小和 SHA256 校验的 source ZIP。更新只替换程序文件，配置、历史和模型继续保留。
+Aria 会从 GitHub 获取 `release-manifest.json`（先访问 `raw.githubusercontent.com`，不可达时改用 `api.github.com`，两者都是 GitHub 自有域名，不会从第三方代理读取清单），并在有新版本时下载经过大小和 SHA256 校验的 source ZIP；ZIP 下载在 GitHub 直连失败时会尝试 `ghfast.top`、`gh-proxy.com` 加速镜像，镜像返回的文件同样必须通过清单中的 SHA256 校验。更新只替换程序文件，配置、历史和模型继续保留。
 
 个人构建带有 `PERSONAL_BUILD.txt`，会跳过公开更新通道。
 
 ### 5. GPU 资产获取
 
-用户在悬浮窗右键菜单确认安装 GPU 加速时，Aria 会调用包内 Python，从 GitHub Releases 和 Hugging Face 兼容端点下载固定版本的 llama.cpp CUDA 文件与公开 GGUF 模型；包根的 `Install_GPU.cmd` 是 Aria 关闭时的备用入口。下载支持断点续传，对四个下载件执行固定 SHA256 校验，不上传本地数据。校验后会在本机回环地址短暂启动模型服务，并调用本机 `nvidia-smi` 确认 GPU 实际生效；全部通过后才切换运行配置。
+用户在悬浮窗右键菜单确认安装 GPU 加速时，Aria 会调用包内 Python，从 GitHub Releases 和 Hugging Face 兼容端点下载固定版本的 llama.cpp CUDA 文件与公开 GGUF 模型；GitHub 直连失败时依次尝试 `ghfast.top`、`gh-proxy.com`，`huggingface.co` 不可达时改用镜像 `hf-mirror.com`。包根的 `Install_GPU.cmd` 是 Aria 关闭时的备用入口。下载支持断点续传，对四个下载件执行固定字节数与 SHA256 校验，来自任何镜像的文件不匹配都会被删除并视为失败，不上传本地数据。校验后会在本机回环地址短暂启动模型服务，并调用本机 `nvidia-smi` 确认 GPU 实际生效；全部通过后才切换运行配置。
 
 ### 6. 本机 GPU 服务
 
